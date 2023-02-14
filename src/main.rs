@@ -1,13 +1,22 @@
 
+use std::io::{Write, Read, stdout};
+
 use termion;
 use termion::screen::IntoAlternateScreen;
-use std::io::{Write, Read, stdout};
+
+use midir;
 
 mod sixense;
 mod utils;
 
 use sixense::HydraFrame;
 use utils::format_frame;
+
+
+
+const BANNER_TEXT:&str = "█║▌▌║│▌█║▌▌║║║▌║║▌▌│▌█│║▌▌│║█▌║║║▌│ zgicabra ▌▌▌│║▌║║▌█║▌║▌║█║▌║│▌█║║▌▌║║║▌║║█▌│";
+
+
 
 
 //
@@ -38,17 +47,82 @@ fn new_blank_frame() -> HydraFrame {
 
 
 
+
+use std::thread::sleep;
+use std::time::Duration;
+
+use midir::{MidiOutput, MidiOutputConnection};
+
+const NOTE_ON_MSG:  u8 = 0x90;
+const NOTE_OFF_MSG: u8 = 0x80;
+
+fn note_on (conn_out: &mut MidiOutputConnection, note: u8, vel: u8) {
+    println!("Doot! {} ON", note);
+    let _ = conn_out.send(&[NOTE_ON_MSG, note, vel]);
+}
+
+fn note_off (conn_out: &mut MidiOutputConnection, note: u8, vel: u8) {
+    println!("_____ {} OFF", note);
+    let _ = conn_out.send(&[NOTE_OFF_MSG, note, vel]);
+}
+
+
+fn midi_test(conn_out: &mut MidiOutputConnection) {
+    println!("MIDI test...");
+    const VELOCITY: u8 = 0x64;
+
+    let mut play_note = |note: u8, duration: u64| {
+        note_on(conn_out, note, VELOCITY);
+        sleep(Duration::from_millis(duration * 150));
+        note_off(conn_out, note, VELOCITY);
+    };
+
+    play_note(66, 4);
+    play_note(65, 3);
+    play_note(64, 2);
+    play_note(63, 1);
+
+    println!("...done");
+}
+
+
 //
 // Main
 //
 
 fn main() {
+    print!("{}{}{}{}", termion::clear::All, termion::cursor::Hide, termion::cursor::Goto(1,1), BANNER_TEXT);
+    print!("{}", termion::cursor::Goto(1,3));
+
+
+    //
+    // MIDI Setup
+    //
+
+    print!("Establishing MIDI connection... ");
+
+    let midi_out = MidiOutput::new("Zgicabra").unwrap();
+    let midi_ports = midi_out.ports();
+    let out_port = midi_ports[0].clone();
+    let port_name = midi_out.port_name(&out_port).unwrap_or("Unknown".to_string());
+    let mut conn_out = midi_out.connect(&out_port, "midir-test").unwrap();
+
+    println!("ok");
+
+    midi_test(&mut conn_out);
 
     // Array of 2 frames
     let mut temp = new_blank_frame();
     let mut frames = [new_blank_frame(), new_blank_frame()];
 
+
+    //
+    // Hydra Setup
+    //
+
     unsafe {
+        println!("Establishing Hydra connection... ");
+
         sixense::init();
 
         println!("Waiting for Hydra...");
@@ -71,17 +145,25 @@ fn main() {
             sixense::read_frame(1, &mut temp);
             frames[temp.which_hand as usize - 1] = temp;
 
-            write!(screen, "{}L> {}", termion::cursor::Goto(1,1), format_frame(frames[0])).unwrap();
-            write!(screen, "{}R> {}", termion::cursor::Goto(1,2), format_frame(frames[1])).unwrap();
+            write!(screen, "{}{}", termion::cursor::Goto(1,1), BANNER_TEXT).unwrap();
+            write!(screen, "{}| MIDI Port: '{}'", termion::cursor::Goto(1,3), port_name).unwrap();
+
+            write!(screen, "{}L> {}", termion::cursor::Goto(1,5), format_frame(frames[0])).unwrap();
+            write!(screen, "{}R> {}", termion::cursor::Goto(1,6), format_frame(frames[1])).unwrap();
 
             screen.flush().unwrap();
 
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            sleep(Duration::from_millis(10));
 
             if std::io::stdin().bytes().next().and_then(|result| result.ok()).is_some() {
                 break;
             }
         }
+
+
+        sleep(Duration::from_millis(150));
+        println!("\nClosing connection");
+        conn_out.close();
 
         sixense::exit();
     }

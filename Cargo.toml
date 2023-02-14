@@ -6,5 +6,6 @@ authors = [ "lakmeer.github.com" ]
 
 [dependencies]
 libc = "0.2.139"
+midir = "0.9.1"
 termion = "2.0.1"
 
