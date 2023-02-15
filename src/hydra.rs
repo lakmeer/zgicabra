@@ -31,7 +31,7 @@ pub fn blank_frame() -> ControllerFrame {
 
 use crate::ui::{minibar, minigauge, minimask};
 
-pub fn format_frame (frame: Option<ControllerFrame>) -> String {
+pub fn format_frame (frame: Option<&ControllerFrame>) -> String {
     match frame {
         None => "No frame".to_string(),
 

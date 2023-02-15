@@ -146,7 +146,7 @@ fn main() {
         sixense::read_frame(1, &mut temp);
         state.frames[temp.which_hand as usize - 1].push(temp);
 
-        ui::draw_all(&mut state);
+        ui::draw_all(&mut state).unwrap();
 
         sleep(REFRESH_MS);
 
