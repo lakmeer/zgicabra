@@ -3,6 +3,9 @@ use std::io::{Write};
 
 use crate::hydra::format_frame;
 
+use crate::ZgiState;
+
+
 
 //
 // Formatters
@@ -75,13 +78,11 @@ pub fn header () {
     );
 }
 
-use crate::ZgiState;
-
 pub fn draw_all (state: &mut ZgiState) {
-    write!(state.screen, "{}{}", termion::cursor::Goto(1,1), BANNER_TEXT).unwrap();
+    write!(state.screen, "{}{}{}", termion::clear::All, termion::cursor::Goto(1,1), BANNER_TEXT).unwrap();
     write!(state.screen, "{}| MIDI Port: '{}'", termion::cursor::Goto(1,3), state.port_name).unwrap();
-    write!(state.screen, "{}L> {}", termion::cursor::Goto(1,5), format_frame(state.frames[0])).unwrap();
-    write!(state.screen, "{}R> {}", termion::cursor::Goto(1,6), format_frame(state.frames[1])).unwrap();
+    //write!(state.screen, "{}L> {}", termion::cursor::Goto(1,5), format_frame(state.frames[0].last())).unwrap();
+    //write!(state.screen, "{}R> {}", termion::cursor::Goto(1,6), format_frame(state.frames[1].last())).unwrap();
     state.screen.flush().unwrap();
 }
 

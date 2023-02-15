@@ -31,13 +31,23 @@ pub fn blank_frame() -> ControllerFrame {
 
 use crate::ui::{minibar, minigauge, minimask};
 
-pub fn format_frame (frame: ControllerFrame) -> String {
-    format!("[{}]@[{}/{}]:{}:[ {: >6.2} {: >6.2} {: >6.2} | {: >5.3} {: >5.2} {: >5.2} {: >5.2} ]", 
-             minigauge(frame.trigger),
-             minibar(frame.joystick_x, 4),
-             minibar(frame.joystick_y, 4),
-             minimask(frame.buttons),
-             frame.pos[0], frame.pos[1], frame.pos[2],
-             frame.rot_quat[0], frame.rot_quat[1], frame.rot_quat[2], frame.rot_quat[3]
-            )
+pub fn format_frame (frame: Option<ControllerFrame>) -> String {
+    match frame {
+        None => "No frame".to_string(),
+
+        Some(frame) => {
+
+            format!("[{}]@[{}/{}]:{}:[ {: >6.2} {: >6.2} {: >6.2} | {: >5.3} {: >5.2} {: >5.2} {: >5.2} ]", 
+                    minigauge(frame.trigger),
+                    minibar(frame.joystick_x, 4),
+                    minibar(frame.joystick_y, 4),
+                    minimask(frame.buttons),
+                    frame.pos[0], frame.pos[1], frame.pos[2],
+                    frame.rot_quat[0], frame.rot_quat[1], frame.rot_quat[2], frame.rot_quat[3]
+                   )
+
+        }
+
+    }
 }
+

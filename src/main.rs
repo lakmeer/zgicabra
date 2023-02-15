@@ -12,25 +12,31 @@ use midir::{MidiOutput, MidiOutputConnection};
 
 mod sixense;
 mod hydra;
+mod zgicabra;
+mod history;
 mod ui;
 
 use hydra::{blank_frame};
+use history::{History};
 
+
+//
+// Global Data Structures
+//
 
 pub struct ZgiState {
-    frames: [sixense::ControllerFrame; 2],
+    frames: [History<sixense::ControllerFrame>; 2],
     conn_out: MidiOutputConnection,
     port_name: String,
     screen: termion::screen::AlternateScreen<std::io::Stdout>,
 }
 
 
-
-
 //
 // Helpers
 //
 
+const REFRESH_MS: Duration = Duration::from_millis(10);
 const NOTE_ON_MSG:  u8 = 0x90;
 const NOTE_OFF_MSG: u8 = 0x80;
 
@@ -71,6 +77,15 @@ fn main() {
 
     ui::header();
 
+    // History test
+    let mut buffer = History::new(5);
+
+    for i in 0..10 {
+        buffer.push(i);
+        println!("Buffer: {:?}", buffer);
+        println!("Last: {:?}", buffer.last());
+    }
+
 
     //
     // MIDI Setup
@@ -94,11 +109,11 @@ fn main() {
 
     let mut state = ZgiState {
         screen: stdout().into_alternate_screen().unwrap(),
-        frames: [blank_frame(), blank_frame()],
+        frames: [History::new(10), History::new(10)],
         conn_out: midi_out.connect(&out_port, "midir-test").unwrap(),
         port_name: port_name,
     };
-    
+
     midi_test(&mut state.conn_out);
 
 
@@ -126,22 +141,22 @@ fn main() {
 
         // Read both hands, index by self-disclosed handedness (permits hand swapping)
         sixense::read_frame(0, &mut temp);
-        state.frames[temp.which_hand as usize - 1] = temp;
+        state.frames[temp.which_hand as usize - 1].push(temp);
 
         sixense::read_frame(1, &mut temp);
-        state.frames[temp.which_hand as usize - 1] = temp;
+        state.frames[temp.which_hand as usize - 1].push(temp);
 
         ui::draw_all(&mut state);
 
-        sleep(Duration::from_millis(10));
+        sleep(REFRESH_MS);
 
         if std::io::stdin().bytes().next().and_then(|result| result.ok()).is_some() {
             break;
         }
     }
 
-    sleep(Duration::from_millis(150));
     println!("\nClosing connection");
+
     state.conn_out.close();
 
     sixense::exit();
