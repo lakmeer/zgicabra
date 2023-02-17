@@ -4,8 +4,6 @@ use std::io::{Read, stdout};
 use std::thread::sleep;
 use std::time::Duration;
 
-use termion::screen::IntoAlternateScreen;
-
 use midir::{MidiOutput, MidiOutputConnection};
 
 
@@ -17,7 +15,10 @@ mod ui;
 
 use hydra::HydraState;
 use zgicabra::Zgicabra;
+use history::History;
 
+
+pub const HISTORY_WINDOW: usize = 50;
 
 const REFRESH_MS: Duration = Duration::from_millis(10);
 const MIDI_DEVICE_NAME: &str = "Zgicabra";
@@ -38,19 +39,18 @@ fn main() {
 
     print!("Establishing MIDI connection... ");
 
-    let output   = MidiOutput::new(MIDI_DEVICE_NAME).unwrap();
-    let midi_ports = output.ports();
-    let out_port = midi_ports[0].clone();
-    //let out_port   = output.ports()[0].clone();
+    let output     = MidiOutput::new(MIDI_DEVICE_NAME).unwrap();
+    let out_port   = output.ports()[0].clone();
     let port_name  = output.port_name(&out_port).unwrap_or("Unknown".to_string());
     let connection = output.connect(&out_port, "midir-test").unwrap();
 
-    println!("ok");
+    println!("✅");
 
 
     let mut hydra_state = HydraState::new();
-
     let mut zgicabra    = Zgicabra::new();
+
+    let mut history: History<Zgicabra> = History::new(HISTORY_WINDOW);
 
 
     //
@@ -59,27 +59,27 @@ fn main() {
 
     hydra::start(&mut hydra_state);
 
-    let mut screen = stdout().into_alternate_screen().unwrap();
+    history.push(zgicabra.clone()); // Fill first frame
+
+    print!("{}", termion::clear::All);
 
     loop {
-
         hydra::update(&mut hydra_state);
+        zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state).unwrap();
+        ui::draw_all(&zgicabra, &history).unwrap();
 
-        zgicabra::update(&mut zgicabra, &hydra_state).unwrap();
-
-        ui::draw_all(&mut screen, &port_name, &zgicabra, &hydra_state).unwrap();
+        history.push(zgicabra);
 
         sleep(REFRESH_MS);
 
         if std::io::stdin().bytes().next().and_then(|result| result.ok()).is_some() {
             break;
         }
-
     }
 
-    println!("\nClosing connection");
-
+    print!("Closing connection... ");
     connection.close();
+    println!("ok");
 
     hydra::stop(&mut hydra_state);
 }

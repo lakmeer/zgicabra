@@ -63,7 +63,7 @@ impl<T:Clone> History<T> {
         self.buffer[self.last].as_ref()
     }
 
-    pub fn size(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.size
     }
 }

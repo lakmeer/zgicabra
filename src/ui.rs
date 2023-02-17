@@ -12,10 +12,14 @@ use crate::hydra::HydraState;
 use crate::zgicabra::{Zgicabra,Wand};
 use crate::history::History;
 
+use crate::HISTORY_WINDOW;
+
+
+type Screen = termion::screen::AlternateScreen<std::io::Stdout>;
+
 
 const BANNER_TEXT:&str = "█║▌▌║│▌█║▌▌║║║▌║║▌▌│▌█│║▌▌│║█▌║║║▌│ zgicabra ▌▌▌│║▌║║▌█║▌║▌║█║▌║│▌█║║▌▌║║║▌║║█▌│";
 
-type Screen = termion::screen::AlternateScreen<std::io::Stdout>;
 
 
 //
@@ -32,31 +36,18 @@ pub fn header () {
     );
 }
 
-pub fn draw_all (screen: &mut Screen, port_name: &str, zgicabra: &Zgicabra, hydra_state: &HydraState ) -> Result<(), Error> {
-    write!(screen, "{}{}", termion::cursor::Goto(1,1), BANNER_TEXT)?;
-    write!(screen, "{}| MIDI Port: '{}'", termion::cursor::Goto(1,3), port_name)?;
+pub fn draw_all (zgicabra: &Zgicabra, history: &History<Zgicabra>) -> Result<(), Error> {
 
-    write!(screen, "{}L> {}", termion::cursor::Goto(1,5), format_wand(&zgicabra.left))?;
-    write!(screen, "{}R> {}", termion::cursor::Goto(1,6), format_wand(&zgicabra.right))?;
+    print!("{}{}",      termion::cursor::Goto(1,1), BANNER_TEXT);
+    //print!("{}| MIDI Port: '{}'", termion::cursor::Goto(1,3), port_name);
+    print!("{}L> {}",   termion::cursor::Goto(1,3), format_wand(&zgicabra.left));
+    print!("{}R> {}",   termion::cursor::Goto(1,4), format_wand(&zgicabra.right));
+    print!("{}{}",      termion::cursor::Goto(1,6), zgicabra.separation);
+    print!("{}",        termion::cursor::Goto(1,8));
 
-    write!(screen, "{}{}", termion::cursor::Goto(1,8), zgicabra.separation)?;
+    draw_test_graph(history);
 
-    //draw_history(screen, hydra_state)?;
-
-    write!(screen, "{}", termion::cursor::Goto(1,10)).unwrap();
-    draw_test_graph(screen, hydra_state);
-
-    screen.flush()?;
-
-    Ok(())
-}
-
-pub fn draw_history (screen: &mut Screen, state: &HydraState) -> Result<(), Error> {
-    for i in 0..state.frame_history[0].size() {
-        let ix = i as u16;
-        write!(screen, "{}L> {}  ", termion::cursor::Goto(1,10+ix),  format_frame(state.frame_history[0].get(i)))?;
-        write!(screen, "{}L> {}  ", termion::cursor::Goto(1,21+ix), format_frame(state.frame_history[1].get(i)))?;
-    }
+    //screen.flush()?;
 
     Ok(())
 }
@@ -136,34 +127,39 @@ pub fn format_wand (wand: &Wand) -> String {
             )
 }
 
-const RED:RGB8   = RGB8 { r: 255, g: 120, b: 100 };
-const GREEN:RGB8 = RGB8 { r: 100, g: 255, b: 120 };
-const BLUE:RGB8  = RGB8 { r: 100, g: 120, b: 255 };
 
-use crate::hydra::HISTORY_WINDOW;
+const RED:RGB8    = RGB8 { r: 255, g: 120, b: 100 };
+const GREEN:RGB8  = RGB8 { r: 100, g: 255, b: 120 };
+const BLUE:RGB8   = RGB8 { r: 100, g: 120, b: 255 };
+const LGREEN:RGB8 = RGB8 { r: 180, g: 255, b: 200 };
+const LBLUE:RGB8  = RGB8 { r: 180, g: 200, b: 255 };
 
-pub fn draw_test_graph (screen: &mut Screen, state: &HydraState) {
+pub fn draw_test_graph (history: &History<Zgicabra>) {
 
-    let n = state.frame_history[0].size();
+    let n = history.len();
 
-    let mut left_pos  :[ (f32, f32); HISTORY_WINDOW ] = [ (0.0, 0.0); HISTORY_WINDOW ];
-    let mut right_pos :[ (f32, f32); HISTORY_WINDOW ] = [ (0.0, 0.0); HISTORY_WINDOW ];
+    let mut left_pos  : [ (f32, f32); HISTORY_WINDOW ] = [ (0.0, 0.0); HISTORY_WINDOW ];
+    let mut right_pos : [ (f32, f32); HISTORY_WINDOW ] = [ (0.0, 0.0); HISTORY_WINDOW ];
+    let mut left_vel  : [ (f32, f32); HISTORY_WINDOW ] = [ (0.0, 0.0); HISTORY_WINDOW ];
+    let mut right_vel : [ (f32, f32); HISTORY_WINDOW ] = [ (0.0, 0.0); HISTORY_WINDOW ];
 
     for i in 0..n {
-        left_pos[i]  = (i as f32, match state.frame_history[0].get(i) {
-            None => 0.0,
-            Some(frame) => frame.pos[0]
-        });
-
-        right_pos[i] = (i as f32, match state.frame_history[1].get(i) {
-            None => 0.0,
-            Some(frame) => frame.pos[0]
-        });
+        match history.get(i) {
+            None => { },
+            Some(frame) => {
+                left_pos[i]  = (i as f32, frame.left.pos[0]);
+                right_pos[i] = (i as f32, frame.right.pos[0]);
+                left_vel[i]  = (i as f32, frame.left.scalar_vel * 200.0);
+                right_vel[i] = (i as f32, frame.right.scalar_vel * 200.0);
+            }
+        }
     }
 
-    Chart::new_with_y_range(120, 80, 0.0, n as f32, -500.0, 500.0)
+    Chart::new_with_y_range(140, 140, 0.0, n as f32, -500.0, 500.0)
         .linecolorplot(&Shape::Lines(&left_pos), GREEN)
         .linecolorplot(&Shape::Lines(&right_pos), BLUE)
+        .linecolorplot(&Shape::Lines(&left_vel), LGREEN)
+        .linecolorplot(&Shape::Lines(&right_vel), LBLUE)
         .display();
 }
 
