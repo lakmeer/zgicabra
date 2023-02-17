@@ -9,7 +9,7 @@ use textplots::{Plot,ColorPlot,Chart,Shape};
 
 use crate::sixense::ControllerFrame;
 use crate::hydra::HydraState;
-use crate::zgicabra::{Zgicabra,Wand,Direction};
+use crate::zgicabra::{Zgicabra,Wand,Direction,Joystick};
 use crate::history::History;
 
 use crate::HISTORY_WINDOW;
@@ -84,6 +84,14 @@ pub fn minidir (d: Direction) -> String {
     }
 }
 
+pub fn ministick (stick: Joystick) -> String {
+    if stick.clicked {
+        "(⬤)".to_string()
+    } else {
+        minidir(stick.octant)
+    }
+}
+
 pub fn minibar (x: f32, n: u8) -> String {
     let mut s = String::new();
     let mut i = 0;
@@ -131,7 +139,7 @@ pub fn format_frame (maybe_frame: Option<&ControllerFrame>) -> String {
 
 pub fn format_wand (wand: &Wand) -> String {
     format!("{}{}]{}[ -{}-{}{}{}{}-",
-            if wand.stick.clicked { "(×)".to_string() } else { minidir(wand.stick.octant) },
+            ministick(wand.stick),
             minigauge(wand.trigger),
             if wand.bumper     { "█" } else { "░" },
             if wand.home       { "H" } else { "░" },

@@ -8,6 +8,9 @@ use crate::sixense::ControllerFrame;
 use crate::hydra::HydraState;
 
 
+const JOYSTICK_DEADZONE: f32 = 0.15;
+
+
 //
 // Data Types
 //
@@ -231,7 +234,7 @@ fn copy_joystick_to_wand (frame: &ControllerFrame, wand: &mut Wand) {
 }
 
 fn joystick_quadrant (stick: &Joystick) -> Direction {
-    if stick.r < 0.1 { return Direction::None; }
+    if stick.r < JOYSTICK_DEADZONE { return Direction::None; }
 
     match stick.theta * 8.0 {
         t if t > 0.0 && t <= 1.0 => Direction::Up,
@@ -244,7 +247,7 @@ fn joystick_quadrant (stick: &Joystick) -> Direction {
 }
 
 fn joystick_octant (stick: &Joystick) -> Direction {
-    if stick.r < 0.1 { return Direction::None; }
+    if stick.r < JOYSTICK_DEADZONE { return Direction::None; }
 
     match stick.theta * 8.0 {
         t if t > 0.0 && t <= 0.5 => Direction::Up,
