@@ -1,10 +1,12 @@
 
 use libc::{c_float, c_int, c_uint, c_uchar, c_ushort};
 
-
-//
-// Link Sixense library
-//
+#[link(name="sixense_x64")]
+extern {
+    pub fn sixenseInit();
+    pub fn sixenseExit();
+    pub fn sixenseGetNewestData(which: c_int, data: *mut ControllerFrame);
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -28,34 +30,33 @@ pub struct ControllerFrame {
     pub hemi_tracking_enabled: c_uchar,
 }
 
-#[link(name="sixense_x64")]
-extern {
-    pub fn sixenseInit();
-    pub fn sixenseExit();
-    pub fn sixenseGetNewestData(which: c_int, data: *mut ControllerFrame);
-}
-
-
-//
-// Wrappers
-// TODO: Learn what the correct thing is to do here
-//
-
-pub fn init() {
-    unsafe {
-        sixenseInit();
+impl ControllerFrame {
+    pub fn new() -> ControllerFrame {
+        ControllerFrame {
+            sequence_number:       0,
+            which_hand:            0,
+            pos:                   [0.0, 0.0, 0.0],
+            rot_mat:               [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            rot_quat:              [0.0, 0.0, 0.0, 0.0],
+            joystick_x:            0.0,
+            joystick_y:            0.0,
+            trigger:               0.0,
+            buttons:               0,
+            packet_type:           0,
+            controller_index:      0,
+            enabled:               0,
+            is_docked:             0,
+            magnetic_frequency:    0,
+            firmware_revision:     0,
+            hardware_revision:     0,
+            hemi_tracking_enabled: 0,
+        }
     }
 }
 
-pub fn exit() {
-    unsafe {
-        sixenseExit();
-    }
-}
-
-pub fn read_frame(which: c_int, frame: &mut ControllerFrame) {
-    unsafe {
-        sixenseGetNewestData(which, frame);
+impl Default for ControllerFrame {
+    fn default() -> ControllerFrame {
+        ControllerFrame::new()
     }
 }
 

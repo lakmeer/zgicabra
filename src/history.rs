@@ -54,8 +54,17 @@ impl<T:Clone> History<T> {
         self.buffer[(self.tail + index) % self.size].as_ref()
     }
 
+    pub fn get_from_end(&self, index: usize) -> Option<&T> {
+        let unindex = self.size + self.last - index;
+        self.buffer[unindex % self.size].as_ref()
+    }
+
     pub fn last(&self) -> Option<&T> {
         self.buffer[self.last].as_ref()
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
     }
 }
 
