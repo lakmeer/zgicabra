@@ -57,7 +57,9 @@ fn main() {
 
     hydra::start(&mut hydra_state);
 
-    history.push(zgicabra.clone()); // Fill first frame
+    sleep(Duration::from_millis(1000));
+
+    history.push(zgicabra.clone()); // Fill first frame to allow initial derivatives
 
     print!("{}", termion::clear::All);
 

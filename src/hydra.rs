@@ -46,11 +46,9 @@ pub fn start (state: &mut HydraState) {
     println!("✅");
 
     print!("Hydra::start - awaiting first frame...");
-    let mut i = 0;
-    while state.temp_frame.sequence_number == 0 && i < 1000 {
+    while state.temp_frame.which_hand == 0 {
         read_frame(0, &mut state.temp_frame);
         sleep(Duration::from_millis(10));
-        i += 1;
     }
     println!("✅");
 }

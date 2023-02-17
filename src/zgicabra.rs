@@ -24,15 +24,34 @@ pub enum Hand {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Direction {
+    None,
     Left,
     UpLeft,
-    None,
     Up,
     UpRight,
     Right,
     DownRight,
     Down,
     DownLeft,
+}
+
+impl PartialEq for Direction {
+
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Direction::None,      Direction::None)      => true,
+            (Direction::Left,      Direction::Left)      => true,
+            (Direction::UpLeft,    Direction::UpLeft)    => true,
+            (Direction::Up,        Direction::Up)        => true,
+            (Direction::UpRight,   Direction::UpRight)   => true,
+            (Direction::Right,     Direction::Right)     => true,
+            (Direction::DownRight, Direction::DownRight) => true,
+            (Direction::Down,      Direction::Down)      => true,
+            (Direction::DownLeft,  Direction::DownLeft)  => true,
+            _ => false,
+        }
+    }
+
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -151,7 +170,8 @@ pub fn update (latest_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: 
     copy_frame_to_wand(&left_frame,  &mut latest_state.left,  &prev_state.left);
     copy_frame_to_wand(&right_frame, &mut latest_state.right, &prev_state.right);
 
-    latest_state.separation = latest_state.left.pos[0] - latest_state.right.pos[0];
+    latest_state.separation = (latest_state.left.pos[0] - latest_state.right.pos[0]).abs();
+    latest_state.pitchbend  = (left_frame.rot_mat[0][0] - right_frame.rot_mat[0][0]) as i16;
 
 
     // Time derivatives
