@@ -1,6 +1,18 @@
 
 use libc::{c_float, c_int, c_uint, c_uchar, c_ushort};
 
+pub const LEFT_HAND:  c_uchar = 1;
+pub const RIGHT_HAND: c_uchar = 2;
+
+pub const BUTTON_JOYCLICK : c_uint = 0b100000000;
+pub const BUTTON_BUMPER   : c_uint = 0b010000000;
+pub const BUTTON_HOME     : c_uint = 0b000000001;
+pub const BUTTON_1        : c_uint = 0b000100000;
+pub const BUTTON_2        : c_uint = 0b001000000;
+pub const BUTTON_3        : c_uint = 0b000001000;
+pub const BUTTON_4        : c_uint = 0b000010000;
+
+
 #[link(name="sixense_x64")]
 extern {
     pub fn sixenseInit();

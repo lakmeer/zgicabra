@@ -46,10 +46,8 @@ fn main() {
 
     println!("✅");
 
-
     let mut hydra_state = HydraState::new();
     let mut zgicabra    = Zgicabra::new();
-
     let mut history: History<Zgicabra> = History::new(HISTORY_WINDOW);
 
 
@@ -77,10 +75,13 @@ fn main() {
         }
     }
 
+    hydra::stop(&mut hydra_state);
+
     print!("Closing connection... ");
+
     connection.close();
+
     println!("ok");
 
-    hydra::stop(&mut hydra_state);
 }
 

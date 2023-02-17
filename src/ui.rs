@@ -9,7 +9,7 @@ use textplots::{Plot,ColorPlot,Chart,Shape};
 
 use crate::sixense::ControllerFrame;
 use crate::hydra::HydraState;
-use crate::zgicabra::{Zgicabra,Wand};
+use crate::zgicabra::{Zgicabra,Wand,Direction};
 use crate::history::History;
 
 use crate::HISTORY_WINDOW;
@@ -37,17 +37,13 @@ pub fn header () {
 }
 
 pub fn draw_all (zgicabra: &Zgicabra, history: &History<Zgicabra>) -> Result<(), Error> {
-
     print!("{}{}",      termion::cursor::Goto(1,1), BANNER_TEXT);
-    //print!("{}| MIDI Port: '{}'", termion::cursor::Goto(1,3), port_name);
     print!("{}L> {}",   termion::cursor::Goto(1,3), format_wand(&zgicabra.left));
     print!("{}R> {}",   termion::cursor::Goto(1,4), format_wand(&zgicabra.right));
     print!("{}{}",      termion::cursor::Goto(1,6), zgicabra.separation);
     print!("{}",        termion::cursor::Goto(1,8));
 
-    draw_test_graph(history);
-
-    //screen.flush()?;
+    draw_graph(history);
 
     Ok(())
 }
@@ -61,16 +57,30 @@ pub fn draw_all (zgicabra: &Zgicabra, history: &History<Zgicabra>) -> Result<(),
 pub fn minigauge (x: f32) -> String {
     let y = (x * 8.0) as u8;
     match y {
-        0 => " ".to_string(),
-        1 => "▁".to_string(),
-        2 => "▂".to_string(),
-        3 => "▃".to_string(),
-        4 => "▄".to_string(),
-        5 => "▅".to_string(),
-        6 => "▆".to_string(),
-        7 => "▇".to_string(),
-        8 => "█".to_string(),
-        _ => "X".to_string()
+        0 => "▕ ▏".to_string(),
+        1 => "▕▁▏".to_string(),
+        2 => "▕▂▏".to_string(),
+        3 => "▕▃▏".to_string(),
+        4 => "▕▄▏".to_string(),
+        5 => "▕▅▏".to_string(),
+        6 => "▕▆▏".to_string(),
+        7 => "▕▇▏".to_string(),
+        8 => "▕█▏".to_string(),
+        _ => "▕×▏".to_string()
+    }
+}
+
+pub fn minidir (d: Direction) -> String {
+    match d {
+        Direction::None      => "(·)".to_string(),
+        Direction::Up        => "(↑)".to_string(),
+        Direction::UpRight   => "(↗)".to_string(),
+        Direction::Right     => "(→)".to_string(),
+        Direction::DownRight => "(↘)".to_string(),
+        Direction::Down      => "(↓)".to_string(),
+        Direction::DownLeft  => "(↙)".to_string(),
+        Direction::Left      => "(←)".to_string(),
+        Direction::UpLeft    => "(↖)".to_string(),
     }
 }
 
@@ -120,21 +130,30 @@ pub fn format_frame (maybe_frame: Option<&ControllerFrame>) -> String {
 }
 
 pub fn format_wand (wand: &Wand) -> String {
-    format!("{} {} {}",
-            minibar(wand.trigger, 16),
-            minibar(wand.scalar_vel, 16),
-            wand.pos[0],
+    format!("{}{}]{}[ -{}-{}{}{}{}-",
+            if wand.stick.clicked { "(×)".to_string() } else { minidir(wand.stick.octant) },
+            minigauge(wand.trigger),
+            if wand.bumper     { "█" } else { "░" },
+            if wand.home       { "H" } else { "░" },
+            if wand.buttons[0] { "1" } else { "░" },
+            if wand.buttons[1] { "2" } else { "░" },
+            if wand.buttons[2] { "3" } else { "░" },
+            if wand.buttons[3] { "4" } else { "░" },
             )
 }
 
 
-const RED:RGB8    = RGB8 { r: 255, g: 120, b: 100 };
-const GREEN:RGB8  = RGB8 { r: 100, g: 255, b: 120 };
-const BLUE:RGB8   = RGB8 { r: 100, g: 120, b: 255 };
-const LGREEN:RGB8 = RGB8 { r: 180, g: 255, b: 200 };
-const LBLUE:RGB8  = RGB8 { r: 180, g: 200, b: 255 };
+const BLUE_0:RGB8  = RGB8 { r: 120, g: 150, b: 255 };
+const BLUE_1:RGB8  = RGB8 { r: 150, g: 200, b: 255 };
+const BLUE_2:RGB8  = RGB8 { r:  60, g:  80, b: 155 };
+const BLUE_3:RGB8  = RGB8 { r: 180, g: 180, b: 180 };
 
-pub fn draw_test_graph (history: &History<Zgicabra>) {
+const GREEN_0:RGB8 = RGB8 { r: 120, g: 255, b: 150 };
+const GREEN_1:RGB8 = RGB8 { r: 150, g: 255, b: 200 };
+const GREEN_2:RGB8 = RGB8 { r:  60, g: 155, b: 80 };
+const GREEN_3:RGB8 = RGB8 { r: 180, g: 180, b: 180 };
+
+pub fn draw_graph (history: &History<Zgicabra>) {
 
     let n = history.len();
 
@@ -142,24 +161,36 @@ pub fn draw_test_graph (history: &History<Zgicabra>) {
     let mut right_pos : [ (f32, f32); HISTORY_WINDOW ] = [ (0.0, 0.0); HISTORY_WINDOW ];
     let mut left_vel  : [ (f32, f32); HISTORY_WINDOW ] = [ (0.0, 0.0); HISTORY_WINDOW ];
     let mut right_vel : [ (f32, f32); HISTORY_WINDOW ] = [ (0.0, 0.0); HISTORY_WINDOW ];
+    let mut left_acc  : [ (f32, f32); HISTORY_WINDOW ] = [ (0.0, 0.0); HISTORY_WINDOW ];
+    let mut right_acc : [ (f32, f32); HISTORY_WINDOW ] = [ (0.0, 0.0); HISTORY_WINDOW ];
+    let mut left_jerk : [ (f32, f32); HISTORY_WINDOW ] = [ (0.0, 0.0); HISTORY_WINDOW ];
+    let mut right_jerk: [ (f32, f32); HISTORY_WINDOW ] = [ (0.0, 0.0); HISTORY_WINDOW ];
 
     for i in 0..n {
         match history.get(i) {
             None => { },
             Some(frame) => {
-                left_pos[i]  = (i as f32, frame.left.pos[0]);
-                right_pos[i] = (i as f32, frame.right.pos[0]);
-                left_vel[i]  = (i as f32, frame.left.scalar_vel * 200.0);
-                right_vel[i] = (i as f32, frame.right.scalar_vel * 200.0);
+                left_pos[i]   = (i as f32, frame.left.pos[0]);
+                right_pos[i]  = (i as f32, frame.right.pos[0]);
+                left_vel[i]   = (i as f32, frame.left.scalar_vel   *  -100.0);
+                right_vel[i]  = (i as f32, frame.right.scalar_vel  *   100.0);
+                left_acc[i]   = (i as f32, frame.left.scalar_acc   *  -800.0);
+                right_acc[i]  = (i as f32, frame.right.scalar_acc  *   800.0);
+                left_jerk[i]  = (i as f32, frame.left.scalar_jerk  * -60000.0);
+                right_jerk[i] = (i as f32, frame.right.scalar_jerk *  60000.0);
             }
         }
     }
 
     Chart::new_with_y_range(140, 140, 0.0, n as f32, -500.0, 500.0)
-        .linecolorplot(&Shape::Lines(&left_pos), GREEN)
-        .linecolorplot(&Shape::Lines(&right_pos), BLUE)
-        .linecolorplot(&Shape::Lines(&left_vel), LGREEN)
-        .linecolorplot(&Shape::Lines(&right_vel), LBLUE)
-        .display();
+        .linecolorplot(&Shape::Lines(&left_jerk), GREEN_3)
+        .linecolorplot(&Shape::Lines(&left_acc),  GREEN_2)
+        .linecolorplot(&Shape::Lines(&left_vel),  GREEN_1)
+        .linecolorplot(&Shape::Lines(&left_pos),  GREEN_0)
+        .linecolorplot(&Shape::Lines(&right_jerk), BLUE_3)
+        .linecolorplot(&Shape::Lines(&right_acc),  BLUE_2)
+        .linecolorplot(&Shape::Lines(&right_vel),  BLUE_0)
+        .linecolorplot(&Shape::Lines(&right_pos),  BLUE_1)
+        .nice();
 }
 
