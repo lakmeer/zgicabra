@@ -36,7 +36,6 @@ pub enum Direction {
 }
 
 impl PartialEq for Direction {
-
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Direction::None,      Direction::None)      => true,
@@ -51,7 +50,6 @@ impl PartialEq for Direction {
             _ => false,
         }
     }
-
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -135,7 +133,7 @@ pub struct Zgicabra {
     pub right: Wand,
     pub separation: f32,
     pub root_note: u8,
-    pub pitchbend: i16,
+    pub pitchbend: f32,
     pub filter: ControlSignal,
 }
 
@@ -146,7 +144,7 @@ impl Zgicabra {
             right: Wand::new(),
             separation: 0.0,
             root_note: 65,
-            pitchbend: 0,
+            pitchbend: 0.0,
             filter: ControlSignal { value: 0.0, channel: 25 },
         }
     }
@@ -171,8 +169,8 @@ pub fn update (latest_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: 
     copy_frame_to_wand(&right_frame, &mut latest_state.right, &prev_state.right);
 
     latest_state.separation = (latest_state.left.pos[0] - latest_state.right.pos[0]).abs();
-    latest_state.pitchbend  = (left_frame.rot_mat[0][0] - right_frame.rot_mat[0][0]) as i16;
-
+    latest_state.pitchbend  = left_frame.rot_quat[2] - right_frame.rot_quat[2];
+    latest_state.pitchbend  = latest_state.pitchbend.powf(3.0).clamp(-2.0, 2.0) * 0.5;
 
     // Time derivatives
 
@@ -215,7 +213,6 @@ fn copy_frame_to_wand (frame: &ControllerFrame, wand: &mut Wand, prev_wand: &Wan
     wand.bumper = button_mask(frame.buttons, sixense::BUTTON_BUMPER);
     wand.home   = button_mask(frame.buttons, sixense::BUTTON_HOME);
 
-    // Tag this wand which hand it is
     wand.hand = match frame.which_hand {
         sixense::LEFT_HAND  => Hand::Left,
         sixense::RIGHT_HAND => Hand::Right,
@@ -238,7 +235,6 @@ fn copy_frame_to_wand (frame: &ControllerFrame, wand: &mut Wand, prev_wand: &Wan
             wand.buttons[3] = button_mask(frame.buttons, sixense::BUTTON_4);
         },
     }
-
 
     copy_joystick_to_wand(frame, wand);
 }
@@ -282,7 +278,6 @@ fn joystick_octant (stick: &Joystick) -> Direction {
         _ => Direction::None,
     }
 }
-
 
 fn derivative_r3 (a: &[f32;3], b: &[f32;3], delta: f32) -> [f32;3] {
     [ (a[0] - b[0]) / delta, (a[1] - b[1]) / delta, (a[2] - b[2]) / delta ]

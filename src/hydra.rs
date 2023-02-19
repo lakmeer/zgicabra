@@ -62,11 +62,11 @@ pub fn stop (state: &mut HydraState) {
 
 pub fn update (state: &mut HydraState) {
 
-    unsafe { sixense::sixenseGetNewestData(0, &mut state.temp_frame); }
+    read_frame(0, &mut state.temp_frame);
     let hand = (state.temp_frame.which_hand - 1) as usize;
     state.controllers[hand] = state.temp_frame;
 
-    unsafe { sixense::sixenseGetNewestData(1, &mut state.temp_frame); }
+    read_frame(1, &mut state.temp_frame);
     let hand = (state.temp_frame.which_hand - 1) as usize;
     state.controllers[hand] = state.temp_frame;
 

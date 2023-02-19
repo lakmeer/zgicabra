@@ -6,9 +6,11 @@ authors = [ "lakmeer.github.com" ]
 
 [dependencies]
 drawille = "0.3.0"
+lazy_static = "1.4.0"
 libc = "0.2.139"
 midir = "0.9.1"
 rand = "0.8.5"
+rand_distr = "0.4.3"
 rgb = "0.8.35"
 termion = "2.0.1"
 textplots = "0.8.0"

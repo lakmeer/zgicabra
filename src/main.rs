@@ -30,7 +30,8 @@ const MIDI_DEVICE_NAME: &str = "Zgicabra";
 
 fn main() {
 
-    ui::header();
+    print!("{}{}{}", termion::clear::All, termion::cursor::Hide, termion::cursor::Goto(1,1));
+    println!("█║▌▌║│▌█║▌▌║║║▌║║▌▌│▌█│║▌▌│║█▌║║║▌│ zgicabra ▌▌▌│║▌║║▌█║▌║▌║█║▌║│▌█║║▌▌║║║▌║║█▌│\n");
 
 
     //

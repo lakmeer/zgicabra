@@ -1,16 +1,22 @@
 
 use std::io::{Write, Error};
+use std::time::Instant;
 use std::f32::consts::PI;
 
 use termion;
-use textplots;
-use drawille;
-use rand::prelude::*;
-
-use textplots::{Plot,ColorPlot,Chart,Shape};
 use rgb::RGB8;
 
-use crate::sixense::ControllerFrame;
+use textplots;
+use textplots::{ColorPlot,Chart,Shape};
+
+use drawille::{Canvas,PixelColor};
+use drawille::PixelColor::TrueColor;
+
+use rand::prelude::*;
+use rand_distr::StandardNormal;
+
+use lazy_static::lazy_static;
+
 use crate::hydra::HydraState;
 use crate::zgicabra::{Zgicabra,Wand,Hand,Direction,Joystick};
 use crate::history::History;
@@ -21,8 +27,10 @@ use crate::HISTORY_WINDOW;
 type Screen = termion::screen::AlternateScreen<std::io::Stdout>;
 
 
-const BARCODE: &str    = " ▌▌▌│║▌║║▌█║▌║▌║█║▌║│▌█║║▌▌║║║▌║║█▌│";
-const BANNER_TEXT:&str = "█║▌▌║│▌█║▌▌║║║▌║║▌▌│▌█│║▌▌│║█▌║║║▌│ zgicabra ▌▌▌│║▌║║▌█║▌║▌║█║▌║│▌█║║▌▌║║║▌║║█▌│";
+lazy_static! {
+    static ref START_TIME: Instant = Instant::now();
+}
+
 
 const BLUE_0:RGB8  = RGB8 { r: 120, g: 150, b: 255 };
 const BLUE_1:RGB8  = RGB8 { r: 150, g: 200, b: 255 };
@@ -35,248 +43,169 @@ const GREEN_2:RGB8 = RGB8 { r:  60, g: 155, b: 80 };
 const GREEN_3:RGB8 = RGB8 { r: 180, g: 180, b: 180 };
 
 
-
 //
 // Main Drawing Functions
 //
 
-pub fn header () {
-    print!("{}{}{}{}{}",
-           termion::clear::All,
-           termion::cursor::Hide,
-           termion::cursor::Goto(1,1),
-           BANNER_TEXT,
-           termion::cursor::Goto(1,3)
-    );
-}
-
 pub fn draw_all (zgicabra: &Zgicabra, history: &History<Zgicabra>) -> Result<(), Error> {
-    print!("{}",        termion::color::Fg(termion::color::White));
-    print!("{}{}",      termion::cursor::Goto(1,1), BANNER_TEXT);
-    print!("{}L> {}",   termion::cursor::Goto(1,3), format_wand(&zgicabra.left));
-    print!("{}R> {}",   termion::cursor::Goto(1,4), format_wand(&zgicabra.right));
-    print!("{}{}",      termion::cursor::Goto(1,6), zgicabra.separation);
-    //print!("{}",        termion::cursor::Goto(1,8));
-    print!("{}{}",      termion::cursor::Goto(6,36), separation_bar(zgicabra.separation/1000.0, 70));
 
-    draw_wand(zgicabra.left,  5,  9);
-    draw_wand(zgicabra.right, 45, 9);
-    draw_bend(zgicabra.pitchbend, 5, 37);
+    // Text dimensions
+    const TEXT_WIDTH  : u16 = 80;
+    const TEXT_HEIGHT : u16 = TEXT_WIDTH / 2;
 
+    // Pixel dimensions
+    const CANVAS_WIDTH  : u16 = TEXT_WIDTH * 2;
+    const CANVAS_HEIGHT : u16 = TEXT_HEIGHT * 4;
+
+    // Vector dimensions
+    const WIDTH  : f32 = CANVAS_WIDTH  as f32;
+    const HEIGHT : f32 = CANVAS_HEIGHT as f32;
+
+
+    // Canvas
+    let mut canvas = Canvas::new(CANVAS_WIDTH as u32, CANVAS_HEIGHT as u32);
+
+    draw_banner(TEXT_WIDTH, 1);
+
+    draw_wand(&mut canvas, zgicabra.left,  WIDTH*1.0/4.0, HEIGHT/4.0, WIDTH/6.0, sin(0.0)); //zgicabra.left.rot[0]);
+    draw_wand(&mut canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/4.0, WIDTH/6.0, 0.0); //zgicabra.right.rot[1]);
+
+    // Output canvas
+    print!("{}{}", termion::cursor::Goto(1,2), &mut canvas.frame());
+
+    println!("{}", barcode_string(TEXT_WIDTH.into()));
+
+    draw_bend(zgicabra.pitchbend, zgicabra.separation, 41, 47, 70, 20);
+
+    // flush
 
     //draw_graph(history);
 
     Ok(())
 }
 
-fn rand_barcode_char_as_str () -> char {
-    BARCODE.chars().choose(&mut rand::thread_rng()).unwrap()
-}
 
-fn separation_bar (sep: f32, len: i16) -> String {
-    let mut bar   = String::new();
-    let mut space = String::new();
+//
+// Sub-drawing Functions
+//
 
-    let sep = sep * len as f32;
-    let barlen = (sep).round() as i16;
-    println!("\nx {} - {}    ", sep, barlen);
+fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, oct_rad: f32, angle: f32) {
 
-    for i in 0..barlen {
-        bar.push(rand_barcode_char_as_str());
-    }
-
-    for i in 0..(len - barlen)/2 {
-        space.push(' ');
-    }
-
-    space.clone() + &bar + &space
-}
-
-fn drawille_circle (canvas: &mut drawille::Canvas, x: f32, y: f32, r: f32, color: drawille::PixelColor) {
-    for i in 0..90 {
-        let theta = i as f32 * PI / 45.0;
-        let x = x + r * theta.cos();
-        let y = y + r * theta.sin();
-        canvas.set_colored(x as u32, y as u32, color);
-    }
-}
-
-fn drawille_octants (canvas: &mut drawille::Canvas, x: f32, y: f32, r: f32, color: drawille::PixelColor, octant: Direction) {
-    let sides = 8.0;
-    let inc = 2.0 * PI / sides;
-    for i in 0..sides as i32 {
-        let theta = (i as f32 + 0.5) * inc;
-        let x1 = 30.0 + 10.0 * theta.cos();
-        let y1 = 30.0 - 10.0 * theta.sin();
-        let x2 = 30.0 + 10.0 * (theta + inc).cos();
-        let y2 = 30.0 - 10.0 * (theta + inc).sin();
-        canvas.line_colored(x1 as u32, y1 as u32, x2 as u32, y2 as u32, color);
-        canvas.line_colored(x1 as u32, y1 as u32, x as u32, y as u32, color);
-
-        match octant {
-            Direction::Up        => canvas.line_colored(x1 as u32, y1 as u32, x1 as u32,  0, color),
-            Direction::Down      => canvas.line_colored(x1 as u32, y1 as u32, x1 as u32, 10, color),
-            Direction::Left      => canvas.line_colored(x1 as u32, y1 as u32,  0, y1 as u32, color),
-            Direction::Right     => canvas.line_colored(x1 as u32, y1 as u32, 10, y1 as u32, color),
-            Direction::UpRight   => canvas.line_colored(x1 as u32, y1 as u32, 10,  0, color),
-            Direction::UpLeft    => canvas.line_colored(x1 as u32, y1 as u32,  0,  0, color),
-            Direction::DownRight => canvas.line_colored(x1 as u32, y1 as u32, 10, 10, color),
-            Direction::DownLeft  => canvas.line_colored(x1 as u32, y1 as u32,  0, 10, color),
-
-            _ => {}
-        };
-    }
-}
-
-fn draw_bend (bend: i16, x: u16, y: u16) {
-    const WIDTH  : u32 = 141;
-    const HEIGHT : u32 = 46;
-
-    let mut canvas = drawille::Canvas::new(WIDTH, HEIGHT);
-
-    canvas.line_colored(1, 3, WIDTH - 1, 3, drawille::PixelColor::White);
-    canvas.line_colored(1, 3, 1, HEIGHT - 1, drawille::PixelColor::White);
-    canvas.line_colored(1, HEIGHT - 1, WIDTH - 1, HEIGHT - 1, drawille::PixelColor::White);
-    canvas.line_colored(WIDTH - 1, 3, WIDTH - 1, HEIGHT - 1, drawille::PixelColor::White);
-
-    canvas.text(1, 1, 20, &format!("{}", bend));
-
-    drawille_paste(&mut canvas.rows(), x+1, y+1);
-}
-
-
-fn draw_wand (wand: Wand, x: u16, y: u16) {
-    const WIDTH  : f32 = 58.0;
-    const HEIGHT : f32 = 95.0;
-
-    let mut turtle = drawille::Turtle::new(0.0, 0.0);
-
-    let my_color = match wand.hand {
-        Hand::Left => drawille::PixelColor::Blue,
-        Hand::Right => drawille::PixelColor::Green,
-        Hand::Unknown => drawille::PixelColor::Red
-    };
-
-    let my_bright = match wand.hand {
-        Hand::Left => drawille::PixelColor::BrightBlue,
-        Hand::Right => drawille::PixelColor::BrightGreen,
-        Hand::Unknown => drawille::PixelColor::BrightRed
+    let color = rgb_f32(nsin(0.0), nsin(0.25), nsin(0.5));
+    let facing = angle - PI/2.0;
+    let stick_facing = match wand.stick.octant {
+        Direction::None => facing,
+        _ => facing - PI*3.0/4.0 + PI/4.0 * wand.stick.octant as i32 as f32
     };
 
 
+    // Joystick Octants Outline
 
-    //
-    // Canvas outputs
-    //
+    for i in 0..8 {
+        let a = facing + (i as f32/4.0) * PI + 0.125 * PI;
+        line(canvas, x, y, x + oct_rad * a.cos(), y + oct_rad * a.sin(), color);
+    }
+    
+
+    // Joystick Selected Octant
+
+    if wand.stick.octant != Direction::None {
+        line(canvas,
+             x + 1.2 * oct_rad * (stick_facing - PI/8.0).cos(),
+             y + 1.2 * oct_rad * (stick_facing - PI/8.0).sin(),
+             x + 1.2 * oct_rad * (stick_facing + PI/8.0).cos(), 
+             y + 1.2 * oct_rad * (stick_facing + PI/8.0).sin(),
+             color);
+    }
+
+
+    // Trigger
+
+    for i in 0..64 {
+        let a = facing - (i as f32 / 64.0) * PI * 3.0/4.0 - PI*5.0/8.0;
+
+        let px = x + oct_rad * 1.1 * a.cos();
+        let py = y + oct_rad * 1.1 * a.sin();
+
+        let h = 8.0 * rand_uniform(wand.trigger);
+        let white = 0.25 + rand_uniform(0.75);
+        let color = rgb_f32(white, white, white);
+        line(canvas, px, py, px + h * a.cos(), py + h * a.sin(), color);
+
+        /*
+        let len = oct_rad * (0.83 + 0.15 * rand::thread_rng().sample::<f32,_>(StandardNormal));
+        let a = facing + rand_uniform(0.85) - PI/8.0 + PI/4.0 * wand.stick.octant as i32 as f32;
+        line(canvas, x, y, x + len * a.cos(), y + len * a.sin(), PixelColor::White);
+        */
+    }
+
+}
+
+fn draw_banner (width: u16, y: u16) {
+    let banner_text = " zgicabra ";
+    let stripe_length = (width - banner_text.len() as u16) / 2;
+
+    print!("{}{}{}{}", termion::cursor::Goto(1,y),
+        barcode_string(stripe_length.into()),
+        banner_text,
+        barcode_string(stripe_length.into()));
+}
+
+
+fn draw_bend (bend: f32, sep: f32, center_x: u32, y: u32, max_width: u32, max_height: u32) {
+    let width  = max_width * 2;
+    let height = max_height * 4;
+
+    let mut canvas = drawille::Canvas::new(width + 1, height + 4);
+
+    let w = width  as f32;
+    let h = height as f32;
+
+    let left  = w/2.0 - w * sep/2000.0;
+    let right = w -left;
 
     // Border
+    /*
+    canvas.line(0, 0, w as u32, 0);
+    canvas.line(0, 0, 0, h as u32);
+    canvas.line(w as u32, 0, w as u32, h as u32);
+    canvas.line(0, h as u32, w as u32, h as u32);
+    */
 
-    turtle.up();
-    turtle.teleport(1.0, 1.0);
-    turtle.down();
+    let a = bend * PI/2.0;
+    let b = h * (sep/2000.0).clamp(-1.0, 1.0);
 
-    for i in 0..2 {
-        turtle.forward(WIDTH);
-        turtle.right(90.0);
-        turtle.forward(HEIGHT);
-        turtle.right(90.0);
+    let p1 = (left,  h/2.0);
+    let p2 = (left  + b * a.cos(), h/2.0 - b * a.sin());
+    let p3 = (right - b * a.cos(), h/2.0 - b * a.sin());
+    let p4 = (right, h/2.0);
+
+    let m = 1 + (sep/200.0) as u32;
+
+    for x in 0..200 {
+        let t = x as f32/200.0;
+        let q1 = lerp_tuple(lerp_tuple(p1, p2, t), lerp_tuple(p2, p3, t), t);
+        let q2 = lerp_tuple(lerp_tuple(p2, p3, t), lerp_tuple(p3, p4, t), t);
+        let (x, y) = lerp_tuple(q1, q2, t);
+
+        for n in 0..m {
+            let j = 3.0 * (rand::thread_rng().sample::<f32,_>(StandardNormal)) * bend * (t * PI).sin();
+            let c = match j.abs() {
+                j if j > 2.6 => drawille::PixelColor::Blue,
+                j if j > 1.7 => drawille::PixelColor::Cyan,
+                j if j > 2.2 => drawille::PixelColor::BrightBlue,
+                j if j > 1.2 => drawille::PixelColor::BrightCyan,
+                _ => drawille::PixelColor::White,
+            };
+            let dy = y + j - m as f32 / 2.0 + n as f32;
+
+            canvas.set_colored(0 + x as u32, 3 - 1 + dy as u32, c);
+        }
     }
 
-
-    // Bumper Beam
-
-    turtle.up();
-    turtle.teleport(7.0, 9.0);
-    turtle.color(my_color);
-    turtle.left(90.0);
-    turtle.down();
-
-    draw_trigger(&mut turtle, 45.0, 5.0, my_color, wand.bumper as i8 as f32);
-
-
-    // Trigger Beam
-
-    turtle.up();
-    turtle.teleport(7.0, 19.0);
-
-    draw_trigger(&mut turtle, 45.0, 9.0, my_color, wand.trigger);
-
-
-    // Joystick Octants
-
-    draw_octants(&mut turtle, 29.5, 54.0, 19.0, my_color, wand.stick.octant);
-
-
-    // Buttons
-
-    let button_y = 92.0;
-
-    match wand.hand {
-        Hand::Left => {
-            drawille_button(&mut turtle,  8.0, button_y, wand.buttons[3], 45.0, my_color);
-            drawille_button(&mut turtle, 20.0, button_y, wand.buttons[1],  0.0, my_color);
-            drawille_button(&mut turtle, 32.0, button_y, wand.buttons[0],  0.0, my_color);
-            drawille_button(&mut turtle, 44.0, button_y, wand.buttons[2],-45.0, my_color);
-        },
-        Hand::Right => {
-            drawille_button(&mut turtle,  8.0, button_y, wand.buttons[2], 45.0, my_color);
-            drawille_button(&mut turtle, 20.0, button_y, wand.buttons[0],  0.0, my_color);
-            drawille_button(&mut turtle, 32.0, button_y, wand.buttons[1],  0.0, my_color);
-            drawille_button(&mut turtle, 44.0, button_y, wand.buttons[3],-45.0, my_color);
-        },
-        _ => {}
-    }
-
-    turtle.up();
-    turtle.teleport(18.0, 62.0);
-    turtle.right(180.0);
-    turtle.color(drawille::PixelColor::White);
-    turtle.down();
-
-
-    // Print without disrupting existing output
-    drawille_paste(&mut turtle.cvs.rows(), x+1, y+1);
-    print!("{}", termion::color::Fg(termion::color::White));
-
+    let (px, py) = (center_x as u16 - max_width as u16 / 2, y as u16);
+    drawille_paste(&mut canvas.rows(), px, py);
 }
-
-fn draw_trigger (turtle: &mut drawille::Turtle, w: f32, h: f32, my_color: drawille::PixelColor, z: f32) {
-
-    turtle.up();
-    turtle.color(my_color);
-    turtle.back(h/2.0);
-    turtle.down();
-
-    for i in 0..2 {
-        turtle.forward(h);
-        turtle.right(90.0);
-        turtle.forward(w);
-        turtle.right(90.0);
-    }
-
-    if z > 0.0 {
-        turtle.up();
-        turtle.right(90.0);
-        turtle.forward(1.0);
-        turtle.left(90.0);
-        turtle.forward(h/2.0);
-        turtle.down();
-
-        turtle.color(drawille::PixelColor::White);
-
-        let h = (h - 1.0) * z as f32;
-
-        turtle.up();
-        turtle.back(h/2.1);
-        turtle.down();
-
-        scribble(turtle, w - 1.0, h - 1.0, true);
-
-        turtle.forward(h);
-        turtle.color(my_color);
-    }
-}
-
 
 fn scribble (turtle: &mut drawille::Turtle, w: f32, h: f32, z: bool) {
     for i in 0..(w/2.0).round() as u16 {
@@ -296,90 +225,10 @@ fn scribble (turtle: &mut drawille::Turtle, w: f32, h: f32, z: bool) {
     }
 }
 
-fn draw_octants(turtle: &mut drawille::Turtle, x: f32, y: f32, oct_edge: f32, my_color: drawille::PixelColor, octant: Direction) {
 
-    let oct_rad = oct_edge * 1.30656; // oct_edge * 0.5 / (PI / 8.0).sin();
-
-    turtle.up();
-    turtle.teleport(x, y);
-    turtle.left(22.5);
-    turtle.color(my_color);
-    turtle.down();
-
-    for i in 0..8 {
-        turtle.forward(oct_rad);
-        turtle.right(22.5 + 90.0);
-        turtle.forward(oct_edge);                                                      
-        turtle.right(22.5 + 90.0);
-        turtle.up();
-        turtle.forward(oct_rad);
-        turtle.down();
-        turtle.right(180.0);
-    }
-
-
-    // Joystick Octants: Selected Octant
-
-    turtle.color(drawille::PixelColor::White);
-    let facing = 225.0 + 45.0 * octant as i32 as f32;
-
-    if octant != Direction::None {
-        turtle.right(facing);
-
-        for i in 0..40 {
-            if rand::random::<f32>() < 0.2 { turtle.down(); } else { turtle.up(); }
-            turtle.forward(oct_rad * 0.93);
-            turtle.up();
-            turtle.back(oct_rad * 0.93);
-            turtle.right(45.0/40.0);
-        }
-
-        turtle.left(45.0);
-        turtle.left(facing);
-    }
-
-
-    // Joystick Octants: Border touchup
-
-    turtle.up();
-    turtle.forward(oct_rad);
-    turtle.right(90.0 + 22.5);
-    turtle.color(my_color);
-    turtle.down();
-
-    for i in 0..8 {
-        turtle.forward(oct_edge);
-        turtle.right(45.0);
-    }
-
-    turtle.left(90.0);
-}
-
-
-fn drawille_button (turtle: &mut drawille::Turtle, x: f32, y: f32, pressed: bool, skew: f32, my_color: drawille::PixelColor) {
-    turtle.up();
-    turtle.teleport(x, y);
-    turtle.color(my_color);
-    turtle.down();
-
-    let h = 9.0;
-
-    for i in 0..2 {
-        turtle.forward(h);
-        turtle.right(90.0);
-        turtle.forward(h);
-        turtle.right(90.0);
-    }
-
-    if pressed {
-        turtle.up();
-        turtle.teleport(x + 1.0, y - 1.0);
-        turtle.color(drawille::PixelColor::White);
-        turtle.down();
-
-        scribble(turtle, h-2.0, h-2.0, true);
-    }
-}
+//
+// Lil' Helpers
+//
 
 fn drawille_paste (rows: &mut Vec<String>, x: u16, y: u16) {
     for (ix, row) in rows.iter().enumerate() {
@@ -387,107 +236,72 @@ fn drawille_paste (rows: &mut Vec<String>, x: u16, y: u16) {
     }
 }
 
+fn line (canvas: &mut Canvas, x1: f32, y1: f32, x2: f32, y2: f32, color: PixelColor) {
+    canvas.line_colored(
+        x1.round() as u32,
+        y1.round() as u32,
+        x2.round() as u32,
+        y2.round() as u32,
+        color);
+}
 
-//
-// Other Formatters
-//
+fn rgb (r: u8, g: u8, b: u8) -> PixelColor {
+    TrueColor { r, g, b }
+}
 
-pub fn minigauge (x: f32) -> String {
-    let y = (x * 8.0) as u8;
-    match y {
-        0 => " ".to_string(),
-        1 => "▁".to_string(),
-        2 => "▂".to_string(),
-        3 => "▃".to_string(),
-        4 => "▄".to_string(),
-        5 => "▅".to_string(),
-        6 => "▆".to_string(),
-        7 => "▇".to_string(),
-        8 => "█".to_string(),
-        _ => "×".to_string()
+fn rgb_f32 (r: f32, g: f32, b: f32) -> PixelColor {
+    TrueColor {
+        r: (r * 255.0) as u8,
+        g: (g * 255.0) as u8,
+        b: (b * 255.0) as u8
     }
 }
 
-pub fn minidir (d: Direction) -> String {
-    match d {
-        Direction::None      => "(·)".to_string(),
-        Direction::Up        => "(↑)".to_string(),
-        Direction::UpRight   => "(↗)".to_string(),
-        Direction::Right     => "(→)".to_string(),
-        Direction::DownRight => "(↘)".to_string(),
-        Direction::Down      => "(↓)".to_string(),
-        Direction::DownLeft  => "(↙)".to_string(),
-        Direction::Left      => "(←)".to_string(),
-        Direction::UpLeft    => "(↖)".to_string(),
-    }
+fn rand_barcode_char_as_str () -> char {
+    " │║┃▌▐▕█▊▋▌▍▎▏".chars().choose(&mut rand::thread_rng()).unwrap()
 }
 
-pub fn ministick (stick: Joystick) -> String {
-    if stick.clicked {
-        "(⬤)".to_string()
-    } else {
-        minidir(stick.octant)
-    }
+fn lerp (a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
 }
 
-pub fn minibar (x: f32, n: u8) -> String {
+fn lerp_tuple ((ax, ay): (f32, f32), (bx, by): (f32, f32), t: f32) -> (f32, f32) {
+    (lerp(ax, bx, t), lerp(ay, by, t))
+}
+
+fn barcode_string (len: usize) -> String {
     let mut s = String::new();
-    let mut i = 0;
-    while i < n {
-        if x > (i as f32) / n as f32 {
-            s.push_str("█");
-        } else {
-            s.push_str("░");
-        }
-        i += 1;
+    for _ in 0..len {
+        s.push(rand_barcode_char_as_str());
     }
     s
 }
 
-pub fn minimask (x: u32) -> String {
-    let mut s = String::new();
-    let mut i = 0;
-    while i < 8 {
-        if x & (1 << i) != 0 {
-            s.push_str("•");
-        } else {
-            s.push_str("◦");
-        }
-        i += 1;
-    }
-    s
+fn time_now () -> f32 {
+    START_TIME.elapsed().as_millis() as f32 / 1000.0
 }
 
-pub fn format_frame (maybe_frame: Option<&ControllerFrame>) -> String {
-    match maybe_frame {
-        None => "No Data".to_string(),
-        Some(frame) => {
-            format!("{}/{}:|{}|:{}:[ {: >6.2} {: >6.2} {: >6.2} | {: >5.3} {: >5.2} {: >5.2} {: >5.2} ]", 
-                    minibar(frame.joystick_x, 4),
-                    minibar(frame.joystick_y, 4),
-                    minimask(frame.buttons),
-                    minigauge(frame.trigger),
-                    frame.pos[0], frame.pos[1], frame.pos[2],
-                    frame.rot_quat[0], frame.rot_quat[1],
-                    frame.rot_quat[2], frame.rot_quat[3]
-                   )
-        }
-    }
+fn sin (phase: f32) -> f32 {
+    (time_now() + phase).sin()
 }
 
-pub fn format_wand (wand: &Wand) -> String {
-    format!("{}▕{}▏]{}[ -{}-{}{}{}{}-",
-            ministick(wand.stick),
-            minigauge(wand.trigger),
-            if wand.bumper     { "█" } else { "░" },
-            if wand.home       { "H" } else { "░" },
-            if wand.buttons[0] { "1" } else { "░" },
-            if wand.buttons[1] { "2" } else { "░" },
-            if wand.buttons[2] { "3" } else { "░" },
-            if wand.buttons[3] { "4" } else { "░" },
-            )
+fn nsin (phase: f32) -> f32 {
+    sin(phase) * 0.5 + 0.5
 }
 
+fn rand_normal (n: f32) -> f32 {
+    n * rand::thread_rng().sample::<f32,_>(StandardNormal)
+}
+
+fn rand_uniform (n: f32) -> f32 {
+    n * rand::random::<f32>()
+}
+
+
+
+//
+// Plots
+//
 
 pub fn draw_graph (history: &History<Zgicabra>) {
 
@@ -529,4 +343,5 @@ pub fn draw_graph (history: &History<Zgicabra>) {
         .linecolorplot(&Shape::Lines(&right_pos),  BLUE_1)
         .nice();
 }
+
 
