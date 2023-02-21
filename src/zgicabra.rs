@@ -15,7 +15,7 @@ const JOYSTICK_DEADZONE: f32 = 0.15;
 // Data Types
 //
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Hand {
     Unknown,
     Left,
@@ -84,6 +84,7 @@ pub struct Wand {
     pub vel: [f32; 3],
     pub acc: [f32; 3],
     pub jerk: [f32; 3],
+    pub twist: f32,
     pub scalar_vel: f32,
     pub scalar_acc: f32,
     pub scalar_jerk: f32,
@@ -103,6 +104,7 @@ impl Wand {
             vel: [0.0, 0.0, 0.0],
             acc: [0.0, 0.0, 0.0],
             jerk: [0.0, 0.0, 0.0],
+            twist: 0.0,
             scalar_vel: 0.0,
             scalar_acc: 0.0,
             scalar_jerk: 0.0,
@@ -135,6 +137,7 @@ pub struct Zgicabra {
     pub root_note: u8,
     pub pitchbend: f32,
     pub filter: ControlSignal,
+    pub docked: bool,
 }
 
 impl Zgicabra {
@@ -146,6 +149,7 @@ impl Zgicabra {
             root_note: 65,
             pitchbend: 0.0,
             filter: ControlSignal { value: 0.0, channel: 25 },
+            docked: false,
         }
     }
 }
@@ -169,8 +173,9 @@ pub fn update (latest_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: 
     copy_frame_to_wand(&right_frame, &mut latest_state.right, &prev_state.right);
 
     latest_state.separation = (latest_state.left.pos[0] - latest_state.right.pos[0]).abs();
-    latest_state.pitchbend  = left_frame.rot_quat[2] - right_frame.rot_quat[2];
+    latest_state.pitchbend  = latest_state.left.twist - latest_state.right.twist;
     latest_state.pitchbend  = latest_state.pitchbend.powf(3.0).clamp(-2.0, 2.0) * 0.5;
+
 
     // Time derivatives
 
@@ -192,6 +197,11 @@ pub fn update (latest_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: 
     latest_state.right.scalar_jerk = (hyp(&latest_state.right.jerk) + &prev_state.right.scalar_jerk)/2.0;
 
 
+    // Singleton states
+
+    latest_state.docked = left_frame.is_docked != 0 || right_frame.is_docked != 0;
+
+
     Ok(())
 }
 
@@ -204,6 +214,7 @@ fn copy_frame_to_wand (frame: &ControllerFrame, wand: &mut Wand, prev_wand: &Wan
     wand.pos = frame.pos.clone();
     wand.rot = frame.rot_quat.clone();
 
+    wand.twist   = frame.rot_quat[2] * 2.0;
     wand.trigger = frame.trigger;
 
     wand.pos[0] = (wand.pos[0] + prev_wand.pos[0])/2.0;
@@ -223,15 +234,15 @@ fn copy_frame_to_wand (frame: &ControllerFrame, wand: &mut Wand, prev_wand: &Wan
     match wand.hand {
         Hand::Unknown => {},
         Hand::Left => {
-            wand.buttons[0] = button_mask(frame.buttons, sixense::BUTTON_2);
-            wand.buttons[1] = button_mask(frame.buttons, sixense::BUTTON_1);
-            wand.buttons[2] = button_mask(frame.buttons, sixense::BUTTON_4);
+            wand.buttons[0] = button_mask(frame.buttons, sixense::BUTTON_4);
+            wand.buttons[1] = button_mask(frame.buttons, sixense::BUTTON_2);
+            wand.buttons[2] = button_mask(frame.buttons, sixense::BUTTON_1);
             wand.buttons[3] = button_mask(frame.buttons, sixense::BUTTON_3);
         },
         Hand::Right => {
-            wand.buttons[0] = button_mask(frame.buttons, sixense::BUTTON_1);
-            wand.buttons[1] = button_mask(frame.buttons, sixense::BUTTON_2);
-            wand.buttons[2] = button_mask(frame.buttons, sixense::BUTTON_3);
+            wand.buttons[0] = button_mask(frame.buttons, sixense::BUTTON_3);
+            wand.buttons[1] = button_mask(frame.buttons, sixense::BUTTON_1);
+            wand.buttons[2] = button_mask(frame.buttons, sixense::BUTTON_2);
             wand.buttons[3] = button_mask(frame.buttons, sixense::BUTTON_4);
         },
     }

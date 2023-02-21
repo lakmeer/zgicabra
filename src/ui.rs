@@ -67,19 +67,23 @@ pub fn draw_all (zgicabra: &Zgicabra, history: &History<Zgicabra>) -> Result<(),
 
     draw_banner(TEXT_WIDTH, 1);
 
-    draw_wand(&mut canvas, zgicabra.left,  WIDTH*1.0/4.0, HEIGHT/4.0, WIDTH/6.0, sin(0.0)); //zgicabra.left.rot[0]);
-    draw_wand(&mut canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/4.0, WIDTH/6.0, 0.0); //zgicabra.right.rot[1]);
+    draw_wand(&mut canvas, zgicabra.left,  WIDTH*1.0/4.0, HEIGHT/4.0 + 2.0, WIDTH/6.0);
+    draw_wand(&mut canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/4.0 + 2.0, WIDTH/6.0);
+
+    if !zgicabra.docked {
+        draw_bend(&mut canvas, zgicabra.separation,
+                  zgicabra.left.twist, zgicabra.right.twist,
+                  (WIDTH*1.0/4.0) as u32,
+                  (WIDTH*3.0/4.0) as u32,
+                  (HEIGHT/4.0 + 2.0) as u32,
+                  WIDTH/6.0);
+    }
+
+    //draw_graph(history);
 
     // Output canvas
     print!("{}{}", termion::cursor::Goto(1,2), &mut canvas.frame());
-
     println!("{}", barcode_string(TEXT_WIDTH.into()));
-
-    draw_bend(zgicabra.pitchbend, zgicabra.separation, 41, 47, 70, 20);
-
-    // flush
-
-    //draw_graph(history);
 
     Ok(())
 }
@@ -89,17 +93,17 @@ pub fn draw_all (zgicabra: &Zgicabra, history: &History<Zgicabra>) -> Result<(),
 // Sub-drawing Functions
 //
 
-fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, oct_rad: f32, angle: f32) {
+fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, oct_rad: f32) {
 
-    let color = rgb_f32(nsin(0.0), nsin(0.25), nsin(0.5));
-    let facing = angle - PI/2.0;
+    let color = rgb_f32(nsin(0.0), nsin(0.33), nsin(0.66));
+    let facing = -wand.twist - PI/2.0;
     let stick_facing = match wand.stick.octant {
         Direction::None => facing,
         _ => facing - PI*3.0/4.0 + PI/4.0 * wand.stick.octant as i32 as f32
     };
 
 
-    // Joystick Octants Outline
+    // Joystick Spokes
 
     for i in 0..8 {
         let a = facing + (i as f32/4.0) * PI + 0.125 * PI;
@@ -107,39 +111,79 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, oct_rad: f32, ang
     }
     
 
-    // Joystick Selected Octant
+    // Joystick Selected Octant and Bumper Indicator
 
-    if wand.stick.octant != Direction::None {
+    if wand.stick.octant != Direction::None || wand.bumper {
         line(canvas,
              x + 1.2 * oct_rad * (stick_facing - PI/8.0).cos(),
              y + 1.2 * oct_rad * (stick_facing - PI/8.0).sin(),
              x + 1.2 * oct_rad * (stick_facing + PI/8.0).cos(), 
              y + 1.2 * oct_rad * (stick_facing + PI/8.0).sin(),
-             color);
-    }
+             if wand.bumper { PixelColor::White } else { color });
 
+        if wand.bumper {
+            line(canvas,
+                 x + 1.23 * oct_rad * (stick_facing - PI/8.0).cos(),
+                 y + 1.23 * oct_rad * (stick_facing - PI/8.0).sin(),
+                 x + 1.23 * oct_rad * (stick_facing + PI/8.0).cos(), 
+                 y + 1.23 * oct_rad * (stick_facing + PI/8.0).sin(),
+                 PixelColor::White);
+        }
+    }
+    
 
     // Trigger
 
-    for i in 0..64 {
-        let a = facing - (i as f32 / 64.0) * PI * 3.0/4.0 - PI*5.0/8.0;
+    if wand.trigger > 0.0 {
+        for i in 0..64 {
+            match wand.stick.octant {
+                Direction::None => {
+                    let a = i as f32 / 64.0 * 2.0 * PI;
+                    let len = 0.4 * wand.trigger * oct_rad * (0.83 + 0.15 * rand_normal(1.0));
+                    line(canvas, x, y, x + len * a.cos(), y + len * a.sin(), PixelColor::White);
+                },
 
-        let px = x + oct_rad * 1.1 * a.cos();
-        let py = y + oct_rad * 1.1 * a.sin();
+                _ => {
+                    let a = stick_facing - (i as f32 / 64.0) * PI/4.0 + PI/8.0;
+                    let len = wand.trigger * oct_rad * (0.83 + 0.15 * rand_normal(1.0));
+                    line(canvas, x, y, x + len * a.cos(), y + len * a.sin(), PixelColor::White);
+                }
+            }
+        }
+    }
 
-        let h = 8.0 * rand_uniform(wand.trigger);
-        let white = 0.25 + rand_uniform(0.75);
-        let color = rgb_f32(white, white, white);
-        line(canvas, px, py, px + h * a.cos(), py + h * a.sin(), color);
 
-        /*
-        let len = oct_rad * (0.83 + 0.15 * rand::thread_rng().sample::<f32,_>(StandardNormal));
-        let a = facing + rand_uniform(0.85) - PI/8.0 + PI/4.0 * wand.stick.octant as i32 as f32;
-        line(canvas, x, y, x + len * a.cos(), y + len * a.sin(), PixelColor::White);
-        */
+    // Buttons
+
+    for (ix, button) in wand.buttons.iter().enumerate() {
+        let angular_offset = ix as f32 * PI/4.0;
+
+        let pos = match wand.hand {
+            Hand::Right   => facing - PI/2.0 - PI/8.0 - angular_offset,
+            Hand::Left    => facing + PI/2.0 + PI/8.0 + angular_offset,
+            Hand::Unknown => facing + PI,
+        };
+
+        let c = match ix {
+            0 => PixelColor::Red,
+            1 => PixelColor::Yellow,
+            2 => PixelColor::Green,
+            3 => PixelColor::Blue,
+            _ => PixelColor::White
+        };
+
+        let px = x + 1.25 * oct_rad * pos.cos();
+        let py = y + 1.25 * oct_rad * pos.sin();
+
+        pset(canvas, px, py, color);
+
+        if *button {
+            polygon(canvas, px, py, 3, 3.0, pos, c);
+        }
     }
 
 }
+
 
 fn draw_banner (width: u16, y: u16) {
     let banner_text = " zgicabra ";
@@ -152,35 +196,18 @@ fn draw_banner (width: u16, y: u16) {
 }
 
 
-fn draw_bend (bend: f32, sep: f32, center_x: u32, y: u32, max_width: u32, max_height: u32) {
-    let width  = max_width * 2;
-    let height = max_height * 4;
+fn draw_bend (canvas: &mut Canvas, sep: f32, left_angle: f32, right_angle: f32, left: u32, right: u32, y: u32, r: f32) {
+    let p1 = (left  as f32,  y as f32);
+    let p2 = (left  as f32 + r * left_angle.cos(),  y as f32 - r * left_angle.sin());
+    let p3 = (right as f32 - r * right_angle.cos(), y as f32 + r * right_angle.sin());
+    let p4 = (right as f32, y as f32);
 
-    let mut canvas = drawille::Canvas::new(width + 1, height + 4);
+    let m = 1 + (sep/200.0).powf(2.0) as u32;
+    let bend = left_angle - right_angle;
 
-    let w = width  as f32;
-    let h = height as f32;
-
-    let left  = w/2.0 - w * sep/2000.0;
-    let right = w -left;
-
-    // Border
-    /*
-    canvas.line(0, 0, w as u32, 0);
-    canvas.line(0, 0, 0, h as u32);
-    canvas.line(w as u32, 0, w as u32, h as u32);
-    canvas.line(0, h as u32, w as u32, h as u32);
-    */
-
-    let a = bend * PI/2.0;
-    let b = h * (sep/2000.0).clamp(-1.0, 1.0);
-
-    let p1 = (left,  h/2.0);
-    let p2 = (left  + b * a.cos(), h/2.0 - b * a.sin());
-    let p3 = (right - b * a.cos(), h/2.0 - b * a.sin());
-    let p4 = (right, h/2.0);
-
-    let m = 1 + (sep/200.0) as u32;
+    // Debug lines
+    //line(canvas, p1.0, p1.1, p2.0, p2.1, PixelColor::Yellow);
+    //line(canvas, p3.0, p3.1, p4.0, p4.1, PixelColor::Magenta);
 
     for x in 0..200 {
         let t = x as f32/200.0;
@@ -189,7 +216,7 @@ fn draw_bend (bend: f32, sep: f32, center_x: u32, y: u32, max_width: u32, max_he
         let (x, y) = lerp_tuple(q1, q2, t);
 
         for n in 0..m {
-            let j = 3.0 * (rand::thread_rng().sample::<f32,_>(StandardNormal)) * bend * (t * PI).sin();
+            let j = 3.0 * rand_normal(1.0) * bend * (t * PI).sin();
             let c = match j.abs() {
                 j if j > 2.6 => drawille::PixelColor::Blue,
                 j if j > 1.7 => drawille::PixelColor::Cyan,
@@ -202,9 +229,6 @@ fn draw_bend (bend: f32, sep: f32, center_x: u32, y: u32, max_width: u32, max_he
             canvas.set_colored(0 + x as u32, 3 - 1 + dy as u32, c);
         }
     }
-
-    let (px, py) = (center_x as u16 - max_width as u16 / 2, y as u16);
-    drawille_paste(&mut canvas.rows(), px, py);
 }
 
 fn scribble (turtle: &mut drawille::Turtle, w: f32, h: f32, z: bool) {
@@ -236,6 +260,14 @@ fn drawille_paste (rows: &mut Vec<String>, x: u16, y: u16) {
     }
 }
 
+fn pset (canvas: &mut Canvas, x1: f32, y1: f32, color: PixelColor) {
+    canvas.set_colored(
+        x1.round() as u32,
+        y1.round() as u32,
+        color);
+}
+
+
 fn line (canvas: &mut Canvas, x1: f32, y1: f32, x2: f32, y2: f32, color: PixelColor) {
     canvas.line_colored(
         x1.round() as u32,
@@ -243,6 +275,19 @@ fn line (canvas: &mut Canvas, x1: f32, y1: f32, x2: f32, y2: f32, color: PixelCo
         x2.round() as u32,
         y2.round() as u32,
         color);
+}
+
+fn polygon (canvas: &mut Canvas, x1: f32, y1: f32, n: u16, r: f32, a: f32, color: PixelColor) {
+    for i in 0..n {
+        let a1 = a +   i   as f32 * 2.0 * PI / n as f32;
+        let a2 = a + (i+1) as f32 * 2.0 * PI / n as f32;
+        let x2 = x1 + r * a1.cos();
+        let y2 = y1 + r * a1.sin();
+        let x3 = x1 + r * a2.cos();
+        let y3 = y1 + r * a2.sin();
+
+        line(canvas, x2, y2, x3, y3, color);
+    }
 }
 
 fn rgb (r: u8, g: u8, b: u8) -> PixelColor {
@@ -288,6 +333,15 @@ fn sin (phase: f32) -> f32 {
 fn nsin (phase: f32) -> f32 {
     sin(phase) * 0.5 + 0.5
 }
+
+fn cos (phase: f32) -> f32 {
+    (time_now() + phase).cos()
+}
+
+fn ncos (phase: f32) -> f32 {
+    cos(phase) * 0.5 + 0.5
+}
+
 
 fn rand_normal (n: f32) -> f32 {
     n * rand::thread_rng().sample::<f32,_>(StandardNormal)
