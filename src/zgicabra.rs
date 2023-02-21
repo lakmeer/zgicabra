@@ -12,6 +12,17 @@ const JOYSTICK_DEADZONE: f32 = 0.15;
 
 
 //
+// TODO
+//
+// - Take vector of separation in 3d space
+// - Change voice qualities based on orinentation of separation normal vector
+//  - Center: Normal
+//  - Left:   Stacked octaves
+//  - Right:  Stacked fifths
+//
+
+
+//
 // Data Types
 //
 
@@ -135,9 +146,10 @@ pub struct Zgicabra {
     pub right: Wand,
     pub separation: f32,
     pub root_note: u8,
-    pub pitchbend: f32,
+    pub bend: f32,
     pub filter: ControlSignal,
     pub docked: bool,
+    pub level: f32,
 }
 
 impl Zgicabra {
@@ -147,9 +159,10 @@ impl Zgicabra {
             right: Wand::new(),
             separation: 0.0,
             root_note: 65,
-            pitchbend: 0.0,
+            bend: 0.0,
             filter: ControlSignal { value: 0.0, channel: 25 },
             docked: false,
+            level: 0.0,
         }
     }
 }
@@ -173,8 +186,8 @@ pub fn update (latest_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: 
     copy_frame_to_wand(&right_frame, &mut latest_state.right, &prev_state.right);
 
     latest_state.separation = (latest_state.left.pos[0] - latest_state.right.pos[0]).abs();
-    latest_state.pitchbend  = latest_state.left.twist - latest_state.right.twist;
-    latest_state.pitchbend  = latest_state.pitchbend.powf(3.0).clamp(-2.0, 2.0) * 0.5;
+    latest_state.bend  = latest_state.left.twist - latest_state.right.twist;
+    latest_state.bend  = latest_state.bend.powf(3.0).clamp(-2.0, 2.0) * 0.5;
 
 
     // Time derivatives
@@ -200,6 +213,7 @@ pub fn update (latest_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: 
     // Singleton states
 
     latest_state.docked = left_frame.is_docked != 0 || right_frame.is_docked != 0;
+    latest_state.level  = smoothstep(0.0, 1.0, (latest_state.left.trigger + latest_state.right.trigger).clamp(0.0, 1.0));
 
 
     Ok(())
@@ -307,5 +321,10 @@ fn rad_to_cycles (radians: f32) -> f32 {
 
 fn button_mask (buttons: u32, mask: u32) -> bool {
     (buttons & mask) != 0
+}
+
+fn smoothstep (a: f32, b: f32, t: f32) -> f32 {
+    let t = (t - a) / (b - a);
+    t * t * (3.0 - 2.0 * t)
 }
 

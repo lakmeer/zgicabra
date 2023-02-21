@@ -10,12 +10,14 @@ use midir::{MidiOutput, MidiOutputConnection};
 mod sixense;
 mod hydra;
 mod zgicabra;
-mod history;
+mod midi;
 mod ui;
+mod history;
 
 use hydra::HydraState;
 use zgicabra::Zgicabra;
 use history::History;
+use midi::MidiEvent;
 
 
 pub const HISTORY_WINDOW: usize = 50;
@@ -40,16 +42,17 @@ fn main() {
 
     print!("Establishing MIDI connection... ");
 
-    let output     = MidiOutput::new(MIDI_DEVICE_NAME).unwrap();
-    let out_port   = output.ports()[0].clone();
-    let port_name  = output.port_name(&out_port).unwrap_or("Unknown".to_string());
-    let connection = output.connect(&out_port, "midir-test").unwrap();
+    let output         = MidiOutput::new(MIDI_DEVICE_NAME).unwrap();
+    let out_port       = output.ports()[0].clone();
+    let port_name      = output.port_name(&out_port).unwrap_or("Unknown".to_string());
+    let mut connection = output.connect(&out_port, "midir-test").unwrap();
 
     println!("✅");
 
     let mut hydra_state = HydraState::new();
     let mut zgicabra    = Zgicabra::new();
     let mut history: History<Zgicabra> = History::new(HISTORY_WINDOW);
+    let mut midi_events: Vec<MidiEvent> = Vec::new();
 
 
     //
@@ -67,6 +70,11 @@ fn main() {
     loop {
         hydra::update(&mut hydra_state);
         zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state).unwrap();
+
+        midi::update(&zgicabra, &mut midi_events);
+        midi::dispatch(&midi_events, &mut connection);
+        midi::clear(&mut midi_events);
+
         ui::draw_all(&zgicabra, &history).unwrap();
 
         history.push(zgicabra);
@@ -82,7 +90,7 @@ fn main() {
 
     print!("Closing connection... ");
 
-    connection.close();
+    midi::close(connection);
 
     println!("ok");
 
