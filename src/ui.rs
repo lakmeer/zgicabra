@@ -115,12 +115,13 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, oct_rad: f32) {
     // Joystick Selected Octant
 
     if wand.stick.octant != Direction::None {
+        let a = if wand.trigger > 0.0 { stick_facing } else { facing + wand.stick.theta * 2.0 * PI };
         line(canvas,
-             x + 1.2 * oct_rad * (stick_facing - PI/8.0).cos(),
-             y + 1.2 * oct_rad * (stick_facing - PI/8.0).sin(),
-             x + 1.2 * oct_rad * (stick_facing + PI/8.0).cos(), 
-             y + 1.2 * oct_rad * (stick_facing + PI/8.0).sin(),
-             if wand.bumper { PixelColor::White } else { color });
+             x + 1.15 * oct_rad * (a - PI/8.0).cos(),
+             y + 1.15 * oct_rad * (a - PI/8.0).sin(),
+             x + 1.15 * oct_rad * (a + PI/8.0).cos(), 
+             y + 1.15 * oct_rad * (a + PI/8.0).sin(),
+             PixelColor::White);
     }
 
 
@@ -156,16 +157,17 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, oct_rad: f32) {
 
     if wand.trigger > 0.0 {
         for i in 0..128 {
-            let a = i as f32 / 128.0 * 2.0 * PI;
-            let (j, c) = breakup(wand.trigger, 1.0);
-            let len = (j * 0.6 + 0.2) * oct_rad;
-
-            pset(canvas,
-                 x + len * a.cos(),
-                 y + len * a.sin(), c);
 
             match wand.stick.octant {
                 Direction::None => {
+                    let a = i as f32 / 128.0 * 2.0 * PI;
+                    let (j, c) = breakup(wand.trigger, 1.0);
+                    let len = (j * 0.6 + 0.2) * oct_rad;
+
+                    pset(canvas,
+                         x + len * a.cos(),
+                         y + len * a.sin(), c);
+
                     let a = i as f32 / 128.0 * 2.0 * PI;
                     let (j, c) = breakup(wand.trigger, 7.0);
                     let len = 0.5 * wand.trigger * (1.0 - wand.stick.r) * oct_rad + 2.0 * sin(3.9, a as f32 * 0.7);
@@ -181,13 +183,27 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, oct_rad: f32) {
                 },
 
                 _ => {
-                    let a = stick_facing - (i as f32 / 128.0) * PI/4.0 + PI/8.0;
-                    let (j, c) = breakup(ease_in(wand.trigger * wand.trigger), 3.0);
-                    let len = wand.trigger * wand.stick.r * oct_rad + sin(4.0, a as f32);
+                    // TODO: Collect sparks in from behind facing direction to focus them on the
+                    // selected quadrant. Like a cardiod kinda.
+                    let a = stick_facing - (i as f32 / 128.0 * PI/4.0) + PI * 2.0 * (1.0 - wand.trigger) + PI/8.0;
+                    let (j, c) = breakup(ease_in(wand.trigger * wand.trigger), 1.0);
+                    let len = (j * 0.7) * oct_rad * wand.trigger;
+
+                    pset(canvas,
+                         x + len.abs() * a.cos(),
+                         y + len.abs() * a.sin(), c);
+
+                    let a = stick_facing - i as f32 / 128.0 * PI/4.0 + PI/8.0;
+                    let (j, c) = breakup(ease_in(wand.trigger * wand.trigger), 4.0);
+                    let len = wand.trigger * wand.stick.r * oct_rad + 2.0 * sin(4.0, a as f32);
+
                     pset(canvas,
                          x + (len + j) * a.cos(),
                          y + (len + j) * a.sin(), c);
-                    pset(canvas, x, y, PixelColor::White);
+                    pset(canvas,
+                         x + len * a.cos(),
+                         y + len * a.sin(),
+                         PixelColor::White);
                 }
             }
         }
