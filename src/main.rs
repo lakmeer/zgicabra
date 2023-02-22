@@ -73,11 +73,14 @@ fn main() {
 
         midi::update(&zgicabra, &mut midi_events);
         midi::dispatch(&midi_events, &mut connection);
+
+        ui::draw_all(&zgicabra, &history);
+        ui::draw_events(&zgicabra.deltas, &midi_events);
+
+        zgicabra.deltas.clear();
         midi::clear(&mut midi_events);
 
-        ui::draw_all(&zgicabra, &history).unwrap();
-
-        history.push(zgicabra);
+        history.push(zgicabra.clone());
 
         sleep(REFRESH_MS);
 

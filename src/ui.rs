@@ -17,8 +17,9 @@ use rand_distr::StandardNormal;
 
 use lazy_static::lazy_static;
 
+use crate::midi::MidiEvent;
 use crate::hydra::HydraState;
-use crate::zgicabra::{Zgicabra,Wand,Hand,Direction,Joystick};
+use crate::zgicabra::{Delta,Zgicabra,Wand,Hand,Direction,Joystick};
 use crate::history::History;
 
 use crate::HISTORY_WINDOW;
@@ -47,11 +48,11 @@ const GREEN_3:RGB8 = RGB8 { r: 180, g: 180, b: 180 };
 // Main Drawing Functions
 //
 
-pub fn draw_all (zgicabra: &Zgicabra, history: &History<Zgicabra>) -> Result<(), Error> {
+pub fn draw_all (zgicabra: &Zgicabra, history: &History<Zgicabra>) {
 
     // Text dimensions
     const TEXT_WIDTH  : u16 = 80;
-    const TEXT_HEIGHT : u16 = TEXT_WIDTH / 2;
+    const TEXT_HEIGHT : u16 = TEXT_WIDTH / 4;
 
     // Pixel dimensions
     const CANVAS_WIDTH  : u16 = TEXT_WIDTH * 2;
@@ -61,21 +62,19 @@ pub fn draw_all (zgicabra: &Zgicabra, history: &History<Zgicabra>) -> Result<(),
     const WIDTH  : f32 = CANVAS_WIDTH  as f32;
     const HEIGHT : f32 = CANVAS_HEIGHT as f32;
 
-
     // Canvas
     let mut canvas = Canvas::new(CANVAS_WIDTH as u32, CANVAS_HEIGHT as u32);
 
-    draw_banner(TEXT_WIDTH, 1);
-
-    draw_wand(&mut canvas, zgicabra.left,  WIDTH*1.0/4.0, HEIGHT/4.0 + 2.0, WIDTH/6.0);
-    draw_wand(&mut canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/4.0 + 2.0, WIDTH/6.0);
+    draw_banner(TEXT_WIDTH, 1, zgicabra.level == 0.0);
+    draw_wand(&mut canvas, zgicabra.left,  WIDTH*1.0/4.0, HEIGHT/2.0, WIDTH/6.0);
+    draw_wand(&mut canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/2.0, WIDTH/6.0);
 
     if !zgicabra.docked && zgicabra.level > 0.0  {
         draw_bend(&mut canvas, zgicabra.separation,
                   zgicabra.left.twist, zgicabra.right.twist,
                   (WIDTH*1.0/4.0) as u32,
                   (WIDTH*3.0/4.0) as u32,
-                  (HEIGHT/4.0 + 2.0) as u32,
+                  (HEIGHT/2.0) as u32,
                   WIDTH/6.0,
                   zgicabra.level);
     }
@@ -83,10 +82,8 @@ pub fn draw_all (zgicabra: &Zgicabra, history: &History<Zgicabra>) -> Result<(),
     //draw_graph(history);
 
     // Output canvas
-    print!("{}{}", termion::cursor::Goto(1,2), &mut canvas.frame());
-    //println!("{}", barcode_string(TEXT_WIDTH.into()));
-
-    Ok(())
+    print!("{}{}", termion::cursor::Goto(1, 2), &mut canvas.frame());
+    println!("{}{}", termion::cursor::Goto(1, TEXT_HEIGHT + 4), barcode_string(TEXT_WIDTH.into(), zgicabra.level == 0.0));
 }
 
 
@@ -94,7 +91,7 @@ pub fn draw_all (zgicabra: &Zgicabra, history: &History<Zgicabra>) -> Result<(),
 // Sub-drawing Functions
 //
 
-fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, oct_rad: f32) {
+fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32) {
 
     let color = electric(wand.trigger * rand_uniform(1.0));
     let facing = -wand.twist - PI/2.0 + if wand.hand == Hand::Left { PI/8.0 } else { -PI/8.0 };
@@ -108,7 +105,8 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, oct_rad: f32) {
 
     for i in 0..8 {
         let a = facing + (i as f32/4.0) * PI + 0.125 * PI;
-        line(canvas, x, y, x + oct_rad * a.cos(), y + oct_rad * a.sin(), color);
+        let c = electric(wand.trigger * rand_uniform(1.0));
+        line(canvas, x, y, x + radius * a.cos(), y + radius * a.sin(), c);
     }
     
 
@@ -116,41 +114,15 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, oct_rad: f32) {
 
     if wand.stick.octant != Direction::None {
         let a = if wand.trigger > 0.0 { stick_facing } else { facing + wand.stick.theta * 2.0 * PI };
+
         line(canvas,
-             x + 1.15 * oct_rad * (a - PI/8.0).cos(),
-             y + 1.15 * oct_rad * (a - PI/8.0).sin(),
-             x + 1.15 * oct_rad * (a + PI/8.0).cos(), 
-             y + 1.15 * oct_rad * (a + PI/8.0).sin(),
+             x + 1.15 * radius * (a - PI/8.0).cos(),
+             y + 1.15 * radius * (a - PI/8.0).sin(),
+             x + 1.15 * radius * (a + PI/8.0).cos(), 
+             y + 1.15 * radius * (a + PI/8.0).sin(),
              PixelColor::White);
     }
 
-
-    // Bumper Indicator
-
-    if wand.bumper {
-        for i in 0..3 {
-            line(canvas,
-                 x + 1.3 * oct_rad * (i as f32 * PI/4.0 - PI/4.0 + facing - PI/8.0).cos(),
-                 y + 1.3 * oct_rad * (i as f32 * PI/4.0 - PI/4.0 + facing - PI/8.0).sin(),
-                 x + 1.3 * oct_rad * (i as f32 * PI/4.0 - PI/4.0 + facing + PI/8.0).cos(), 
-                 y + 1.3 * oct_rad * (i as f32 * PI/4.0 - PI/4.0 + facing + PI/8.0).sin(),
-                 electric(rand_uniform(1.0)));
-        }
-    }
-
-
-    // Home Button
-
-    if wand.home {
-        for i in 3..6 {
-            line(canvas,
-                 x + 1.3 * oct_rad * (i as f32 * PI/4.0 + facing - PI/10.0).cos(),
-                 y + 1.3 * oct_rad * (i as f32 * PI/4.0 + facing - PI/10.0).sin(),
-                 x + 1.3 * oct_rad * (i as f32 * PI/4.0 + facing + PI/10.0).cos(), 
-                 y + 1.3 * oct_rad * (i as f32 * PI/4.0 + facing + PI/10.0).sin(),
-                 electric(rand_uniform(1.0)));
-        }
-    }
 
 
     // Trigger
@@ -162,48 +134,33 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, oct_rad: f32) {
                 Direction::None => {
                     let a = i as f32 / 128.0 * 2.0 * PI;
                     let (j, c) = breakup(wand.trigger, 1.0);
-                    let len = (j * 0.6 + 0.2) * oct_rad;
+                    let len = (j * 0.6 + 0.2) * radius;
 
-                    pset(canvas,
-                         x + len * a.cos(),
-                         y + len * a.sin(), c);
+                    pset(canvas, x + len * a.cos(), y + len * a.sin(), c);
 
                     let a = i as f32 / 128.0 * 2.0 * PI;
                     let (j, c) = breakup(wand.trigger, 7.0);
-                    let len = 0.5 * wand.trigger * (1.0 - wand.stick.r) * oct_rad + 2.0 * sin(3.9, a as f32 * 0.7);
-                    pset(canvas,
-                         x + (len - j * 2.0) * a.cos(),
-                         y + (len - j * 2.0) * a.sin(), c);
-                    pset(canvas,
-                         x + (len + j * 2.0) * a.cos(),
-                         y + (len + j * 2.0) * a.sin(), PixelColor::White);
-                    pset(canvas,
-                         x + (len) * a.cos(),
-                         y + (len) * a.sin(), c);
+                    let len = 0.5 * wand.trigger * (1.0 - wand.stick.r) * radius + 2.0 * sin(3.9, a as f32 * 0.7);
+                    pset(canvas, x + (len - j * 2.0) * a.cos(), y + (len - j * 2.0) * a.sin(), c);
+                    pset(canvas, x + (len + j * 2.0) * a.cos(), y + (len + j * 2.0) * a.sin(), PixelColor::White);
+                    pset(canvas, x + (len) * a.cos(), y + (len) * a.sin(), c);
                 },
 
                 _ => {
                     // TODO: Collect sparks in from behind facing direction to focus them on the
                     // selected quadrant. Like a cardiod kinda.
                     let a = stick_facing - (i as f32 / 128.0 * PI/4.0) + PI * 2.0 * (1.0 - wand.trigger) + PI/8.0;
-                    let (j, c) = breakup(ease_in(wand.trigger * wand.trigger), 1.0);
-                    let len = (j * 0.7) * oct_rad * wand.trigger;
+                    let (j, c) = breakup(ease_in(wand.trigger * wand.trigger), 2.0);
+                    let len = (j * 0.7) * radius * wand.trigger;
 
-                    pset(canvas,
-                         x + len.abs() * a.cos(),
-                         y + len.abs() * a.sin(), c);
+                    pset(canvas, x + len.abs() * a.cos(), y + len.abs() * a.sin(), c);
 
                     let a = stick_facing - i as f32 / 128.0 * PI/4.0 + PI/8.0;
-                    let (j, c) = breakup(ease_in(wand.trigger * wand.trigger), 4.0);
-                    let len = wand.trigger * wand.stick.r * oct_rad + 2.0 * sin(4.0, a as f32);
+                    let (j, c) = breakup(ease_in(wand.trigger * wand.trigger), 7.0);
+                    let len = 0.8 * wand.trigger * wand.stick.r * radius - 2.0 * sin(4.0, a as f32);
 
-                    pset(canvas,
-                         x + (len + j) * a.cos(),
-                         y + (len + j) * a.sin(), c);
-                    pset(canvas,
-                         x + len * a.cos(),
-                         y + len * a.sin(),
-                         PixelColor::White);
+                    pset(canvas, x + (len + j) * a.cos(), y + (len + j) * a.sin(), c);
+                    pset(canvas, x + len * a.cos(), y + len * a.sin(), PixelColor::White);
                 }
             }
         }
@@ -212,38 +169,76 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, oct_rad: f32) {
 
     // Buttons
 
-    for (ix, button) in wand.buttons.iter().enumerate() {
-        let angular_offset = ix as f32 * PI/4.0;
+    draw_buttons(canvas, &wand, x, y, radius, facing);
 
-        let pos = match wand.hand {
-            Hand::Right   => facing - PI/2.0 - PI/8.0 - angular_offset,
-            Hand::Left    => facing + PI/2.0 + PI/8.0 + angular_offset,
-            Hand::Unknown => facing,
-        };
+    if wand.home {
+        draw_home_button(canvas, x, y, radius, facing);
+    }
 
-        let c = electric(rand_uniform(1.0));
-
-        let px = x + 1.3 * oct_rad * pos.cos();
-        let py = y + 1.3 * oct_rad * pos.sin();
-
-        pset(canvas, px, py, color);
-
-        if *button {
-            polygon(canvas, px, py, 3, 3.0, pos, c);
-        }
+    if wand.bumper {
+        draw_bumper(canvas, x, y, radius, facing);
     }
 
 }
 
 
-fn draw_banner (width: u16, y: u16) {
+fn draw_bumper (canvas: &mut Canvas, x: f32, y: f32, radius: f32, angle: f32) {
+    for i in 0..3 {
+        line(canvas,
+             x + 1.3 * radius * (i as f32 * PI/4.0 - PI/4.0 + angle - PI/8.0).cos(),
+             y + 1.3 * radius * (i as f32 * PI/4.0 - PI/4.0 + angle - PI/8.0).sin(),
+             x + 1.3 * radius * (i as f32 * PI/4.0 - PI/4.0 + angle + PI/8.0).cos(), 
+             y + 1.3 * radius * (i as f32 * PI/4.0 - PI/4.0 + angle + PI/8.0).sin(),
+             electric(rand_uniform(1.0)));
+    }
+}
+
+
+fn draw_buttons (canvas: &mut Canvas, wand: &Wand, x: f32, y: f32, radius: f32, angle: f32) {
+
+    for (ix, button) in wand.buttons.iter().enumerate() {
+        let angular_offset = ix as f32 * PI/4.0;
+
+        let pos = match wand.hand {
+            Hand::Right   => angle - PI/2.0 - PI/8.0 - angular_offset,
+            Hand::Left    => angle + PI/2.0 + PI/8.0 + angular_offset,
+            Hand::Neither => angle,
+        };
+
+        let c = electric(rand_uniform(1.0));
+
+        let px = x + 1.3 * radius * pos.cos();
+        let py = y + 1.3 * radius * pos.sin();
+
+        if *button {
+            polygon(canvas, px, py, 3, 3.0, pos + rand_uniform(PI), c);
+        } else {
+            pset(canvas, px, py, PixelColor::White);
+        }
+    }
+}
+
+
+fn draw_home_button (canvas: &mut Canvas, x: f32, y: f32, radius: f32, angle: f32) {
+    for i in 3..6 {
+        line(canvas,
+             x + 1.3 * radius * (i as f32 * PI/4.0 + angle - PI/10.0).cos(),
+             y + 1.3 * radius * (i as f32 * PI/4.0 + angle - PI/10.0).sin(),
+             x + 1.3 * radius * (i as f32 * PI/4.0 + angle + PI/10.0).cos(), 
+             y + 1.3 * radius * (i as f32 * PI/4.0 + angle + PI/10.0).sin(),
+             electric(rand_uniform(1.0)));
+    }
+}
+                     
+
+fn draw_banner (width: u16, y: u16, solid: bool) {
     let banner_text = " zgicabra ";
     let stripe_length = (width - banner_text.len() as u16) / 2;
 
     print!("{}{}{}{}", termion::cursor::Goto(1,y),
-        barcode_string(stripe_length.into()),
+        barcode_string(stripe_length.into(), solid),
         banner_text,
-        barcode_string(stripe_length.into()));
+        barcode_string(stripe_length.into(), solid));
 }
 
 
@@ -341,8 +336,12 @@ fn rgb_f32 (r: f32, g: f32, b: f32) -> PixelColor {
     }
 }
 
-fn rand_barcode_char_as_str () -> char {
-    " │║┃▌▐▕█▊▋▌▍▎▏".chars().choose(&mut rand::thread_rng()).unwrap()
+fn rand_barcode_char_as_str (solid: bool) -> char {
+    if !solid {
+        " │║┃▌▐▕█▊▋▌▍▎▏".chars().choose(&mut rand::thread_rng()).unwrap()
+    } else {
+        "█".chars().nth(0).unwrap()
+    }
 }
 
 fn lerp (a: f32, b: f32, t: f32) -> f32 {
@@ -353,10 +352,10 @@ fn lerp_tuple ((ax, ay): (f32, f32), (bx, by): (f32, f32), t: f32) -> (f32, f32)
     (lerp(ax, bx, t), lerp(ay, by, t))
 }
 
-fn barcode_string (len: usize) -> String {
+fn barcode_string (len: usize, solid: bool) -> String {
     let mut s = String::new();
     for _ in 0..len {
-        s.push(rand_barcode_char_as_str());
+        s.push(rand_barcode_char_as_str(solid));
     }
     s
 }
@@ -454,4 +453,24 @@ pub fn draw_graph (history: &History<Zgicabra>) {
         .nice();
 }
 
+pub fn draw_events (delta_events: &Vec<Delta>, midi_events: &Vec<MidiEvent>) {
+    print!("{}", termion::cursor::Goto(1, 26));
+
+    for i in 0..20 {
+        println!("                                                                                 ");
+    }
+
+    print!("{}", termion::cursor::Goto(1, 26));
+
+    println!("Delta events: {}", delta_events.len());
+    for event in delta_events {
+        println!("- {:?}", event);
+    }
+
+    println!("");
+    println!("MIDI events: {}", midi_events.len());
+    for event in midi_events {
+        println!("- {:?}", event);
+    }
+}
 
