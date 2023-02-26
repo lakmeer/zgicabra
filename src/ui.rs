@@ -3,10 +3,8 @@ use std::io::{Write, Error};
 use std::time::Instant;
 use std::f32::consts::PI;
 
-use termion;
 use rgb::RGB8;
 
-use textplots;
 use textplots::{ColorPlot,Chart,Shape};
 
 use drawille::{Canvas,PixelColor};
@@ -19,8 +17,7 @@ use lazy_static::lazy_static;
 
 use crate::midi::MidiEvent;
 use crate::hydra::HydraState;
-use crate::zgicabra::{Delta,Zgicabra,Wand,Hand,Direction,Joystick};
-use crate::history::History;
+use crate::zgicabra::{DeltaEvent,Zgicabra,Wand,Hand,Direction,Joystick};
 
 use crate::HISTORY_WINDOW;
 
@@ -48,7 +45,7 @@ const GREEN_3:RGB8 = RGB8 { r: 180, g: 180, b: 180 };
 // Main Drawing Functions
 //
 
-pub fn draw_all (zgicabra: &Zgicabra, history: &History<Zgicabra>) {
+pub fn draw_all (zgicabra: &Zgicabra, history: &Vec<Zgicabra>) {
 
     // Text dimensions
     const TEXT_WIDTH  : u16 = 80;
@@ -84,6 +81,7 @@ pub fn draw_all (zgicabra: &Zgicabra, history: &History<Zgicabra>) {
     // Output canvas
     print!("{}{}", termion::cursor::Goto(1, 2), &mut canvas.frame());
     println!("{}{}", termion::cursor::Goto(1, TEXT_HEIGHT + 4), barcode_string(TEXT_WIDTH.into(), zgicabra.level == 0.0));
+
 }
 
 
@@ -124,7 +122,6 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32) {
     }
 
 
-
     // Trigger
 
     if wand.trigger > 0.0 {
@@ -148,7 +145,7 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32) {
 
                 _ => {
                     // TODO: Collect sparks in from behind facing direction to focus them on the
-                    // selected quadrant. Like a cardiod kinda.
+                    // selected quadrant like a cardiod
                     let a = stick_facing - (i as f32 / 128.0 * PI/4.0) + PI * 2.0 * (1.0 - wand.trigger) + PI/8.0;
                     let (j, c) = breakup(ease_in(wand.trigger * wand.trigger), 2.0);
                     let len = (j * 0.7) * radius * wand.trigger;
@@ -275,26 +272,8 @@ fn draw_bend (canvas: &mut Canvas, sep: f32, left_angle: f32, right_angle: f32, 
 
 
 //
-// Lil' Helpers
+// Drawille Wrappers
 //
-
-fn breakup (n: f32, r: f32) -> (f32, PixelColor) {
-    let j = r * rand_normal(1.0) * n;
-    let c = match j.abs() {
-        j if j > 2.6 => drawille::PixelColor::Blue,
-        j if j > 1.7 => drawille::PixelColor::Cyan,
-        j if j > 2.2 => drawille::PixelColor::BrightBlue,
-        j if j > 1.2 => drawille::PixelColor::BrightCyan,
-        _ => drawille::PixelColor::White,
-    };
-    (j / 3.0, c)
-}
-
-fn drawille_paste (rows: &mut Vec<String>, x: u16, y: u16) {
-    for (ix, row) in rows.iter().enumerate() {
-        print!("{}{}", termion::cursor::Goto(x,y+ix as u16), row);
-    }
-}
 
 fn pset (canvas: &mut Canvas, x1: f32, y1: f32, color: PixelColor) {
     canvas.set_colored(
@@ -336,13 +315,38 @@ fn rgb_f32 (r: f32, g: f32, b: f32) -> PixelColor {
     }
 }
 
-fn rand_barcode_char_as_str (solid: bool) -> char {
-    if !solid {
-        " │║┃▌▐▕█▊▋▌▍▎▏".chars().choose(&mut rand::thread_rng()).unwrap()
-    } else {
-        "█".chars().nth(0).unwrap()
+fn electric (n: f32) -> PixelColor {
+    match 3.0 * n.abs() {
+        i if i > 2.6 => drawille::PixelColor::Blue,
+        i if i > 1.7 => drawille::PixelColor::Cyan,
+        i if i > 2.2 => drawille::PixelColor::BrightBlue,
+        i if i > 1.2 => drawille::PixelColor::BrightCyan,
+        _ => drawille::PixelColor::White,
     }
 }
+
+fn breakup (n: f32, r: f32) -> (f32, PixelColor) {
+    let j = r * rand_normal(1.0) * n;
+    let c = match j.abs() {
+        j if j > 2.6 => drawille::PixelColor::Blue,
+        j if j > 1.7 => drawille::PixelColor::Cyan,
+        j if j > 2.2 => drawille::PixelColor::BrightBlue,
+        j if j > 1.2 => drawille::PixelColor::BrightCyan,
+        _ => drawille::PixelColor::White,
+    };
+    (j / 3.0, c)
+}
+
+fn drawille_paste (rows: &mut Vec<String>, x: u16, y: u16) {
+    for (ix, row) in rows.iter().enumerate() {
+        print!("{}{}", termion::cursor::Goto(x,y+ix as u16), row);
+    }
+}
+
+
+//
+// Lil' Helpers
+//
 
 fn lerp (a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
@@ -358,6 +362,14 @@ fn barcode_string (len: usize, solid: bool) -> String {
         s.push(rand_barcode_char_as_str(solid));
     }
     s
+}
+
+fn rand_barcode_char_as_str (solid: bool) -> char {
+    if !solid {
+        " │║┃▌▐▕█▊▋▌▍▎▏".chars().choose(&mut rand::thread_rng()).unwrap()
+    } else {
+        "█".chars().nth(0).unwrap()
+    }
 }
 
 fn time_now () -> f32 {
@@ -378,16 +390,6 @@ fn cos (phase: f32) -> f32 {
 
 fn ncos (phase: f32) -> f32 {
     cos(phase) * 0.5 + 0.5
-}
-
-fn electric (n: f32) -> PixelColor {
-    match 3.0 * n.abs() {
-        i if i > 2.6 => drawille::PixelColor::Blue,
-        i if i > 1.7 => drawille::PixelColor::Cyan,
-        i if i > 2.2 => drawille::PixelColor::BrightBlue,
-        i if i > 1.2 => drawille::PixelColor::BrightCyan,
-        _ => drawille::PixelColor::White,
-    }
 }
 
 fn rand_normal (n: f32) -> f32 {
@@ -412,7 +414,7 @@ fn ease_out (t: f32) -> f32 {
 // Plots
 //
 
-pub fn draw_graph (history: &History<Zgicabra>) {
+pub fn draw_graph (history: &Vec<Zgicabra>) {
 
     let n = history.len();
 
@@ -453,10 +455,10 @@ pub fn draw_graph (history: &History<Zgicabra>) {
         .nice();
 }
 
-pub fn draw_events (delta_events: &Vec<Delta>, midi_events: &Vec<MidiEvent>) {
+pub fn draw_events (delta_events: &Vec<DeltaEvent>, midi_events: &Vec<MidiEvent>) {
     print!("{}", termion::cursor::Goto(1, 26));
 
-    for i in 0..20 {
+    for i in 0..22 {
         println!("                                                                                 ");
     }
 

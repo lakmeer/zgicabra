@@ -5,7 +5,7 @@ use std::fmt;
 
 use midir::{MidiOutput, MidiOutputConnection};
 
-use crate::zgicabra::{Zgicabra,Delta};
+use crate::zgicabra::{Zgicabra,DeltaEvent};
 
 
 // MIDI Message Types
@@ -22,7 +22,8 @@ const CC_MIDI_PANIC:      u8 = 0x7B;
 const CC_SILENCE:         u8 = 0x78;
 
 // Custom MIDI CCs
-const CC_FILTER:          u8 = 0x20;
+const CC_CUTOFF:          u8 = 0x20;
+const CC_WIDTH:           u8 = 0x20;
 const CC_FUZZ:            u8 = 0x21;
 const CC_THUMP:           u8 = 0x22;
 const CC_VELOCITY:        u8 = 0x23;
@@ -100,11 +101,27 @@ impl fmt::Debug for MidiEvent {
 //
 
 pub fn update (zgicabra: &Zgicabra, midi_events: &mut Vec<MidiEvent>) {
-    let pitch = (zgicabra.bend * 8192.0) as i16;
-    midi_events.push(MidiEvent::pitch_bend(pitch));
 
-    for event in zgicabra.deltas.iter() {
-        match event {
+    midi_events.push(MidiEvent::pitch_bend((zgicabra.bend * 8192.0) as i16));
+
+    midi_events.push(MidiEvent::control_change(CC_CUTOFF, (zgicabra.left.pitch * 127.0) as u8));
+    midi_events.push(MidiEvent::control_change(CC_WIDTH, (zgicabra.right.pitch * 127.0) as u8));
+
+    for delta in zgicabra.deltas.iter() {
+        match delta {
+            DeltaEvent::TriggerStart(hand) => {
+                midi_events.push(MidiEvent::note_on(60, 127));
+            },
+            DeltaEvent::TriggerEnd(hand) => {
+                midi_events.push(MidiEvent::note_off(60));
+            },
+            DeltaEvent::ButtonDown(hand, btn) => {
+                midi_events.push(MidiEvent::control_change(CC_MOD_WHEEL, 127));
+            },
+            DeltaEvent::ButtonUp(hand, btn) => {
+                midi_events.push(MidiEvent::control_change(CC_MOD_WHEEL, 127));
+            },
+
             _ => {}
         }
     }

@@ -12,18 +12,31 @@ mod hydra;
 mod zgicabra;
 mod midi;
 mod ui;
-mod history;
 
 use hydra::HydraState;
 use zgicabra::Zgicabra;
-use history::History;
 use midi::MidiEvent;
 
 
-pub const HISTORY_WINDOW: usize = 50;
+pub const HISTORY_WINDOW: usize = 10;
 
 const REFRESH_MS: Duration = Duration::from_millis(10);
 const MIDI_DEVICE_NAME: &str = "Zgicabra";
+
+
+
+/*
+ * TODOs
+ *
+ * - Take vector of separation in 3d space
+ *   - Change voice qualities based on orinentation of separation normal vector
+ *     - Center: Normal
+ *     - Left:   Stacked octaves
+ *     - Right:  Stacked fifths
+ * - Represent stick click on UI
+ * - Represent seperation/facing vector on UI
+ *
+**/
 
 
 //
@@ -51,7 +64,7 @@ fn main() {
 
     let mut hydra_state = HydraState::new();
     let mut zgicabra    = Zgicabra::new();
-    let mut history: History<Zgicabra> = History::new(HISTORY_WINDOW);
+    let mut history:     Vec<Zgicabra>  = Vec::with_capacity(HISTORY_WINDOW);
     let mut midi_events: Vec<MidiEvent> = Vec::new();
 
 
@@ -69,7 +82,7 @@ fn main() {
 
     loop {
         hydra::update(&mut hydra_state);
-        zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state).unwrap();
+        zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state);
 
         midi::update(&zgicabra, &mut midi_events);
         midi::dispatch(&midi_events, &mut connection);
@@ -77,10 +90,13 @@ fn main() {
         ui::draw_all(&zgicabra, &history);
         ui::draw_events(&zgicabra.deltas, &midi_events);
 
-        zgicabra.deltas.clear();
         midi::clear(&mut midi_events);
+        zgicabra::clear(&mut zgicabra, 10);
 
         history.push(zgicabra.clone());
+        if history.len() >= HISTORY_WINDOW {
+            history.remove(0);
+        }
 
         sleep(REFRESH_MS);
 

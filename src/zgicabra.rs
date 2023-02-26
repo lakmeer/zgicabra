@@ -12,16 +12,6 @@ use crate::hydra::HydraState;
 const JOYSTICK_DEADZONE: f32 = 0.15;
 
 
-//
-// TODO
-//
-// - Take vector of separation in 3d space
-// - Change voice qualities based on orinentation of separation normal vector
-//  - Center: Normal
-//  - Left:   Stacked octaves
-//  - Right:  Stacked fifths
-//
-
 
 //
 // Data Types
@@ -96,6 +86,7 @@ pub struct Wand {
     pub vel: [f32; 3],
     pub acc: [f32; 3],
     pub jerk: [f32; 3],
+    pub pitch: f32,
     pub twist: f32,
     pub scalar_vel: f32,
     pub scalar_acc: f32,
@@ -116,6 +107,7 @@ impl Wand {
             vel: [0.0, 0.0, 0.0],
             acc: [0.0, 0.0, 0.0],
             jerk: [0.0, 0.0, 0.0],
+            pitch: 0.0,
             twist: 0.0,
             scalar_vel: 0.0,
             scalar_acc: 0.0,
@@ -142,11 +134,20 @@ pub struct ControlSignal {
 //
 
 #[derive(Debug, Clone)]
-pub struct Delta {
-    label: String,
-    hand: Hand,
-    old: f32,
-    new: f32,
+pub enum DeltaEvent {
+    TriggerStart(Hand),
+    TriggerBottomOut(Hand),
+    TriggerRelease(Hand),
+    TriggerEnd(Hand),
+    BumperDown(Hand),
+    BumperUp(Hand),
+    HomeDown(Hand),
+    HomeUp(Hand),
+    ButtonDown(Hand, u8),
+    ButtonUp(Hand, u8),
+    StickClickDown(Hand),
+    StickClickUp(Hand),
+    StickMove(Hand, Direction),
 }
 
 
@@ -164,7 +165,8 @@ pub struct Zgicabra {
     pub filter: ControlSignal,
     pub docked: bool,
     pub level: f32,
-    pub deltas: Vec<Delta>,
+    pub deltas: Vec<DeltaEvent>,
+    pub sequence_number: u8,
 }
 
 impl Zgicabra {
@@ -178,7 +180,8 @@ impl Zgicabra {
             filter: ControlSignal { value: 0.0, channel: 25 },
             docked: false,
             level: 0.0,
-            deltas: vec![]
+            deltas: vec![],
+            sequence_number: 0,
         }
     }
 }
@@ -188,7 +191,10 @@ impl Zgicabra {
 // Module Functions
 //
 
-pub fn update (latest_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &HydraState) -> Result<(), Error> {
+pub fn update (latest_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &HydraState) {
+
+    latest_state.sequence_number = hydra_state.controllers[0].sequence_number;
+
 
     // Recent hydra history
 
@@ -202,65 +208,18 @@ pub fn update (latest_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: 
     copy_frame_to_wand(&right_frame, &mut latest_state.right, &prev_state.right);
 
     latest_state.separation = (latest_state.left.pos[0] - latest_state.right.pos[0]).abs();
-    latest_state.bend  = latest_state.left.twist - latest_state.right.twist;
-    latest_state.bend  = latest_state.bend.powf(3.0).clamp(-2.0, 2.0) * 0.5;
 
-    if latest_state.left.trigger != prev_state.left.trigger {
-        latest_state.deltas.push(Delta {
-            hand:  Hand::Left,
-            label: "Trigger".to_string(),
-            old:   prev_state.left.trigger,
-            new:   latest_state.left.trigger,
-        });
-    }
+    latest_state.bend = latest_state.left.twist - latest_state.right.twist;
+    latest_state.bend = latest_state.bend.powf(3.0).clamp(-2.0, 2.0) * 0.5;
 
-    if latest_state.right.trigger != prev_state.right.trigger {
-    }
+    let deltas = &mut latest_state.deltas;
 
-    if latest_state.left.bumper != prev_state.left.bumper {
-    }
-
-    if latest_state.right.bumper != prev_state.right.bumper {
-    }
-
-    if latest_state.left.home != prev_state.left.home {
-    }
-
-    if latest_state.right.home != prev_state.right.home {
-    }
-
-    if latest_state.left.stick.octant != prev_state.left.stick.octant {
-    }
-
-    if latest_state.right.stick.octant != prev_state.right.stick.octant {
-    }
-
-    if latest_state.left.buttons[0] != prev_state.left.buttons[0] {
-    }
-
-    if latest_state.right.buttons[0] != prev_state.right.buttons[0] {
-    }
-
-    if latest_state.left.buttons[1] != prev_state.left.buttons[1] {
-    }
-
-    if latest_state.right.buttons[1] != prev_state.right.buttons[1] {
-    }
-
-    if latest_state.left.buttons[2] != prev_state.left.buttons[2] {
-    }
-
-    if latest_state.right.buttons[2] != prev_state.right.buttons[2] {
-    }
-
-    if latest_state.left.buttons[3] != prev_state.left.buttons[3] {
-    }
-
-    if latest_state.right.buttons[3] != prev_state.right.buttons[3] {
-    }
-
-
-    print!("{}", latest_state.deltas.len());
+    capture_stick_events(prev_state.left,  latest_state.left,  deltas);
+    capture_stick_events(prev_state.right, latest_state.right, deltas);
+    capture_button_events(prev_state.left,  latest_state.left,  deltas);
+    capture_button_events(prev_state.right, latest_state.right, deltas);
+    capture_trigger_events(prev_state.left,  latest_state.left,  deltas);
+    capture_trigger_events(prev_state.right, latest_state.right, deltas);
 
 
     // Time derivatives
@@ -290,10 +249,18 @@ pub fn update (latest_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: 
 
     // Control signals
 
+    // TODO
 
-
-    Ok(())
 }
+
+pub fn clear (state: &mut Zgicabra, limit: usize) {
+    let len = state.deltas.len();
+
+    if len > limit {
+        state.deltas = state.deltas.split_off(len - limit);
+    }
+}
+
 
 
 //
@@ -304,6 +271,7 @@ fn copy_frame_to_wand (frame: &ControllerFrame, wand: &mut Wand, prev_wand: &Wan
     wand.pos = frame.pos.clone();
     wand.rot = frame.rot_quat.clone();
 
+    wand.pitch   = frame.rot_quat[1];
     wand.twist   = frame.rot_quat[2] * 2.0;
     wand.trigger = frame.trigger;
 
@@ -348,6 +316,53 @@ fn copy_joystick_to_wand (frame: &ControllerFrame, wand: &mut Wand) {
     wand.stick.quadrant = joystick_quadrant(&wand.stick);
     wand.stick.octant   = joystick_octant(&wand.stick);
     wand.stick.clicked  = (frame.buttons & 0b100000000) != 0;
+}
+
+fn capture_trigger_events (prev: Wand, curr: Wand, deltas: &mut Vec<DeltaEvent>) {
+    if curr.trigger > prev.trigger {
+        if prev.trigger == 0.0 { deltas.push(DeltaEvent::TriggerStart(curr.hand)); }
+        if curr.trigger == 1.0 { deltas.push(DeltaEvent::TriggerBottomOut(curr.hand)); }
+    }
+
+    if curr.trigger < prev.trigger {
+        if prev.trigger == 1.0 { deltas.push(DeltaEvent::TriggerRelease(curr.hand)); }
+        if curr.trigger == 0.0 { deltas.push(DeltaEvent::TriggerEnd(curr.hand)); }
+    }
+}
+
+fn capture_button_events (prev: Wand, curr: Wand, deltas: &mut Vec<DeltaEvent>) {
+   if curr.bumper && !prev.bumper {
+        deltas.push(DeltaEvent::BumperDown(curr.hand));
+    }
+    if !curr.bumper && prev.bumper {
+        deltas.push(DeltaEvent::BumperUp(curr.hand));
+    }
+    if curr.home && !prev.home {
+        deltas.push(DeltaEvent::HomeDown(curr.hand));
+    }
+    if !curr.home && prev.home {
+        deltas.push(DeltaEvent::HomeUp(curr.hand));
+    }
+    for i in 0..4 {
+        if curr.buttons[i] && !prev.buttons[i] {
+            deltas.push(DeltaEvent::ButtonDown(curr.hand, i as u8));
+        }
+        if !curr.buttons[i] && prev.buttons[i] {
+            deltas.push(DeltaEvent::ButtonUp(curr.hand, i as u8));
+        }
+    }
+}
+
+fn capture_stick_events (prev: Wand, curr: Wand, deltas: &mut Vec<DeltaEvent>) {
+    if curr.stick.octant != prev.stick.octant {
+        deltas.push(DeltaEvent::StickMove(curr.hand, curr.stick.octant));
+    }
+    if curr.stick.clicked && !prev.stick.clicked {
+        deltas.push(DeltaEvent::StickClickDown(curr.hand));
+    }
+    if !curr.stick.clicked && prev.stick.clicked {
+        deltas.push(DeltaEvent::StickClickUp(curr.hand));
+    }
 }
 
 fn joystick_quadrant (stick: &Joystick) -> Direction {
@@ -403,4 +418,3 @@ fn smoothstep (a: f32, b: f32, t: f32) -> f32 {
     let t = (t - a) / (b - a);
     t * t * (3.0 - 2.0 * t)
 }
-
