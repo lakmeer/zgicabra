@@ -4,18 +4,24 @@ use std::time::Duration;
 use std::io::{Error};
 use core::f32::consts::PI;
 
-use crate::sixense;
-use crate::sixense::ControllerFrame;
-use crate::hydra::HydraState;
-
+use crate::hydra;
+use crate::hydra::{HydraState,ControllerFrame};
+use crate::tools::*;
 
 const JOYSTICK_DEADZONE: f32 = 0.15;
-
 
 
 //
 // Data Types
 //
+
+#[derive(Debug, Clone, Copy)]
+pub enum Voice {
+    Classic    = 0,
+    Eternal    = 1,
+    Pennysack  = 2,
+    Submission = 3
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Hand {
@@ -123,9 +129,47 @@ impl Wand {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ControlSignal {
-    value: f32,
-    channel: u8,
+pub struct NoteState {
+    pub on: bool,
+    pub root: u8,
+    pub bend: f32,
+    pub current: u8,
+}
+
+impl NoteState {
+    pub fn new() -> NoteState {
+        NoteState {
+            on: false,
+            root: 42,
+            bend: 0.0,
+            current: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SignalState {
+    pub filter:       f32,
+    pub fuzz:         f32,
+    pub width:        f32,
+    pub thump:        f32,
+    pub velocity:     f32,
+    pub acceleration: f32,
+    pub jerk:         f32,
+}
+
+impl SignalState {
+    pub fn new() -> SignalState {
+        SignalState {
+            filter: 0.0,
+            fuzz:   0.0,
+            width:  0.0,
+            thump:  0.0,
+            velocity:     0.0,
+            acceleration: 0.0,
+            jerk:         0.0,
+        }
+    }
 }
 
 
@@ -133,21 +177,25 @@ pub struct ControlSignal {
 // Delta Events
 //
 
+type Note  = u8;
+
 #[derive(Debug, Clone)]
 pub enum DeltaEvent {
-    TriggerStart(Hand),
-    TriggerBottomOut(Hand),
-    TriggerRelease(Hand),
-    TriggerEnd(Hand),
-    BumperDown(Hand),
-    BumperUp(Hand),
-    HomeDown(Hand),
-    HomeUp(Hand),
-    ButtonDown(Hand, u8),
-    ButtonUp(Hand, u8),
-    StickClickDown(Hand),
-    StickClickUp(Hand),
-    StickMove(Hand, Direction),
+    NoteStart(Note),
+    NoteChange(Note, Note),
+    NoteEnd(Note),
+    FilterLevel(f32),
+    FuzzLevel(f32),
+    WidthLevel(f32),
+    PitchBend(f32),
+    VoiceChange(Voice),
+    TuneUp(),
+    TuneDown(),
+    NextVoice(),
+    PrevVoice(),
+    ThumpToggle(),
+    FuzzToggle(),
+    Panic()
 }
 
 
@@ -160,13 +208,12 @@ pub struct Zgicabra {
     pub left:  Wand,
     pub right: Wand,
     pub separation: f32,
-    pub root_note: u8,
-    pub bend: f32,
-    pub filter: ControlSignal,
     pub docked: bool,
     pub level: f32,
-    pub deltas: Vec<DeltaEvent>,
     pub sequence_number: u8,
+    pub note: NoteState,
+    pub signal: SignalState,
+    pub voice: Voice,
 }
 
 impl Zgicabra {
@@ -175,13 +222,12 @@ impl Zgicabra {
             left:  Wand::new(),
             right: Wand::new(),
             separation: 0.0,
-            root_note: 65,
-            bend: 0.0,
-            filter: ControlSignal { value: 0.0, channel: 25 },
             docked: false,
             level: 0.0,
-            deltas: vec![],
             sequence_number: 0,
+            note: NoteState::new(),
+            signal: SignalState::new(),
+            voice: Voice::Classic,
         }
     }
 }
@@ -191,74 +237,157 @@ impl Zgicabra {
 // Module Functions
 //
 
-pub fn update (latest_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &HydraState) {
+pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &HydraState, deltas: &mut Vec<DeltaEvent>) {
 
-    latest_state.sequence_number = hydra_state.controllers[0].sequence_number;
+    // Sequence number happens always
 
-
-    // Recent hydra history
-
-    let left_frame  = hydra_state.controllers[0];
-    let right_frame = hydra_state.controllers[1];
+    curr_state.sequence_number = hydra_state.controllers[0].sequence_number;
+    curr_state.docked = hydra_state.controllers[0].is_docked != 0
+                     || hydra_state.controllers[1].is_docked != 0;
 
 
-    // Map immediately updated values (avg position with previous frame)
+    // Map immediately updated values (and avg position with previous frame)
 
-    copy_frame_to_wand(&left_frame,  &mut latest_state.left,  &prev_state.left);
-    copy_frame_to_wand(&right_frame, &mut latest_state.right, &prev_state.right);
-
-    latest_state.separation = (latest_state.left.pos[0] - latest_state.right.pos[0]).abs();
-
-    latest_state.bend = latest_state.left.twist - latest_state.right.twist;
-    latest_state.bend = latest_state.bend.powf(3.0).clamp(-2.0, 2.0) * 0.5;
-
-    let deltas = &mut latest_state.deltas;
-
-    capture_stick_events(prev_state.left,  latest_state.left,  deltas);
-    capture_stick_events(prev_state.right, latest_state.right, deltas);
-    capture_button_events(prev_state.left,  latest_state.left,  deltas);
-    capture_button_events(prev_state.right, latest_state.right, deltas);
-    capture_trigger_events(prev_state.left,  latest_state.left,  deltas);
-    capture_trigger_events(prev_state.right, latest_state.right, deltas);
+    copy_frame_to_wand(&hydra_state.controllers[0], &mut curr_state.left,  &prev_state.left);
+    copy_frame_to_wand(&hydra_state.controllers[1], &mut curr_state.right, &prev_state.right);
 
 
     // Time derivatives
 
-    let delta:f32 = hydra_state.timedelta.as_millis() as f32;
+    let dt:f32 = hydra_state.timedelta.as_millis() as f32;
 
-    latest_state.left.vel   = derivative_r3(&left_frame.pos,         &prev_state.left.pos,  delta);
-    latest_state.right.vel  = derivative_r3(&right_frame.pos,        &prev_state.right.pos, delta);
-    latest_state.left.acc   = derivative_r3(&latest_state.left.vel,  &prev_state.left.vel,  delta);
-    latest_state.right.acc  = derivative_r3(&latest_state.right.vel, &prev_state.right.vel, delta);
-    latest_state.left.jerk  = derivative_r3(&latest_state.left.acc,  &prev_state.left.acc,  delta);
-    latest_state.right.jerk = derivative_r3(&latest_state.right.acc, &prev_state.right.acc, delta);
+    curr_state.left.vel   = derivative_r3(&curr_state.left.pos,  &prev_state.left.pos,  dt);
+    curr_state.right.vel  = derivative_r3(&curr_state.right.pos, &prev_state.right.pos, dt);
+    curr_state.left.acc   = derivative_r3(&curr_state.left.vel,  &prev_state.left.vel,  dt);
+    curr_state.right.acc  = derivative_r3(&curr_state.right.vel, &prev_state.right.vel, dt);
+    curr_state.left.jerk  = derivative_r3(&curr_state.left.acc,  &prev_state.left.acc,  dt);
+    curr_state.right.jerk = derivative_r3(&curr_state.right.acc, &prev_state.right.acc, dt);
 
-    latest_state.left.scalar_vel   = (hyp(&latest_state.left.vel)   + &prev_state.left.scalar_vel)   / 2.0;
-    latest_state.right.scalar_vel  = (hyp(&latest_state.right.vel)  + &prev_state.right.scalar_vel)  / 2.0;
-    latest_state.left.scalar_acc   = (hyp(&latest_state.left.acc)   + &prev_state.left.scalar_acc)   / 2.0;
-    latest_state.right.scalar_acc  = (hyp(&latest_state.right.acc)  + &prev_state.right.scalar_acc)  / 2.0;
-    latest_state.left.scalar_jerk  = (hyp(&latest_state.left.jerk)  + &prev_state.left.scalar_jerk)  / 2.0;
-    latest_state.right.scalar_jerk = (hyp(&latest_state.right.jerk) + &prev_state.right.scalar_jerk) / 2.0;
-
-
-    // Singleton states
-
-    latest_state.docked = left_frame.is_docked != 0 || right_frame.is_docked != 0;
-    latest_state.level  = smoothstep(0.0, 1.0, (latest_state.left.trigger + latest_state.right.trigger).clamp(0.0, 1.0));
+    curr_state.left.scalar_vel   = (hyp(&curr_state.left.vel)   + &prev_state.left.scalar_vel)   / 2.0;
+    curr_state.right.scalar_vel  = (hyp(&curr_state.right.vel)  + &prev_state.right.scalar_vel)  / 2.0;
+    curr_state.left.scalar_acc   = (hyp(&curr_state.left.acc)   + &prev_state.left.scalar_acc)   / 2.0;
+    curr_state.right.scalar_acc  = (hyp(&curr_state.right.acc)  + &prev_state.right.scalar_acc)  / 2.0;
+    curr_state.left.scalar_jerk  = (hyp(&curr_state.left.jerk)  + &prev_state.left.scalar_jerk)  / 2.0;
+    curr_state.right.scalar_jerk = (hyp(&curr_state.right.jerk) + &prev_state.right.scalar_jerk) / 2.0;
 
 
-    // Control signals
+    // Two-handed values
 
-    // TODO
+    curr_state.separation = (curr_state.left.pos[0] - curr_state.right.pos[0]).abs();
+    curr_state.note.bend  = curr_state.left.twist - curr_state.right.twist;
+    curr_state.note.bend  = curr_state.note.bend.powf(3.0).clamp(-2.0, 2.0) * 0.5;
 
-}
+    let trigger_total = curr_state.left.trigger + curr_state.right.trigger;
+    curr_state.level  = smoothstep(0.0, 1.0, trigger_total.clamp(0.0, 1.0));
 
-pub fn clear (state: &mut Zgicabra, limit: usize) {
-    let len = state.deltas.len();
 
-    if len > limit {
-        state.deltas = state.deltas.split_off(len - limit);
+    // Triggers and notes
+
+    let left_trigger_start  = curr_state.left.trigger  > prev_state.left.trigger  && prev_state.left.trigger  == 0.0;
+    let left_trigger_end    = prev_state.left.trigger  > curr_state.left.trigger  && curr_state.left.trigger  == 0.0;
+    let right_trigger_start = curr_state.right.trigger > prev_state.right.trigger && prev_state.right.trigger == 0.0;
+    let right_trigger_end   = prev_state.right.trigger > curr_state.right.trigger && curr_state.right.trigger == 0.0;
+
+    // If note is note currently on and either trigger begins to be pressed
+    if (left_trigger_start || right_trigger_start) && !curr_state.note.on {
+        deltas.push(DeltaEvent::NoteStart(curr_state.note.current));
+        curr_state.note.on = true;
     }
+
+    // If note is currently on and left trigger is released and right trigger is not pressed at all
+    if curr_state.note.on && (left_trigger_end && curr_state.right.trigger == 0.0) {
+        deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
+        curr_state.note.on = false;
+    }
+
+    // If note is currently on and right trigger is released and left trigger is not pressed at all
+    if curr_state.note.on && (right_trigger_end && curr_state.left.trigger == 0.0) {
+        deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
+        curr_state.note.on = false;
+    }
+
+    // Update note to stick position
+    let new_note = (curr_state.note.root as i8
+        + stick_to_note_offset(&curr_state.left)
+        + stick_to_note_modifier(&curr_state.right)) as u8;
+
+    if curr_state.note.current != new_note && curr_state.note.on {
+        deltas.push(DeltaEvent::NoteChange(curr_state.note.current, new_note));
+        curr_state.note.current = new_note;
+    }
+
+
+    // Double-stick-click for panic
+
+    if curr_state.left.stick.clicked && curr_state.right.stick.clicked {
+        deltas.push(DeltaEvent::Panic());
+    }
+
+
+    // Button Events
+
+    fn each_wand (prev: Wand, curr: Wand, deltas: &mut Vec<DeltaEvent>) {
+        if curr.bumper && !prev.bumper {
+            //deltas.push(DeltaEvent::BumperDown(curr.hand));
+        }
+        if !curr.bumper && prev.bumper {
+            //deltas.push(DeltaEvent::BumperUp(curr.hand));
+        }
+        if curr.home && !prev.home {
+            //deltas.push(DeltaEvent::HomeDown(curr.hand));
+        }
+        if !curr.home && prev.home {
+            //deltas.push(DeltaEvent::HomeUp(curr.hand));
+        }
+    }
+
+    each_wand(prev_state.left,  curr_state.left,  deltas);
+    each_wand(prev_state.right, curr_state.right, deltas);
+
+
+    // Buttons
+
+    /*                    ╭─────[ - Tune + ]─────╮
+              ┏━━━┓     ┏━┷━┓                  ┏━┷━┓     ┏━━━┓
+            ╭─┨ 4 ┃     ┃ 1 ┃                  ┃ 1 ┃     ┃ 4 ┠─╮
+            │ ┗━━━┛     ┗━━━┛                  ┗━━━┛     ┗━━━┛ │
+    THUMP ]─┤                                                  ├─[ FUZZ
+            │   ┏━━━┓ ┏━━━┓                      ┏━━━┓ ┏━━━┓   │
+            ╰───┨ 3 ┃ ┃ 2 ┃                      ┃ 2 ┃ ┃ 3 ┠───╯
+                ┗━━━┛ ┗━┯━┛                      ┗━┯━┛ ┗━━━┛
+                        ╰──────[ - Voices + ]──────╯                        */ 
+
+    // Two-handed buttons
+    for i in 0..4 {
+        if curr_state.left.buttons[i] && curr_state.right.buttons[i] &&
+            (!prev_state.left.buttons[i] || !prev_state.right.buttons[i]) {
+
+            // Rocking left-or-right
+            // Delta is negative if left hand button was most recently unpressed, positive otherwise
+            let rock_direction:i8 = if !prev_state.left.buttons[i] { -1 } else { 1 };
+
+            match i {
+                0 => curr_state.note.root = curr_state.note.root + 1,
+                1 => curr_state.note.root = ((curr_state.note.root as i8) + rock_direction) as u8,
+                _ => {},
+            }
+        }
+    }
+
+    // Thumbsmashes
+    for hand in [Hand::Left, Hand::Right].iter() {
+        let curr = if *hand == Hand::Left { &curr_state.left } else { &curr_state.right };
+        let prev = if *hand == Hand::Left { &prev_state.left } else { &prev_state.right };
+
+        if curr.buttons[3] && curr.buttons[4] && (!prev.buttons[3] || !prev.buttons[4]) {
+            match hand {
+                Hand::Left  => deltas.push(DeltaEvent::ThumpToggle()),
+                Hand::Right => deltas.push(DeltaEvent::FuzzToggle()),
+                Hand::Neither => {},
+            }
+        }
+    }
+
 }
 
 
@@ -279,12 +408,12 @@ fn copy_frame_to_wand (frame: &ControllerFrame, wand: &mut Wand, prev_wand: &Wan
     wand.pos[1] = (wand.pos[1] + prev_wand.pos[1])/2.0;
     wand.pos[2] = (wand.pos[2] + prev_wand.pos[2])/2.0;
 
-    wand.bumper = button_mask(frame.buttons, sixense::BUTTON_BUMPER);
-    wand.home   = button_mask(frame.buttons, sixense::BUTTON_HOME);
+    wand.bumper = button_mask(frame.buttons, hydra::BUTTON_BUMPER);
+    wand.home   = button_mask(frame.buttons, hydra::BUTTON_HOME);
 
     wand.hand = match frame.which_hand {
-        sixense::LEFT_HAND  => Hand::Left,
-        sixense::RIGHT_HAND => Hand::Right,
+        hydra::LEFT_HAND  => Hand::Left,
+        hydra::RIGHT_HAND => Hand::Right,
         _                   => Hand::Neither,
     };
 
@@ -292,16 +421,16 @@ fn copy_frame_to_wand (frame: &ControllerFrame, wand: &mut Wand, prev_wand: &Wan
     match wand.hand {
         Hand::Neither => {},
         Hand::Left => {
-            wand.buttons[0] = button_mask(frame.buttons, sixense::BUTTON_4);
-            wand.buttons[1] = button_mask(frame.buttons, sixense::BUTTON_2);
-            wand.buttons[2] = button_mask(frame.buttons, sixense::BUTTON_1);
-            wand.buttons[3] = button_mask(frame.buttons, sixense::BUTTON_3);
+            wand.buttons[0] = button_mask(frame.buttons, hydra::BUTTON_4);
+            wand.buttons[1] = button_mask(frame.buttons, hydra::BUTTON_2);
+            wand.buttons[2] = button_mask(frame.buttons, hydra::BUTTON_1);
+            wand.buttons[3] = button_mask(frame.buttons, hydra::BUTTON_3);
         },
         Hand::Right => {
-            wand.buttons[0] = button_mask(frame.buttons, sixense::BUTTON_3);
-            wand.buttons[1] = button_mask(frame.buttons, sixense::BUTTON_1);
-            wand.buttons[2] = button_mask(frame.buttons, sixense::BUTTON_2);
-            wand.buttons[3] = button_mask(frame.buttons, sixense::BUTTON_4);
+            wand.buttons[0] = button_mask(frame.buttons, hydra::BUTTON_3);
+            wand.buttons[1] = button_mask(frame.buttons, hydra::BUTTON_1);
+            wand.buttons[2] = button_mask(frame.buttons, hydra::BUTTON_2);
+            wand.buttons[3] = button_mask(frame.buttons, hydra::BUTTON_4);
         },
     }
 
@@ -318,52 +447,38 @@ fn copy_joystick_to_wand (frame: &ControllerFrame, wand: &mut Wand) {
     wand.stick.clicked  = (frame.buttons & 0b100000000) != 0;
 }
 
-fn capture_trigger_events (prev: Wand, curr: Wand, deltas: &mut Vec<DeltaEvent>) {
-    if curr.trigger > prev.trigger {
-        if prev.trigger == 0.0 { deltas.push(DeltaEvent::TriggerStart(curr.hand)); }
-        if curr.trigger == 1.0 { deltas.push(DeltaEvent::TriggerBottomOut(curr.hand)); }
-    }
-
-    if curr.trigger < prev.trigger {
-        if prev.trigger == 1.0 { deltas.push(DeltaEvent::TriggerRelease(curr.hand)); }
-        if curr.trigger == 0.0 { deltas.push(DeltaEvent::TriggerEnd(curr.hand)); }
-    }
-}
-
-fn capture_button_events (prev: Wand, curr: Wand, deltas: &mut Vec<DeltaEvent>) {
-   if curr.bumper && !prev.bumper {
-        deltas.push(DeltaEvent::BumperDown(curr.hand));
-    }
-    if !curr.bumper && prev.bumper {
-        deltas.push(DeltaEvent::BumperUp(curr.hand));
-    }
-    if curr.home && !prev.home {
-        deltas.push(DeltaEvent::HomeDown(curr.hand));
-    }
-    if !curr.home && prev.home {
-        deltas.push(DeltaEvent::HomeUp(curr.hand));
-    }
-    for i in 0..4 {
-        if curr.buttons[i] && !prev.buttons[i] {
-            deltas.push(DeltaEvent::ButtonDown(curr.hand, i as u8));
-        }
-        if !curr.buttons[i] && prev.buttons[i] {
-            deltas.push(DeltaEvent::ButtonUp(curr.hand, i as u8));
-        }
+fn stick_to_note_offset(&wand: &Wand) -> i8 {
+    match wand.stick.octant {
+        Direction::Left      => -4,
+        Direction::UpLeft    => -2,
+        Direction::Up        =>  2,
+        Direction::UpRight   =>  3,
+        Direction::Right     =>  5,
+        Direction::DownRight =>  7,
+        Direction::Down      =>  8,
+        Direction::DownLeft  => 10,
+        _ => 0,
     }
 }
 
-fn capture_stick_events (prev: Wand, curr: Wand, deltas: &mut Vec<DeltaEvent>) {
-    if curr.stick.octant != prev.stick.octant {
-        deltas.push(DeltaEvent::StickMove(curr.hand, curr.stick.octant));
-    }
-    if curr.stick.clicked && !prev.stick.clicked {
-        deltas.push(DeltaEvent::StickClickDown(curr.hand));
-    }
-    if !curr.stick.clicked && prev.stick.clicked {
-        deltas.push(DeltaEvent::StickClickUp(curr.hand));
+fn stick_to_note_modifier(&wand: &Wand) -> i8 {
+    match wand.stick.octant {
+        Direction::Left      =>   1,
+        Direction::Right     =>  -1,
+        Direction::Up        =>  12,
+        Direction::Down      => -12,
+        Direction::UpLeft    =>  13,
+        Direction::UpRight   =>  11,
+        Direction::DownLeft  => -11,
+        Direction::DownRight => -13,
+        _ => 0,
     }
 }
+
+
+//
+// Other Helpers
+//
 
 fn joystick_quadrant (stick: &Joystick) -> Direction {
     if stick.r < JOYSTICK_DEADZONE { return Direction::None; }
@@ -399,22 +514,3 @@ fn derivative_r3 (a: &[f32;3], b: &[f32;3], delta: f32) -> [f32;3] {
     [ (a[0] - b[0]) / delta, (a[1] - b[1]) / delta, (a[2] - b[2]) / delta ]
 }
 
-fn hyp (v: &[f32;3]) -> f32 {
-    let dx = v[0] * v[0];
-    let dy = v[1] * v[1];
-    let dz = v[2] * v[2];
-    (dx + dy + dz).sqrt()
-}
-
-fn rad_to_cycles (radians: f32) -> f32 {
-    1.0 - (radians + PI/2.0 + PI) / (2.0 * PI) % 1.0
-}
-
-fn button_mask (buttons: u32, mask: u32) -> bool {
-    (buttons & mask) != 0
-}
-
-fn smoothstep (a: f32, b: f32, t: f32) -> f32 {
-    let t = (t - a) / (b - a);
-    t * t * (3.0 - 2.0 * t)
-}

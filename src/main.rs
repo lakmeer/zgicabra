@@ -6,16 +6,16 @@ use std::time::Duration;
 
 use midir::{MidiOutput, MidiOutputConnection};
 
-
-mod sixense;
+mod tools;
 mod hydra;
 mod zgicabra;
 mod midi;
+mod midi_event;
 mod ui;
 
 use hydra::HydraState;
-use zgicabra::Zgicabra;
-use midi::MidiEvent;
+use zgicabra::{Zgicabra, DeltaEvent};
+use midi_event::MidiEvent;
 
 
 pub const HISTORY_WINDOW: usize = 10;
@@ -36,6 +36,10 @@ const MIDI_DEVICE_NAME: &str = "Zgicabra";
  * - Represent stick click on UI
  * - Represent seperation/facing vector on UI
  *
+ * BUGS
+ *
+ * - Don't draw anything when either wand is docked
+ *
 **/
 
 
@@ -46,7 +50,7 @@ const MIDI_DEVICE_NAME: &str = "Zgicabra";
 fn main() {
 
     print!("{}{}{}", termion::clear::All, termion::cursor::Hide, termion::cursor::Goto(1,1));
-    println!("█║▌▌║│▌█║▌▌║║║▌║║▌▌│▌█│║▌▌│║█▌║║║▌│ zgicabra ▌▌▌│║▌║║▌█║▌║▌║█║▌║│▌█║║▌▌║║║▌║║█▌│\n");
+    println!("█║▌▌║│▌█║▌▌║║║▌║║▌▌│▌█│║▌▌│║█▌║▌│ zgicabra ▌▌│║▌║▌█║▌║▌║█║▌║│▌█║║▌▌║║║▌║║█▌│\n");
 
 
     //
@@ -64,8 +68,9 @@ fn main() {
 
     let mut hydra_state = HydraState::new();
     let mut zgicabra    = Zgicabra::new();
-    let mut history:     Vec<Zgicabra>  = Vec::with_capacity(HISTORY_WINDOW);
-    let mut midi_events: Vec<MidiEvent> = Vec::new();
+    let mut history:      Vec<Zgicabra>   = Vec::with_capacity(HISTORY_WINDOW);
+    let mut midi_events:  Vec<MidiEvent>  = Vec::new();
+    let mut delta_events: Vec<DeltaEvent> = Vec::new();
 
 
     //
@@ -82,21 +87,23 @@ fn main() {
 
     loop {
         hydra::update(&mut hydra_state);
-        zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state);
+        zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state, &mut delta_events);
 
-        midi::update(&zgicabra, &mut midi_events);
+        midi::update(&zgicabra, &delta_events, &mut midi_events);
         midi::dispatch(&midi_events, &mut connection);
 
         ui::draw_all(&zgicabra, &history);
-        ui::draw_events(&zgicabra.deltas, &midi_events);
+        ui::draw_events(&delta_events, &midi_events);
+        ui::draw_note_state(&zgicabra.note, &zgicabra.signal);
+        //ui::draw_graph(&history);
 
-        midi::clear(&mut midi_events);
-        zgicabra::clear(&mut zgicabra, 10);
+        midi_events.clear();
+        delta_events.clear();
 
-        history.push(zgicabra.clone());
         if history.len() >= HISTORY_WINDOW {
             history.remove(0);
         }
+        history.push(zgicabra.clone());
 
         sleep(REFRESH_MS);
 

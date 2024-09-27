@@ -5,29 +5,21 @@ use std::f32::consts::PI;
 
 use rgb::RGB8;
 
+use rand::prelude::IteratorRandom;
 use textplots::{ColorPlot,Chart,Shape};
 
 use drawille::{Canvas,PixelColor};
 use drawille::PixelColor::TrueColor;
 
-use rand::prelude::*;
-use rand_distr::StandardNormal;
-
-use lazy_static::lazy_static;
-
-use crate::midi::MidiEvent;
+use crate::midi_event::MidiEvent;
 use crate::hydra::HydraState;
-use crate::zgicabra::{DeltaEvent,Zgicabra,Wand,Hand,Direction,Joystick};
+use crate::zgicabra::{DeltaEvent,Zgicabra,Wand,Hand,Direction,Joystick,NoteState,SignalState};
+use crate::tools::*;
 
 use crate::HISTORY_WINDOW;
 
 
 type Screen = termion::screen::AlternateScreen<std::io::Stdout>;
-
-
-lazy_static! {
-    static ref START_TIME: Instant = Instant::now();
-}
 
 
 const BLUE_0:RGB8  = RGB8 { r: 120, g: 150, b: 255 };
@@ -48,7 +40,7 @@ const GREEN_3:RGB8 = RGB8 { r: 180, g: 180, b: 180 };
 pub fn draw_all (zgicabra: &Zgicabra, history: &Vec<Zgicabra>) {
 
     // Text dimensions
-    const TEXT_WIDTH  : u16 = 80;
+    const TEXT_WIDTH  : u16 = 76;
     const TEXT_HEIGHT : u16 = TEXT_WIDTH / 4;
 
     // Pixel dimensions
@@ -63,25 +55,30 @@ pub fn draw_all (zgicabra: &Zgicabra, history: &Vec<Zgicabra>) {
     let mut canvas = Canvas::new(CANVAS_WIDTH as u32, CANVAS_HEIGHT as u32);
 
     draw_banner(TEXT_WIDTH, 1, zgicabra.level == 0.0);
-    draw_wand(&mut canvas, zgicabra.left,  WIDTH*1.0/4.0, HEIGHT/2.0, WIDTH/6.0);
-    draw_wand(&mut canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/2.0, WIDTH/6.0);
 
-    if !zgicabra.docked && zgicabra.level > 0.0  {
-        draw_bend(&mut canvas, zgicabra.separation,
-                  zgicabra.left.twist, zgicabra.right.twist,
-                  (WIDTH*1.0/4.0) as u32,
-                  (WIDTH*3.0/4.0) as u32,
-                  (HEIGHT/2.0) as u32,
-                  WIDTH/6.0,
-                  zgicabra.level);
+    if !zgicabra.docked {
+        draw_wand(&mut canvas, zgicabra.left,  WIDTH*1.0/4.0, HEIGHT/2.0, WIDTH/6.0);
+        draw_wand(&mut canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/2.0, WIDTH/6.0);
+
+        if zgicabra.level > 0.0  {
+            draw_bend(&mut canvas, zgicabra.separation,
+                      zgicabra.left.twist, zgicabra.right.twist,
+                      (WIDTH*1.0/4.0) as u32,
+                      (WIDTH*3.0/4.0) as u32,
+                      (HEIGHT/2.0) as u32,
+                      WIDTH/6.0,
+                      zgicabra.level);
+        }
+    } else {
+        draw_wand_fixed(&mut canvas, zgicabra.left,  WIDTH*1.0/4.0, HEIGHT/2.0, WIDTH/6.0);
+        draw_wand_fixed(&mut canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/2.0, WIDTH/6.0);
     }
-
-    //draw_graph(history);
 
     // Output canvas
     print!("{}{}", termion::cursor::Goto(1, 2), &mut canvas.frame());
-    println!("{}{}", termion::cursor::Goto(1, TEXT_HEIGHT + 4), barcode_string(TEXT_WIDTH.into(), zgicabra.level == 0.0));
+    print!("{}{}", termion::cursor::Goto(1, TEXT_HEIGHT + 4), barcode_string(TEXT_WIDTH.into(), zgicabra.level == 0.0));
 
+    //print!("{}", history[0].sequence_number);
 }
 
 
@@ -98,21 +95,36 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32) {
         _ => facing - PI*3.0/4.0 + PI/4.0 * wand.stick.octant as i32 as f32
     };
 
-
     // Joystick Spokes
+    draw_joystick_spokes(canvas, wand, x, y, radius, facing, color);
+    draw_joystick_position(canvas, wand, x, y, radius, facing, stick_facing);
 
+    // Trigger
+    draw_trigger_fx(canvas, wand, x, y, radius, stick_facing);
+
+    // Buttons
+    draw_buttons(canvas, &wand, x, y, radius, facing);
+    if wand.home { draw_home_button(canvas, x, y, radius, facing); }
+    if wand.bumper { draw_bumper(canvas, x, y, radius, facing); }
+}
+
+
+fn draw_wand_fixed (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32) {
+    draw_joystick_spokes(canvas, wand, x, y, radius, -PI/2.0, PixelColor::White);
+}
+
+
+fn draw_joystick_spokes (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32, angle: f32, color: PixelColor) {
     for i in 0..8 {
-        let a = facing + (i as f32/4.0) * PI + 0.125 * PI;
-        let c = electric(wand.trigger * rand_uniform(1.0));
-        line(canvas, x, y, x + radius * a.cos(), y + radius * a.sin(), c);
+        let a = angle + (i as f32/4.0) * PI + 0.125 * PI;
+        line(canvas, x, y, x + radius * a.cos(), y + radius * a.sin(), color);
     }
-    
+}
 
-    // Joystick Selected Octant
 
+fn draw_joystick_position (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32, facing: f32, stick_facing: f32) {
     if wand.stick.octant != Direction::None {
         let a = if wand.trigger > 0.0 { stick_facing } else { facing + wand.stick.theta * 2.0 * PI };
-
         line(canvas,
              x + 1.15 * radius * (a - PI/8.0).cos(),
              y + 1.15 * radius * (a - PI/8.0).sin(),
@@ -120,14 +132,14 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32) {
              y + 1.15 * radius * (a + PI/8.0).sin(),
              PixelColor::White);
     }
+}
 
 
-    // Trigger
-
+fn draw_trigger_fx (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32, stick_facing: f32) {
     if wand.trigger > 0.0 {
         for i in 0..128 {
-
             match wand.stick.octant {
+
                 Direction::None => {
                     let a = i as f32 / 128.0 * 2.0 * PI;
                     let (j, c) = breakup(wand.trigger, 1.0);
@@ -159,23 +171,10 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32) {
                     pset(canvas, x + (len + j) * a.cos(), y + (len + j) * a.sin(), c);
                     pset(canvas, x + len * a.cos(), y + len * a.sin(), PixelColor::White);
                 }
+
             }
         }
     }
-
-
-    // Buttons
-
-    draw_buttons(canvas, &wand, x, y, radius, facing);
-
-    if wand.home {
-        draw_home_button(canvas, x, y, radius, facing);
-    }
-
-    if wand.bumper {
-        draw_bumper(canvas, x, y, radius, facing);
-    }
-
 }
 
 
@@ -192,7 +191,6 @@ fn draw_bumper (canvas: &mut Canvas, x: f32, y: f32, radius: f32, angle: f32) {
 
 
 fn draw_buttons (canvas: &mut Canvas, wand: &Wand, x: f32, y: f32, radius: f32, angle: f32) {
-
     for (ix, button) in wand.buttons.iter().enumerate() {
         let angular_offset = ix as f32 * PI/4.0;
 
@@ -203,7 +201,6 @@ fn draw_buttons (canvas: &mut Canvas, wand: &Wand, x: f32, y: f32, radius: f32, 
         };
 
         let c = electric(rand_uniform(1.0));
-
         let px = x + 1.3 * radius * pos.cos();
         let py = y + 1.3 * radius * pos.sin();
 
@@ -372,46 +369,9 @@ fn rand_barcode_char_as_str (solid: bool) -> char {
     }
 }
 
-fn time_now () -> f32 {
-    START_TIME.elapsed().as_millis() as f32 / 1000.0
-}
-
-fn sin (freq: f32, phase: f32) -> f32 {
-    (time_now() * PI * freq + phase).sin()
-}
-
-fn nsin (phase: f32) -> f32 {
-    sin(1.0, phase) * 0.5 + 0.5
-}
-
-fn cos (phase: f32) -> f32 {
-    (time_now() + phase).cos()
-}
-
-fn ncos (phase: f32) -> f32 {
-    cos(phase) * 0.5 + 0.5
-}
-
-fn rand_normal (n: f32) -> f32 {
-    n * rand::thread_rng().sample::<f32,_>(StandardNormal)
-}
-
-fn rand_uniform (n: f32) -> f32 {
-    n * rand::random::<f32>()
-}
-
-fn ease_in (t: f32) -> f32 {
-    t * t
-}
-
-fn ease_out (t: f32) -> f32 {
-    1.0 - ease_in(1.0 - t)
-}
-
-
 
 //
-// Plots
+// Plots and Readouts
 //
 
 pub fn draw_graph (history: &Vec<Zgicabra>) {
@@ -433,16 +393,17 @@ pub fn draw_graph (history: &Vec<Zgicabra>) {
             Some(frame) => {
                 left_pos[i]   = (i as f32, frame.left.pos[0]);
                 right_pos[i]  = (i as f32, frame.right.pos[0]);
-                left_vel[i]   = (i as f32, frame.left.scalar_vel   *  -100.0);
-                right_vel[i]  = (i as f32, frame.right.scalar_vel  *   100.0);
-                left_acc[i]   = (i as f32, frame.left.scalar_acc   *  -800.0);
-                right_acc[i]  = (i as f32, frame.right.scalar_acc  *   800.0);
+                left_vel[i]   = (i as f32, frame.left.scalar_vel   *   -100.0);
+                right_vel[i]  = (i as f32, frame.right.scalar_vel  *    100.0);
+                left_acc[i]   = (i as f32, frame.left.scalar_acc   *   -800.0);
+                right_acc[i]  = (i as f32, frame.right.scalar_acc  *    800.0);
                 left_jerk[i]  = (i as f32, frame.left.scalar_jerk  * -60000.0);
                 right_jerk[i] = (i as f32, frame.right.scalar_jerk *  60000.0);
             }
         }
     }
 
+    print!("{}", termion::cursor::Goto(1, 39));
     Chart::new_with_y_range(140, 140, 0.0, n as f32, -500.0, 500.0)
         .linecolorplot(&Shape::Lines(&left_jerk), GREEN_3)
         .linecolorplot(&Shape::Lines(&left_acc),  GREEN_2)
@@ -452,27 +413,39 @@ pub fn draw_graph (history: &Vec<Zgicabra>) {
         .linecolorplot(&Shape::Lines(&right_acc),  BLUE_2)
         .linecolorplot(&Shape::Lines(&right_vel),  BLUE_0)
         .linecolorplot(&Shape::Lines(&right_pos),  BLUE_1)
-        .nice();
+        .display();
 }
 
 pub fn draw_events (delta_events: &Vec<DeltaEvent>, midi_events: &Vec<MidiEvent>) {
     print!("{}", termion::cursor::Goto(1, 26));
-
     for i in 0..22 {
         println!("                                                                                 ");
     }
 
-    print!("{}", termion::cursor::Goto(1, 26));
-
-    println!("Delta events: {}", delta_events.len());
-    for event in delta_events {
-        println!("- {:?}", event);
+    println!("{}Delta events: {}", termion::cursor::Goto(1, 26), delta_events.len());
+    for (ix, event) in delta_events.iter().enumerate() {
+        println!("{}- {:?}", termion::cursor::Goto(1, 28 + ix as u16), event);
     }
 
-    println!("");
-    println!("MIDI events: {}", midi_events.len());
-    for event in midi_events {
-        println!("- {:?}", event);
+    println!("{}MIDI events:  {}", termion::cursor::Goto(29, 26), midi_events.len());
+    for (ix, event) in midi_events.iter().enumerate() {
+        println!("{}- {:?}", termion::cursor::Goto(30, 28 + ix as u16), event);
     }
+}
+
+pub fn draw_note_state (note_state: &NoteState, signal_state: &SignalState) {
+    println!("{}Note: [{}]", termion::cursor::Goto(58, 26), if note_state.on { note_state.current } else { 0 });
+    println!("{}- Root:    {}", termion::cursor::Goto(58, 28), format_note(note_state.root));
+    println!("{}- Current: {}", termion::cursor::Goto(58, 29), format_note(note_state.current));
+    println!("{}- Pitch:   {}", termion::cursor::Goto(58, 30), note_state.bend);
+
+    println!("{}Signals:", termion::cursor::Goto(58, 32));
+    println!("{}- Filter: {}", termion::cursor::Goto(58, 34), signal_state.filter);
+    println!("{}- Fuzz:   {}", termion::cursor::Goto(58, 35), signal_state.fuzz);
+    println!("{}- Width:  {}", termion::cursor::Goto(58, 36), signal_state.width);
+    println!("{}- Thump:  {}", termion::cursor::Goto(58, 37), signal_state.thump);
+    println!("{}- |vel|:  {}", termion::cursor::Goto(58, 38), signal_state.velocity);
+    println!("{}- |acc|:  {}", termion::cursor::Goto(58, 39), signal_state.acceleration);
+    println!("{}- |jrk|:  {}", termion::cursor::Goto(58, 40), signal_state.jerk);
 }
 
