@@ -28,16 +28,12 @@ const MIDI_DEVICE_NAME: &str = "Zgicabra";
 /*
  * TODOs
  *
- * - Take vector of separation in 3d space
- *   - Change voice qualities based on orinentation of separation normal vector
- *     - Center: Normal
- *     - Left:   Stacked octaves
- *     - Right:  Stacked fifths
+ * - Better debug output
  * - Represent stick click on UI
- * - Represent seperation/facing vector on UI
  *
  * BUGS
  *
+ * - Fix pitchbend accuracy
  * - Don't draw anything when either wand is docked
  *
 **/
@@ -93,8 +89,8 @@ fn main() {
         midi::dispatch(&midi_events, &mut connection);
 
         ui::draw_all(&zgicabra, &history);
-        ui::draw_events(&delta_events, &midi_events);
-        ui::draw_note_state(&zgicabra.note, &zgicabra.signal);
+        //ui::draw_events(&delta_events, &midi_events);
+        //ui::draw_note_state(&zgicabra.note, &zgicabra.signal);
         //ui::draw_graph(&history);
 
         midi_events.clear();
