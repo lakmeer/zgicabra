@@ -93,7 +93,7 @@ fn main() {
 
         ui::draw_all(&zgicabra, &history);
         ui::draw_events(&delta_events, &delta_history);
-        ui::draw_note_state(&zgicabra.note, &zgicabra.signal);
+        ui::draw_note_state(&zgicabra);
         ui::draw_graph(&history);
 
         //midi_events.clear();

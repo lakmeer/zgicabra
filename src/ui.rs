@@ -428,8 +428,8 @@ pub fn draw_events (delta_events: &Vec<DeltaEvent>, delta_history: &Vec<DeltaEve
 
     for row in 0..12 {
         match delta_history.iter().rev().nth(row) {
-            Some(e) => println!("{}- {:?}", termion::cursor::Goto(1, READOUT_TERM_Y + row as u16), e),
-            None    => println!("{}-",      termion::cursor::Goto(1, READOUT_TERM_Y + row as u16)),
+            Some(e) => println!("{} - {:?}", termion::cursor::Goto(1, READOUT_TERM_Y + row as u16), e),
+            None    => println!("{} -",      termion::cursor::Goto(1, READOUT_TERM_Y + row as u16)),
         }
     }
 
@@ -437,25 +437,28 @@ pub fn draw_events (delta_events: &Vec<DeltaEvent>, delta_history: &Vec<DeltaEve
 
     for row in 0..12 {
         match delta_events.iter().rev().nth(row) {
-            Some(e) => println!("{}- {:?}", termion::cursor::Goto(1, READOUT_TERM_Y + row as u16), e),
-            None    => println!("{}-",      termion::cursor::Goto(1, READOUT_TERM_Y + row as u16)),
+            Some(e) => println!("{} - {:?}", termion::cursor::Goto(1, READOUT_TERM_Y + row as u16), e),
+            None    => println!("{} -",      termion::cursor::Goto(1, READOUT_TERM_Y + row as u16)),
         }
     }
 
     // TODO: OSC events
 }
 
-pub fn draw_note_state (note_state: &NoteState, signal_state: &SignalState) {
+pub fn draw_note_state (state: &Zgicabra) {
     let term_x = 50;
 
-    println!("{}Note: [{}]",    termion::cursor::Goto(term_x, READOUT_TERM_Y + 0), if note_state.on { note_state.current } else { 0 });
-    println!("{}- Root:    {}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 2), format_note(note_state.root));
-    println!("{}- Current: {}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 3), format_note(note_state.current));
-    println!("{}- Pitch:   {}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 4), note_state.bend);
-    println!("{}- Filter: {}",  termion::cursor::Goto(term_x, READOUT_TERM_Y + 5), signal_state.filter);
-    println!("{}- Fuzz:   {}",  termion::cursor::Goto(term_x, READOUT_TERM_Y + 6), signal_state.fuzz);
-    println!("{}- Width:  {}",  termion::cursor::Goto(term_x, READOUT_TERM_Y + 7), signal_state.width);
-    println!("{}- Thump:  {}",  termion::cursor::Goto(term_x, READOUT_TERM_Y + 8), signal_state.thump);
+    println!("{}Note:  [{}]",   termion::cursor::Goto(term_x, READOUT_TERM_Y + 0), if state.note.on { state.note.current } else { 0 });
+    println!("{}Voice: [{:?}]", termion::cursor::Goto(term_x, READOUT_TERM_Y + 1), state.voice);
+
+    println!("{}Seq:     {:>17}",   termion::cursor::Goto(term_x, READOUT_TERM_Y + 3), state.sequence_number);
+    println!("{}Root:    {:>17}",   termion::cursor::Goto(term_x, READOUT_TERM_Y + 4), format_note(state.note.root));
+    println!("{}Current: {:>17}",   termion::cursor::Goto(term_x, READOUT_TERM_Y + 5), format_note(state.note.current));
+    println!("{}Pitch:   {:>17.4}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 6), state.note.bend);
+    println!("{}Filter:  {:>17.4}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 7), state.signal.filter);
+    println!("{}Fuzz:    {:>17.4}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 8), state.signal.fuzz);
+    println!("{}Width:   {:>17.4}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 9), state.signal.width);
+    println!("{}Thump:   {:>17.4}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 10), state.signal.thump);
 
     //println!("{}- |vel|:  {}", termion::cursor::Goto(58, 38), signal_state.velocity);
     //println!("{}- |acc|:  {}", termion::cursor::Goto(58, 39), signal_state.acceleration);
