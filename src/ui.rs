@@ -403,8 +403,8 @@ pub fn draw_graph (history: &Vec<Zgicabra>) {
         }
     }
 
-    print!("{}", termion::cursor::Goto(1, 36));
-    Chart::new_with_y_range(140, 140, 0.0, n as f32, -500.0, 500.0)
+    print!("{}", termion::cursor::Goto(1, 38));
+    Chart::new_with_y_range(140, 92, 0.0, n as f32, -500.0, 500.0)
         .linecolorplot(&Shape::Lines(&left_jerk), GREEN_3)
         .linecolorplot(&Shape::Lines(&left_acc),  GREEN_2)
         .linecolorplot(&Shape::Lines(&left_vel),  GREEN_1)
@@ -434,16 +434,18 @@ pub fn draw_events (delta_events: &Vec<DeltaEvent>) { //, midi_events: &Vec<Midi
 }
 
 pub fn draw_note_state (note_state: &NoteState, signal_state: &SignalState) {
-    println!("{}Note: [{}]", termion::cursor::Goto(58, 26), if note_state.on { note_state.current } else { 0 });
-    println!("{}- Root:    {}", termion::cursor::Goto(58, 28), format_note(note_state.root));
-    println!("{}- Current: {}", termion::cursor::Goto(58, 29), format_note(note_state.current));
-    println!("{}- Pitch:   {}", termion::cursor::Goto(58, 30), note_state.bend);
+    let term_x = 55;
 
-    println!("{}Signals:", termion::cursor::Goto(58, 32));
-    println!("{}- Filter: {}", termion::cursor::Goto(58, 34), signal_state.filter);
-    println!("{}- Fuzz:   {}", termion::cursor::Goto(58, 35), signal_state.fuzz);
-    println!("{}- Width:  {}", termion::cursor::Goto(58, 36), signal_state.width);
-    println!("{}- Thump:  {}", termion::cursor::Goto(58, 37), signal_state.thump);
+    println!("{}Note: [{}]",    termion::cursor::Goto(term_x, 26), if note_state.on { note_state.current } else { 0 });
+    println!("{}- Root:    {}", termion::cursor::Goto(term_x, 28), format_note(note_state.root));
+    println!("{}- Current: {}", termion::cursor::Goto(term_x, 29), format_note(note_state.current));
+    println!("{}- Pitch:   {}", termion::cursor::Goto(term_x, 30), note_state.bend);
+
+    println!("{}Signals:",      termion::cursor::Goto(term_x, 32));
+    println!("{}- Filter: {}",  termion::cursor::Goto(term_x, 34), signal_state.filter);
+    println!("{}- Fuzz:   {}",  termion::cursor::Goto(term_x, 35), signal_state.fuzz);
+    println!("{}- Width:  {}",  termion::cursor::Goto(term_x, 36), signal_state.width);
+    println!("{}- Thump:  {}",  termion::cursor::Goto(term_x, 37), signal_state.thump);
     //println!("{}- |vel|:  {}", termion::cursor::Goto(58, 38), signal_state.velocity);
     //println!("{}- |acc|:  {}", termion::cursor::Goto(58, 39), signal_state.acceleration);
     //println!("{}- |jrk|:  {}", termion::cursor::Goto(58, 40), signal_state.jerk);
