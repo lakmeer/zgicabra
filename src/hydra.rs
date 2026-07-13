@@ -1,4 +1,10 @@
 
+//
+// Hydra
+//
+// Wraps libsixense and accesses the Hydra hardware
+//
+
 use std::time::{Instant,Duration};
 use std::thread::sleep;
 
