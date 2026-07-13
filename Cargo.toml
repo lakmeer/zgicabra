@@ -12,5 +12,5 @@ rand = "0.8.5"
 rand_distr = "0.4.3"
 rgb = "0.8.35"
 termion = "2.0.1"
-textplots = "0.8.0"
-
+textplots = "0.8.7"
+rosc = "~0.10"
