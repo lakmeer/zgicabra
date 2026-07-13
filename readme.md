@@ -1,10 +1,7 @@
 
 # Zgicabra RS
 
-## Commands
-
-- Run `bacon check` for dev
-- Run `run.sh` for prod
+- Run `run.sh` for dev. This will watch source files.
 
 ## Sixense SDK Linking
 

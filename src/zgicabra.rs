@@ -1,4 +1,10 @@
 
+//
+// Zgicabra
+//
+// Turns raw Hyrda state into the more-complex Zgicabra state.
+//
+
 use std::fmt;
 use std::time::Duration;
 use std::io::{Error};
@@ -15,14 +21,16 @@ const JOYSTICK_DEADZONE: f32 = 0.15;
 // Data Types
 //
 
+// Which sound engine patch to use
 #[derive(Debug, Clone, Copy)]
 pub enum Voice {
-    Classic    = 0,
-    Eternal    = 1,
-    Pennysack  = 2,
-    Submission = 3
+    Classic  = 0, // Bass monotsynth
+    Eternal  = 1, // Doom-style synth
+    VoiceC   = 2,
+    VoiceD   = 3 
 }
 
+// Which hand is engaged
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Hand {
     Neither,
@@ -30,6 +38,7 @@ pub enum Hand {
     Right,
 }
 
+// Octant of the joystick
 #[derive(Debug, Clone, Copy)]
 pub enum Direction {
     None,
@@ -60,6 +69,7 @@ impl PartialEq for Direction {
     }
 }
 
+// Joystick state
 #[derive(Debug, Clone, Copy)]
 pub struct Joystick {
     pub x: f32,
@@ -85,6 +95,7 @@ impl Joystick {
     }
 }
 
+// Whole wand state
 #[derive(Debug, Clone, Copy)]
 pub struct Wand {
     pub pos: [f32; 3],
@@ -128,6 +139,7 @@ impl Wand {
     }
 }
 
+// Note currently being produced
 #[derive(Debug, Clone, Copy)]
 pub struct NoteState {
     pub on: bool,
@@ -147,6 +159,8 @@ impl NoteState {
     }
 }
 
+
+// State this is piped constantly to the sound engine
 #[derive(Debug, Clone, Copy)]
 pub struct SignalState {
     pub filter:       f32,

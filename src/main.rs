@@ -70,7 +70,7 @@ fn main() {
     let mut history:      Vec<Zgicabra>   = Vec::with_capacity(HISTORY_WINDOW);
     //let mut midi_events:  Vec<MidiEvent>  = Vec::new();
     let mut delta_events: Vec<DeltaEvent> = Vec::new();
-
+    let mut delta_history: Vec<DeltaEvent> = Vec::new();
 
     //
     // Hydra Setup
@@ -92,12 +92,17 @@ fn main() {
         //midi::dispatch(&midi_events, &mut connection);
 
         ui::draw_all(&zgicabra, &history);
-        ui::draw_events(&delta_events); //, &midi_events);
+        ui::draw_events(&delta_events, &delta_history);
         ui::draw_note_state(&zgicabra.note, &zgicabra.signal);
         ui::draw_graph(&history);
 
         //midi_events.clear();
-        delta_events.clear();
+        // Copy current frame's deltas to history. Don''t clear history, so that we can
+        // draw the last frame's deltas on top of the current frame.
+        for delta in delta_events.drain(..) {
+            delta_history.push(delta);
+        }
+        //delta_events.clear();
 
         if history.len() >= HISTORY_WINDOW {
             history.remove(0);

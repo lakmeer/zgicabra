@@ -21,6 +21,7 @@ use crate::HISTORY_WINDOW;
 
 type Screen = termion::screen::AlternateScreen<std::io::Stdout>;
 
+const READOUT_TERM_Y:u16 = 25;
 
 const BLUE_0:RGB8  = RGB8 { r: 120, g: 150, b: 255 };
 const BLUE_1:RGB8  = RGB8 { r: 150, g: 200, b: 255 };
@@ -223,7 +224,7 @@ fn draw_home_button (canvas: &mut Canvas, x: f32, y: f32, radius: f32, angle: f3
              electric(rand_uniform(1.0)));
     }
 }
-                     
+
 
 fn draw_banner (width: u16, y: u16, solid: bool) {
     let banner_text = " zgicabra ";
@@ -416,36 +417,46 @@ pub fn draw_graph (history: &Vec<Zgicabra>) {
         .display();
 }
 
-pub fn draw_events (delta_events: &Vec<DeltaEvent>) { //, midi_events: &Vec<MidiEvent>) {
-    print!("{}", termion::cursor::Goto(1, 26));
+pub fn draw_events (delta_events: &Vec<DeltaEvent>, delta_history: &Vec<DeltaEvent>) {
+    print!("{}", termion::cursor::Goto(1, READOUT_TERM_Y));
+
     for i in 0..22 {
         println!("                                                                                 ");
     }
 
-    println!("{}Delta events: {}", termion::cursor::Goto(1, 26), delta_events.len());
-    for (ix, event) in delta_events.iter().enumerate() {
-        println!("{}- {:?}", termion::cursor::Goto(1, 28 + ix as u16), event);
+    println!("{}", termion::color::Fg(termion::color::LightBlack));
+
+    for row in 0..12 {
+        match delta_history.iter().rev().nth(row) {
+            Some(e) => println!("{}- {:?}", termion::cursor::Goto(1, READOUT_TERM_Y + row as u16), e),
+            None    => println!("{}-",      termion::cursor::Goto(1, READOUT_TERM_Y + row as u16)),
+        }
     }
 
-    //println!("{}MIDI events:  {}", termion::cursor::Goto(29, 26), midi_events.len());
-    //for (ix, event) in midi_events.iter().enumerate() {
-        //println!("{}- {:?}", termion::cursor::Goto(30, 28 + ix as u16), event);
-    //}
+    println!("{}", termion::color::Fg(termion::color::White));
+
+    for row in 0..12 {
+        match delta_events.iter().rev().nth(row) {
+            Some(e) => println!("{}- {:?}", termion::cursor::Goto(1, READOUT_TERM_Y + row as u16), e),
+            None    => println!("{}-",      termion::cursor::Goto(1, READOUT_TERM_Y + row as u16)),
+        }
+    }
+
+    // TODO: OSC events
 }
 
 pub fn draw_note_state (note_state: &NoteState, signal_state: &SignalState) {
-    let term_x = 55;
+    let term_x = 50;
 
-    println!("{}Note: [{}]",    termion::cursor::Goto(term_x, 26), if note_state.on { note_state.current } else { 0 });
-    println!("{}- Root:    {}", termion::cursor::Goto(term_x, 28), format_note(note_state.root));
-    println!("{}- Current: {}", termion::cursor::Goto(term_x, 29), format_note(note_state.current));
-    println!("{}- Pitch:   {}", termion::cursor::Goto(term_x, 30), note_state.bend);
+    println!("{}Note: [{}]",    termion::cursor::Goto(term_x, READOUT_TERM_Y + 0), if note_state.on { note_state.current } else { 0 });
+    println!("{}- Root:    {}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 2), format_note(note_state.root));
+    println!("{}- Current: {}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 3), format_note(note_state.current));
+    println!("{}- Pitch:   {}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 4), note_state.bend);
+    println!("{}- Filter: {}",  termion::cursor::Goto(term_x, READOUT_TERM_Y + 5), signal_state.filter);
+    println!("{}- Fuzz:   {}",  termion::cursor::Goto(term_x, READOUT_TERM_Y + 6), signal_state.fuzz);
+    println!("{}- Width:  {}",  termion::cursor::Goto(term_x, READOUT_TERM_Y + 7), signal_state.width);
+    println!("{}- Thump:  {}",  termion::cursor::Goto(term_x, READOUT_TERM_Y + 8), signal_state.thump);
 
-    println!("{}Signals:",      termion::cursor::Goto(term_x, 32));
-    println!("{}- Filter: {}",  termion::cursor::Goto(term_x, 34), signal_state.filter);
-    println!("{}- Fuzz:   {}",  termion::cursor::Goto(term_x, 35), signal_state.fuzz);
-    println!("{}- Width:  {}",  termion::cursor::Goto(term_x, 36), signal_state.width);
-    println!("{}- Thump:  {}",  termion::cursor::Goto(term_x, 37), signal_state.thump);
     //println!("{}- |vel|:  {}", termion::cursor::Goto(58, 38), signal_state.velocity);
     //println!("{}- |acc|:  {}", termion::cursor::Goto(58, 39), signal_state.acceleration);
     //println!("{}- |jrk|:  {}", termion::cursor::Goto(58, 40), signal_state.jerk);
