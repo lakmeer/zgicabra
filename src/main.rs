@@ -4,6 +4,8 @@ use std::io::{Read, stdout};
 use std::thread::sleep;
 use std::time::Duration;
 
+use rosc::{OscArgument, OscMessage, OscPacket};
+use std::net::UdpSocket;
 //use midir::{MidiOutput, MidiOutputConnection};
 
 mod tools;

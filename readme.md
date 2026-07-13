@@ -13,16 +13,25 @@ default. An unpatched copy is retained as reference.
 
 `libsixense.so`, and `sixense.h` are not used but are retained for reference.
 
-## udev Rules
+## System Dependencies
+
+### `snd-virmidi`
+
+- Kernel module `snd-virmidi` is enabled in nix config as:
+```nix
+boot.kernelModules = [ "snd-virmidi" ];
+```
+
+### udev Rules
 
 Userspace needs permission to access the USB device that connects to the Hydra.
 Rules are provided in `sys/udev-rules` to allow this.
 
-### udev Setup (untested)
+#### udev Setup (untested)
 
 To set up a new system, deploy the rules file to `/etc/udev/rules.d/`:
 ```sh
-sudo cp udev-rules /etc/udev/rules.d/99-sixense-hydra.rules
+sudo cp sys/udev-rules /etc/udev/rules.d/99-sixense-hydra.rules
 ```
 Then reload the rules:
 ```sh
