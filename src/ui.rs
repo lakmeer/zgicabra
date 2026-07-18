@@ -80,6 +80,29 @@ pub fn draw_all (zgicabra: &Zgicabra, history: &Vec<Zgicabra>) {
     print!("{}{}", termion::cursor::Goto(1, TEXT_HEIGHT + 4), barcode_string(TEXT_WIDTH.into(), zgicabra.level == 0.0));
 
     //print!("{}", history[0].sequence_number);
+
+
+    // Wand debug values
+
+    print!("{}{:^40}", termion::cursor::Goto(0, 19), format!("[{:.3} {:.3} {:.3} {:.3}]",
+        zgicabra.left.rot[0],
+        zgicabra.left.rot[1],
+        zgicabra.left.rot[2],
+        zgicabra.left.rot[3]));
+    print!("{}{:^40}", termion::cursor::Goto(40, 19), format!("[{:.2} {:.3} {:.3} {:.3}]",
+        zgicabra.right.rot[0],
+        zgicabra.right.rot[1],
+        zgicabra.right.rot[2],
+        zgicabra.right.rot[3]));
+
+    if zgicabra.most_recent_wand == Hand::Left {
+        print!("{}{}{:^40}", termion::cursor::Goto(0, 21),  termion::color::Fg(termion::color::LightBlue), format!("X"));
+    }
+
+    if zgicabra.most_recent_wand == Hand::Right {
+        print!("{}{}{:^40}", termion::cursor::Goto(40, 21), termion::color::Fg(termion::color::LightBlue), format!("X"));
+    }
+
 }
 
 
@@ -245,10 +268,6 @@ fn draw_bend (canvas: &mut Canvas, sep: f32, left_angle: f32, right_angle: f32, 
 
     let m = 1 + (sep/500.0).powf(2.0) as u32;
     let bend = left_angle - right_angle;
-
-    // Debug lines
-    //line(canvas, p1.0, p1.1, p2.0, p2.1, PixelColor::Yellow);
-    //line(canvas, p3.0, p3.1, p4.0, p4.1, PixelColor::Magenta);
 
     for x in 0..400 {
         let t = x as f32/400.0;

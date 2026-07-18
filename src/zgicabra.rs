@@ -160,9 +160,10 @@ impl NoteState {
 }
 
 
-// State this is piped constantly to the sound engine
+// State that is piped constantly to the sound engine
 #[derive(Debug, Clone, Copy)]
 pub struct SignalState {
+    pub bend:         f32,
     pub filter:       f32,
     pub fuzz:         f32,
     pub width:        f32,
@@ -175,10 +176,11 @@ pub struct SignalState {
 impl SignalState {
     pub fn new() -> SignalState {
         SignalState {
-            filter: 0.0,
-            fuzz:   0.0,
-            width:  0.0,
-            thump:  0.0,
+            bend:         0.0,
+            filter:       0.0,
+            fuzz:         0.0,
+            width:        0.0,
+            thump:        0.0,
             velocity:     0.0,
             acceleration: 0.0,
             jerk:         0.0,
@@ -198,10 +200,8 @@ pub enum DeltaEvent {
     NoteStart(Note),
     NoteChange(Note, Note),
     NoteEnd(Note),
-    FilterLevel(f32),
     FuzzLevel(f32),
     WidthLevel(f32),
-    PitchBend(f32),
     VoiceChange(Voice),
     TuneUp(),
     TuneDown(),
@@ -225,6 +225,7 @@ pub struct Zgicabra {
     pub docked: bool,
     pub level: f32,
     pub sequence_number: u8,
+    pub most_recent_wand: Hand,
     pub note: NoteState,
     pub signal: SignalState,
     pub voice: Voice,
@@ -239,6 +240,7 @@ impl Zgicabra {
             docked: false,
             level: 0.0,
             sequence_number: 0,
+            most_recent_wand: Hand::Neither,
             note: NoteState::new(),
             signal: SignalState::new(),
             voice: Voice::Classic,
@@ -301,6 +303,13 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     let left_trigger_end    = prev_state.left.trigger  > curr_state.left.trigger  && curr_state.left.trigger  == 0.0;
     let right_trigger_start = curr_state.right.trigger > prev_state.right.trigger && prev_state.right.trigger == 0.0;
     let right_trigger_end   = prev_state.right.trigger > curr_state.right.trigger && curr_state.right.trigger == 0.0;
+
+    // Track most recent wand
+    if left_trigger_start { curr_state.most_recent_wand = Hand::Left; }
+    if right_trigger_start { curr_state.most_recent_wand = Hand::Right; }
+    if left_trigger_end && curr_state.right.trigger > 0.0 { curr_state.most_recent_wand = Hand::Right; }
+    if right_trigger_end && curr_state.left.trigger > 0.0 { curr_state.most_recent_wand = Hand::Left; }
+    if curr_state.level == 0.0 { curr_state.most_recent_wand = Hand::Neither; }
 
     // If note is note currently on and either trigger begins to be pressed
     if (left_trigger_start || right_trigger_start) && !curr_state.note.on {
@@ -401,6 +410,30 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
             }
         }
     }
+
+
+    //
+    // Signal Values
+    //
+
+    // Proxy bend value
+    curr_state.signal.bend = curr_state.note.bend;
+
+    // Filter is rot[0] of whichever wand was triggered most recently TODO: Tune lower bound
+    let mut filter: f32 = 0.0;
+    if curr_state.level > 0.0 {
+        filter = match curr_state.most_recent_wand {
+            Hand::Left  => curr_state.left.rot[0],
+            Hand::Right => curr_state.right.rot[0],
+            Hand::Neither => 0.0,
+        };
+    }
+    curr_state.signal.filter = 0.3 + 0.7 * filter;
+
+    // Width
+    // Actual physical distance is empirically from abour 50 including fingers, to about 1500 at
+    // full arm span. Tune that to get a normalised range
+    curr_state.signal.width = (curr_state.separation - 50.0) / 1500.0;
 
 }
 

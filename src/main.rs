@@ -4,13 +4,9 @@ use std::io::{Read, stdout};
 use std::thread::sleep;
 use std::time::Duration;
 
-//use midir::{MidiOutput, MidiOutputConnection};
-
 mod tools;
 mod hydra;
 mod zgicabra;
-//mod midi;
-//mod midi_event;
 mod ui;
 mod osc;
 
@@ -18,21 +14,18 @@ use osc::{OscOutput};
 
 use hydra::HydraState;
 use zgicabra::{Zgicabra, DeltaEvent};
-//use midi_event::MidiEvent;
 
-pub const HISTORY_WINDOW: usize = 10;
+pub const HISTORY_WINDOW: usize = 100;
 
 const REFRESH_MS: Duration = Duration::from_millis(10);
 const DEVICE_NAME: &str = "Zgicabra";
 
+const OSC_TEST_SINE: bool = false;
 
 
 /*
  * TODOs
  *
- * - Remove MIDI layer
- * - Compile
- * - Add OSC layer
  * - Better debug output
  * - Represent stick click on UI
  *
@@ -50,21 +43,14 @@ const DEVICE_NAME: &str = "Zgicabra";
 
 fn main() {
 
-    print!("{}{}{}", termion::clear::All, termion::cursor::Hide, termion::cursor::Goto(1,1));
-    println!("█║▌▌║│▌█║▌▌║║║▌║║▌▌│▌█│║▌▌│║█▌║▌│ zgicabra ▌▌│║▌║▌█║▌║▌║█║▌║│▌█║║▌▌║║║▌║║█▌│\n");
-
 
     //
     // Setup Phase
     //
 
-    //print!("Establishing OSC connection... ");
+    print!("{}{}", termion::clear::All, termion::cursor::Goto(1,1));
+    println!("█║▌▌║│▌█║▌▌║║║▌║║▌▌│▌█│║▌▌│║█▌║▌│ zgicabra ▌▌│║▌║▌█║▌║▌║█║▌║│▌█║║▌▌║║║▌║║█▌│\n");
 
-    let output = OscOutput::new().unwrap_or_else(|e| panic!("failed to init OSC connection: {e}"));
-
-    output.play();
-
-    println!("✅");
 
     let mut hydra_state = HydraState::new();
     let mut zgicabra    = Zgicabra::new();
@@ -74,8 +60,15 @@ fn main() {
 
 
     //
-    // Hydra Setup
+    // Setup
     //
+
+    println!("Obtaining OSC connection... ");
+
+    let output = OscOutput::new().unwrap_or_else(|e| panic!("failed to init OSC connection: {e}"));
+    output.panic();
+
+    println!("OSC connection OK.");
 
     hydra::start(&mut hydra_state);
 
@@ -83,27 +76,26 @@ fn main() {
 
     history.push(zgicabra.clone()); // Fill first frame to allow initial derivatives
 
-    print!("{}", termion::clear::All);
+    print!("{}{}", termion::cursor::Hide, termion::clear::All);
 
     loop {
         hydra::update(&mut hydra_state);
         zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state, &mut delta_events);
-
-        //midi::update(&zgicabra, &delta_events, &mut midi_events);
-        //midi::dispatch(&midi_events, &mut connection);
 
         ui::draw_all(&zgicabra, &history);
         ui::draw_events(&delta_events, &delta_history);
         ui::draw_note_state(&zgicabra);
         ui::draw_graph(&history);
 
-        //midi_events.clear();
+        output.handle_signal(&zgicabra.signal);
+
         // Copy current frame's deltas to history. Don''t clear history, so that we can
         // draw the last frame's deltas on top of the current frame.
         for delta in delta_events.drain(..) {
+            output.handle_event(&delta);
             delta_history.push(delta);
         }
-        //delta_events.clear();
+        delta_events.clear();
 
         if history.len() >= HISTORY_WINDOW {
             history.remove(0);
