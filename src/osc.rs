@@ -31,8 +31,10 @@ pub struct OscOutput {
 
 impl OscOutput {
     pub fn new () -> Result<OscOutput> {
+        println!("║ Obtaining OSC connection... ");
         let socket = UdpSocket::bind(HOST_ADDR)?;
         socket.connect(TO_ADDR).unwrap();
+        println!("║ OSC connection OK.");
         Ok(OscOutput { socket })
     }
 

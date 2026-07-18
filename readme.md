@@ -3,6 +3,14 @@
 
 - Run `run.sh` for dev. This will watch source files.
 
+## Setup requirements
+
+- Bitwig Studio
+  - DrivenByMoss Extension Package for OSC Extension
+  - OSC Controller added and active
+  - Set OSC Controller -> Protocol -> Value Resolution to 16384
+  - OSC listen port should be 8000 (default)
+
 ## Sixense SDK Linking
 
 `src/hydra.rs` depends on `libsixense_x64.so` which in turn depends on
