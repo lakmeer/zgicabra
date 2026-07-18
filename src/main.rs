@@ -4,8 +4,6 @@ use std::io::{Read, stdout};
 use std::thread::sleep;
 use std::time::Duration;
 
-use rosc::{OscArgument, OscMessage, OscPacket};
-use std::net::UdpSocket;
 //use midir::{MidiOutput, MidiOutputConnection};
 
 mod tools;
@@ -14,11 +12,13 @@ mod zgicabra;
 //mod midi;
 //mod midi_event;
 mod ui;
+mod osc;
+
+use osc::{OscOutput};
 
 use hydra::HydraState;
 use zgicabra::{Zgicabra, DeltaEvent};
 //use midi_event::MidiEvent;
-
 
 pub const HISTORY_WINDOW: usize = 10;
 
@@ -58,21 +58,20 @@ fn main() {
     // Setup Phase
     //
 
-    //print!("Establishing MIDI connection... ");
+    //print!("Establishing OSC connection... ");
 
-    //let output         = MidiOutput::new(DEVICE_NAME).unwrap();
-    //let out_port       = output.ports()[0].clone();
-    //let port_name      = output.port_name(&out_port).unwrap_or("Unknown".to_string());
-    //let mut connection = output.connect(&out_port, "midir-test").unwrap();
+    let output = OscOutput::new().unwrap_or_else(|e| panic!("failed to init OSC connection: {e}"));
+
+    output.play();
 
     println!("✅");
 
     let mut hydra_state = HydraState::new();
     let mut zgicabra    = Zgicabra::new();
     let mut history:      Vec<Zgicabra>   = Vec::with_capacity(HISTORY_WINDOW);
-    //let mut midi_events:  Vec<MidiEvent>  = Vec::new();
     let mut delta_events: Vec<DeltaEvent> = Vec::new();
     let mut delta_history: Vec<DeltaEvent> = Vec::new();
+
 
     //
     // Hydra Setup
@@ -121,8 +120,6 @@ fn main() {
     hydra::stop(&mut hydra_state);
 
     print!("Closing connection... ");
-
-    //midi::close(connection);
 
     println!("ok");
 
