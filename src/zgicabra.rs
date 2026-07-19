@@ -30,6 +30,22 @@ pub enum Voice {
     VoiceD   = 3 
 }
 
+impl Voice {
+    const COUNT: u8 = 4;
+
+    pub fn cycle(self, delta: i8) -> Self {
+        let current = self as i8;
+        let next = (current + delta).rem_euclid(Self::COUNT as i8) as u8;
+        match next {
+            0 => Voice::Classic,
+            1 => Voice::Eternal,
+            2 => Voice::VoiceC,
+            3 => Voice::VoiceD,
+            _ => unreachable!(),
+        }
+    }
+}
+
 // Which hand is engaged
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Hand {
@@ -193,22 +209,25 @@ impl SignalState {
 // Delta Events
 //
 
-type Note  = u8;
+type Note = u8;
+
+pub fn note_name(note: Note) -> String {
+    const NAMES: [&str; 12] = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+    let octave = (note / 12) as i8 - 1;
+    let name = NAMES[(note % 12) as usize];
+    format!("{}{}", name, octave)
+}
 
 #[derive(Debug, Clone)]
 pub enum DeltaEvent {
     NoteStart(Note),
     NoteChange(Note, Note),
     NoteEnd(Note),
-    FuzzLevel(f32),
     WidthLevel(f32),
     VoiceChange(Voice),
-    TuneUp(),
-    TuneDown(),
-    NextVoice(),
-    PrevVoice(),
-    ThumpToggle(),
-    FuzzToggle(),
+    RootChange(Note),
+    ThumpToggle(f32),
+    FuzzToggle(f32),
     Panic()
 }
 
@@ -370,18 +389,20 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
 
     // Buttons
 
-    /*                    ╭─────[ - Tune + ]─────╮
-              ┏━━━┓     ┏━┷━┓                  ┏━┷━┓     ┏━━━┓
-            ╭─┨ 4 ┃     ┃ 1 ┃                  ┃ 1 ┃     ┃ 4 ┠─╮
-            │ ┗━━━┛     ┗━━━┛                  ┗━━━┛     ┗━━━┛ │
-    THUMP ]─┤                                                  ├─[ FUZZ
-            │   ┏━━━┓ ┏━━━┓                      ┏━━━┓ ┏━━━┓   │
-            ╰───┨ 3 ┃ ┃ 2 ┃                      ┃ 2 ┃ ┃ 3 ┠───╯
-                ┗━━━┛ ┗━┯━┛                      ┗━┯━┛ ┗━━━┛
-                        ╰──────[ - Voices + ]──────╯                        */ 
+    //                       ╭─────[ - Tune + ]─────╮
+    //           ┏━━━┓     ┏━┷━┓                  ┏━┷━┓     ┏━━━┓
+    //         ╭─┨ 4 ┃     ┃ 1 ┃                  ┃ 1 ┃     ┃ 4 ┠─╮
+    //         │ ┗━━━┛     ┗━━━┛                  ┗━━━┛     ┗━━━┛ │
+    // THUMP ]─┤                                                  ├─[ FUZZ
+    //         │   ┏━━━┓ ┏━━━┓                      ┏━━━┓ ┏━━━┓   │
+    //         ╰───┨ 3 ┃ ┃ 2 ┃                      ┃ 2 ┃ ┃ 3 ┠───╯
+    //             ┗━━━┛ ┗━┯━┛                      ┗━┯━┛ ┗━━━┛
+    //                     ╰──────[ - Voices + ]──────╯
 
-    // Two-handed buttons
+    // Rocking
     for i in 0..4 {
+
+        // Rocking triggers on button release
         if curr_state.left.buttons[i] && curr_state.right.buttons[i] &&
             (!prev_state.left.buttons[i] || !prev_state.right.buttons[i]) {
 
@@ -390,8 +411,18 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
             let rock_direction:i8 = if !prev_state.left.buttons[i] { -1 } else { 1 };
 
             match i {
-                0 => curr_state.note.root = curr_state.note.root + 1,
-                1 => curr_state.note.root = ((curr_state.note.root as i8) + rock_direction) as u8,
+                // Tune
+                0 => {
+                    curr_state.note.root = ((curr_state.note.root as i8) + rock_direction) as u8;
+                    deltas.push(DeltaEvent::RootChange(curr_state.note.root));
+                },
+
+                // Voice
+                1 => {
+                    curr_state.voice = curr_state.voice.cycle(rock_direction);
+                    deltas.push(DeltaEvent::VoiceChange(curr_state.voice));
+                },
+
                 _ => {},
             }
         }
@@ -402,10 +433,16 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
         let curr = if *hand == Hand::Left { &curr_state.left } else { &curr_state.right };
         let prev = if *hand == Hand::Left { &prev_state.left } else { &prev_state.right };
 
-        if curr.buttons[3] && curr.buttons[4] && (!prev.buttons[3] || !prev.buttons[4]) {
+        if curr.buttons[2] && curr.buttons[3] && (!prev.buttons[2] || !prev.buttons[3]) {
             match hand {
-                Hand::Left  => deltas.push(DeltaEvent::ThumpToggle()),
-                Hand::Right => deltas.push(DeltaEvent::FuzzToggle()),
+                Hand::Left  => {
+                    curr_state.signal.thump = 1.0 - curr_state.signal.thump;
+                    deltas.push(DeltaEvent::ThumpToggle(curr_state.signal.thump));
+                },
+                Hand::Right => {
+                    curr_state.signal.fuzz = 1.0 - curr_state.signal.fuzz;
+                    deltas.push(DeltaEvent::FuzzToggle(curr_state.signal.fuzz));
+                }
                 Hand::Neither => {},
             }
         }

@@ -71,11 +71,14 @@ fn main() {
     hydra::start(&mut hydra_state);
     history.push(zgicabra.clone()); // Fill first frame to allow initial derivatives
 
+    // NOTE: Not required?
     //sleep(Duration::from_millis(1000));
 
     if !args.no_ui {
         print!("{}{}", termion::cursor::Hide, termion::clear::All);
     }
+
+    println!("║ Running...");
 
     loop {
         // Collect and process new frame
@@ -95,7 +98,7 @@ fn main() {
 
         // Copy current frame's deltas to history.
         for delta in delta_events.drain(..) {
-            if args.no_ui { println!("{:?}", delta); }
+            if args.no_ui { println!("- {:?}", delta); }
             output.handle_event(&delta);
             delta_history.push(delta);
         }

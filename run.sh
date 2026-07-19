@@ -21,5 +21,5 @@ cargo build
 # `-r` ensures only one instance ever runs, so only one process holds the Hydra hardware handle.
 # Re-armed in a loop for the same inode-replacement reason as above.
 while true; do
-    ls "$BINARY" | entr -r "$BINARY" 2>&-
+    ls "$BINARY" | entr -r "$BINARY" "$@" 2>&-
 done

@@ -1,6 +1,7 @@
 
 # Zgicabra RS
 
+- Binary must be run with libsixense_x64.so in working directory
 - Run `run.sh` for dev. This will watch source files.
 
 ## Setup requirements
@@ -20,6 +21,7 @@ the build target folder during build. Additionally, `libsixense_x64` has been
 default. An unpatched copy is retained as reference.
 
 `libsixense.so`, and `sixense.h` are not used but are retained for reference.
+
 
 ## System Dependencies
 
