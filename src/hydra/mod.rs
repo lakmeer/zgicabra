@@ -2,13 +2,22 @@
 //
 // Hydra
 //
-// Wraps libsixense and accesses the Hydra hardware
+// Public API for wand/controller input. Two interchangeable backends sit behind
+// it:
+//
+//  - `real` (linux x86_64 only) talks to actual Hydra hardware via libsixense.
+//  - `mock` generates synthetic wand motion and simulates the triggers from the
+//    keyboard. It's used on any other target, and as a runtime fallback on
+//    linux x86_64 if no hardware responds within the detection window.
 //
 
 use std::time::{Instant,Duration};
-use std::thread::sleep;
 
 use libc::{c_float, c_int, c_uint, c_uchar, c_ushort};
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod real;
+mod mock;
 
 pub const LEFT_HAND:  c_uchar = 1;
 pub const RIGHT_HAND: c_uchar = 2;
@@ -25,15 +34,9 @@ pub const BUTTON_4        : c_uint = 0b000010000;
 //
 // ControllerFrame
 //
-// One frame of all data from the hydra formatted according to Sixense API
+// One frame of all data from the hydra, shaped according to the Sixense API.
+// Both backends fill one of these in per wand per frame.
 //
-
-#[link(name="sixense_x64")]
-extern {
-    pub fn sixenseInit();
-    pub fn sixenseExit();
-    pub fn sixenseGetNewestData(which: c_int, data: *mut ControllerFrame);
-}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -95,69 +98,83 @@ impl Default for ControllerFrame {
 //
 
 pub struct HydraState {
-    pub initialised: bool,
     pub timestamp:   Instant,
     pub timedelta:   Duration,
-    pub temp_frame:  ControllerFrame,
     pub controllers: [ ControllerFrame; 2 ],
+    backend: Option<Backend>,
+}
+
+enum Backend {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    Real,
+    Mock(mock::MockBackend),
 }
 
 impl HydraState {
     pub fn new() -> HydraState {
         HydraState {
-            initialised: false,
-            timestamp: Instant::now(),
-            timedelta: Duration::from_millis(0),
-            temp_frame: ControllerFrame::new(),
+            timestamp:   Instant::now(),
+            timedelta:   Duration::from_millis(0),
             controllers: [ ControllerFrame::new(), ControllerFrame::new() ],
+            backend:     None,
         }
     }
 }
 
+impl Default for HydraState {
+    fn default() -> HydraState {
+        HydraState::new()
+    }
+}
 
 
 //
 // Functions
-// TODO: Learn what the correct thing is to do with the unsafes here
 //
 
 pub fn start (state: &mut HydraState) {
-    print!("Hydra::start - init connection... ");
-    unsafe { sixenseInit(); }
-    state.initialised = true;
-    println!("✅");
-
-    print!("Hydra::start - awaiting first frame...");
-    while state.temp_frame.which_hand == 0 {
-        read_frame(0, &mut state.temp_frame);
-        sleep(Duration::from_millis(10));
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        if real::try_start() {
+            state.backend = Some(Backend::Real);
+            return;
+        }
+        println!("Hydra::start - falling back to mock hydra backend.");
     }
-    println!("✅");
+
+    state.backend = Some(Backend::Mock(mock::MockBackend::new()));
 }
 
 pub fn stop (state: &mut HydraState) {
-    println!("Hydra::stop - closing down... ");
-    unsafe { sixenseExit(); }
-    state.initialised = false;
-    println!("Hydra::stop - done.");
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if let Some(Backend::Real) = &state.backend {
+        real::stop();
+    }
+
+    state.backend = None;
 }
 
 pub fn update (state: &mut HydraState) {
-
-    read_frame(0, &mut state.temp_frame);
-    let hand = (state.temp_frame.which_hand - 1) as usize;
-    state.controllers[hand] = state.temp_frame;
-
-    read_frame(1, &mut state.temp_frame);
-    let hand = (state.temp_frame.which_hand - 1) as usize;
-    state.controllers[hand] = state.temp_frame;
+    match &mut state.backend {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        Some(Backend::Real) => real::update(&mut state.controllers),
+        Some(Backend::Mock(backend)) => backend.update(&mut state.controllers),
+        None => panic!("hydra::update called before hydra::start"),
+    }
 
     state.timedelta = Instant::now().duration_since(state.timestamp);
     state.timestamp = Instant::now();
 }
 
-pub fn read_frame (which: i32, frame_data: &mut ControllerFrame) {
-    unsafe { sixenseGetNewestData(which, frame_data); }
+// True if the user has asked to quit. On the real backend this is any keypress
+// (unchanged from before); the mock backend reserves 'z' and '.' for the
+// triggers, so it listens for 'q' instead.
+pub fn should_quit (state: &mut HydraState) -> bool {
+    match &mut state.backend {
+        Some(Backend::Mock(backend)) => backend.should_quit(),
+        _ => {
+            use std::io::Read;
+            std::io::stdin().bytes().next().and_then(|result| result.ok()).is_some()
+        },
+    }
 }
-
-

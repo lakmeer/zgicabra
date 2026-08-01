@@ -3,6 +3,15 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
+    let target_os   = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+
+    // The real Sixense SDK binaries in libs/ are Linux x86_64 ELF shared objects.
+    // Any other target uses the mock hydra backend, which needs none of this.
+    if target_os != "linux" || target_arch != "x86_64" {
+        return;
+    }
+
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let libs_dir = PathBuf::from(&manifest_dir).join("libs");   // ← was format!(...) producing a String
 

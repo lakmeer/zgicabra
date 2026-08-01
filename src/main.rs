@@ -1,6 +1,5 @@
 #![allow(dead_code, unused_imports, unused_variables)]
 
-use std::io::{Read, stdout};
 use std::thread::sleep;
 use std::time::Duration;
 use std::env;
@@ -65,7 +64,7 @@ fn main() {
 
     // Setup
 
-    let output = OscOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init OSC connection: {e}"));
+    let output = OscOutput::new(!args.no_osc).unwrap_or_else(|e| panic!("║ 🟥 Failed to init OSC connection: {e}"));
     output.panic(); // Kill any overrunning notes
 
     hydra::start(&mut hydra_state);
@@ -111,8 +110,7 @@ fn main() {
 
         sleep(REFRESH_MS);
 
-        // Break on any keypress
-        if std::io::stdin().bytes().next().and_then(|result| result.ok()).is_some() {
+        if hydra::should_quit(&mut hydra_state) {
             break;
         }
     }

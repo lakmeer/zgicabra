@@ -26,19 +26,26 @@ fn osc_max (val: f32) -> i32 {
 
 
 pub struct OscOutput {
-    pub socket: UdpSocket,
+    socket: Option<UdpSocket>,
 }
 
 impl OscOutput {
-    pub fn new () -> Result<OscOutput> {
+    pub fn new (enabled: bool) -> Result<OscOutput> {
+        if !enabled {
+            println!("║ OSC output disabled (--no-osc)");
+            return Ok(OscOutput { socket: None });
+        }
+
         println!("║ Obtaining OSC connection... ");
         let socket = UdpSocket::bind(HOST_ADDR)?;
         socket.connect(TO_ADDR).unwrap();
         println!("║ OSC connection OK.");
-        Ok(OscOutput { socket })
+        Ok(OscOutput { socket: Some(socket) })
     }
 
     pub fn send (&self, addr: &str, args: &[i32]) {
+        let Some(socket) = &self.socket else { return };
+
         for &arg in args {
             assert!((arg >= 0 && arg <= MAX_VALUE), "OSC arg out of range 0-127: {arg} (addr: {addr})");
         }
@@ -48,7 +55,7 @@ impl OscOutput {
             args: args.iter().map(|&x| OscType::Int(x)).collect(),
         })).unwrap();
 
-        self.socket.send_to(&msg_buf, TO_ADDR).unwrap();
+        socket.send(&msg_buf).unwrap();
     }
 
     pub fn trigger (&self, addr: &str) {
