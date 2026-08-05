@@ -11,6 +11,12 @@
 //   '.' - toggle the right trigger
 //   'a' - cycle to the previous Voice (dev stand-in for the physical Rocking button)
 //   's' - cycle to the next Voice
+//   '-' - tune down 1 semitone (dev stand-in for the physical Tune button)
+//   '=' - tune up 1 semitone
+//   arrow keys - toggle the left wand's joystick up/down/left/right; held
+//     combinations (e.g. Up+Right still toggled on together) give the
+//     correct diagonal, same toggle-since-no-key-up reasoning as the
+//     triggers above
 //
 
 use std::f32::consts::PI;
@@ -61,6 +67,11 @@ pub struct MockBackend {
     left_trigger:  bool,
     right_trigger: bool,
     voice_cycle: i8,
+    tune_cycle: i8,
+    stick_up:    bool,
+    stick_down:  bool,
+    stick_left:  bool,
+    stick_right: bool,
     quit: bool,
     sequence: u8,
     _cbreak_guard: CbreakGuard, // restores the terminal on drop
@@ -70,13 +81,18 @@ impl MockBackend {
     pub fn new() -> MockBackend {
         let cbreak_guard = CbreakGuard::enable();
 
-        println!("Hydra::start - mock backend active. 'z'/'.' toggle triggers, 'a'/'s' cycle voice, 'q' quits.");
+        println!("Hydra::start - mock backend active. 'z'/'.' toggle triggers, 'a'/'s' cycle voice, '-'/'=' tune, arrows steer left stick, 'q' quits.");
 
         MockBackend {
             keys: termion::async_stdin().keys(),
             left_trigger:  false,
             right_trigger: false,
             voice_cycle: 0,
+            tune_cycle: 0,
+            stick_up:    false,
+            stick_down:  false,
+            stick_left:  false,
+            stick_right: false,
             quit: false,
             sequence: 0,
             _cbreak_guard: cbreak_guard,
@@ -96,6 +112,14 @@ impl MockBackend {
         v
     }
 
+    // Net tune direction accumulated since the last call; resets to zero on
+    // read. See hydra::take_tune_cycle.
+    pub fn take_tune_cycle (&mut self) -> i8 {
+        let v = self.tune_cycle;
+        self.tune_cycle = 0;
+        v
+    }
+
     pub fn update (&mut self, controllers: &mut [ ControllerFrame; 2 ]) {
         self.poll_keys();
 
@@ -112,6 +136,12 @@ impl MockBackend {
                 Key::Char('.') => self.right_trigger = !self.right_trigger,
                 Key::Char('a') => self.voice_cycle -= 1,
                 Key::Char('s') => self.voice_cycle += 1,
+                Key::Char('-') => self.tune_cycle -= 1,
+                Key::Char('=') => self.tune_cycle += 1,
+                Key::Up    => self.stick_up    = !self.stick_up,
+                Key::Down  => self.stick_down  = !self.stick_down,
+                Key::Left  => self.stick_left  = !self.stick_left,
+                Key::Right => self.stick_right = !self.stick_right,
                 Key::Char('q') => self.quit = true,
                 _ => {},
             }
@@ -138,6 +168,16 @@ impl MockBackend {
             sin(0.15, phase + 1.5),
             0.0,
         ];
+
+        // Arrow keys only drive the left wand's stick (see this file's top
+        // doc comment); the right wand's joystick stays at ControllerFrame's
+        // default (0,0). Each axis is an independent toggle rather than a
+        // held key, so opposite-direction pairs cancel to 0 and any other
+        // combination (e.g. Up+Right) sums to the correct diagonal.
+        if hand == LEFT_HAND {
+            frame.joystick_x = f32::from(self.stick_right) - f32::from(self.stick_left);
+            frame.joystick_y = f32::from(self.stick_up)    - f32::from(self.stick_down);
+        }
 
         frame
     }

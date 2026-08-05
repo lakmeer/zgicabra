@@ -272,7 +272,7 @@ impl Zgicabra {
 // Module Functions
 //
 
-pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &HydraState, voice_cycle: i8, deltas: &mut Vec<DeltaEvent>) {
+pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &HydraState, voice_cycle: i8, tune_cycle: i8, deltas: &mut Vec<DeltaEvent>) {
 
     // Sequence number happens always
 
@@ -435,6 +435,14 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     if voice_cycle != 0 {
         curr_state.voice = curr_state.voice.cycle(voice_cycle);
         deltas.push(DeltaEvent::VoiceChange(curr_state.voice));
+    }
+
+    // Keyboard tune-cycle (mock hydra backend dev shortcut, '-'/'=' -- see
+    // hydra::take_tune_cycle). Same effect as the physical Tune button
+    // (Rocking button 0) above, just reachable from the keyboard.
+    if tune_cycle != 0 {
+        curr_state.note.root = ((curr_state.note.root as i8) + tune_cycle) as u8;
+        deltas.push(DeltaEvent::RootChange(curr_state.note.root));
     }
 
     // Thumbsmashes

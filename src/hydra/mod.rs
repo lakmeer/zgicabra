@@ -177,6 +177,17 @@ pub fn take_voice_cycle (state: &mut HydraState) -> i8 {
     }
 }
 
+// Net tune direction accumulated since the last call (mock backend only,
+// '-'/'=' -- see mock::MockBackend::take_tune_cycle). Same real-backend
+// fallback reasoning as take_voice_cycle above: the physical Tune button
+// covers this on real hardware, handled entirely in zgicabra::update.
+pub fn take_tune_cycle (state: &mut HydraState) -> i8 {
+    match &mut state.backend {
+        Some(Backend::Mock(backend)) => backend.take_tune_cycle(),
+        _ => 0,
+    }
+}
+
 // True if the user has asked to quit. On the real backend this is any keypress
 // (unchanged from before); the mock backend reserves 'z' and '.' for the
 // triggers, so it listens for 'q' instead.

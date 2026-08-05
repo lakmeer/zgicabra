@@ -1,22 +1,6 @@
 
 //
-// RS
-//
-// Native Rust audio backend: a `fundsp` signal graph rendered straight to the
-// system's default output device via `cpal` -- no subprocess, no bridge
-// language. Named to mirror `sc.rs`/`osc.rs` and the `--rs` flag that selects
-// it.
-//
-// Reproduces sc/main.scd's proof-of-concept patch's ingredients -- one
-// persistent saw voice through a resonant lowpass, gated by an ASR envelope
-// -- but with a NAM (Neural Amp Modeler) stage spliced in between the
-// envelope and the filter (build_pre_nam -> NamStage -> build_post_nam), amp
-// distortion before tone-shaping, same order a real pedal/amp-then-tonestack
-// chain would use. Control values (frequency, gate, filter cutoff) live in
-// `fundsp::Shared` atomic cells, which is fundsp's own idiom for driving a
-// running audio graph from another thread with no locks/allocation in the
-// audio callback -- filling the same role `ScOutput`'s stdin messages play
-// for its separate sclang process, just in-process.
+// Audio Engine
 //
 
 use std::io;
@@ -29,34 +13,42 @@ use crate::output::DeltaConsumer;
 use crate::tools::linexp;
 use crate::zgicabra::{DeltaEvent, SignalState};
 
-// Matches sc/main.scd's SynthDef(\zgicabraSaw): Env.asr(0.01, 1, 0.3), amp=0.3.
-const ATTACK:   f32 = 0.01;
-const RELEASE:  f32 = 0.3;
-const AMP:      f32 = 0.3;
+const ATTACK:  f32 = 0.01;
+const RELEASE: f32 = 0.25;
+const AMP:     f32 = 0.3;
 
-// RLPF's resonance arg (0.3) isn't a directly portable number -- fundsp's
-// lowpass_q takes a genuine Q rather than SC's reciprocal-of-Q convention --
-// so this is a by-ear equivalent, same treatment exp3.md gives every filter
-// swap that isn't a literal port.
-const FILTER_Q: f32 = 0.7;
+const FILTER_Q: f32 = 0.6;
 
-// adsr_live's gate convention (see fundsp's own adsr.rs): control > 0 starts
-// the attack, control <= 0 starts the release. Any non-positive value works;
-// -1.0 matches the convention fundsp's own live_adsr.rs example uses.
 const GATE_ON:  f32 = 1.0;
 const GATE_OFF: f32 = -1.0;
 
-// Every model shipped in nam/ is an A2 (SlimmableContainer) capture at this
-// rate (confirmed by inspecting each file's own `sample_rate` field).
-// nam-rs does not resample -- feeding it audio at any other rate produces
-// silently wrong output (its own crate docs' words), so the output stream is
-// requested at this exact rate rather than trusting the device's default.
+const RATIO_A: f32 = 1.0;
+const RATIO_B: f32 = 1.007;
+const RATIO_C: f32 = 2.003;
+const INDEX_B: f32 = 2.2;
+const INDEX_C: f32 = 3.5;
+
+const FRACS: [f32; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
+const DETUNE_CENTS_MAX: f32 = 25.0;
+
+const SUB_LEVEL:    f32 = 0.35;
+const NOISE_LEVEL:  f32 = 0.05;
+const NOISE_LPF_HZ: f32 = 4000.0;
+
+const BYPASS_SUB_RATIO: f32 = 0.5;
+const BYPASS_SUB_LEVEL: f32 = 0.35;
+
+const GLIDE_TIME: f32 = 0.08;
+
+const OCTAVE_SHIFT: f32 = 0.5;
+
+const THUMP_DECAY_SEC:  f32 = 0.18;
+const THUMP_PITCH_MULT: f32 = 1.5;
+
+const FUZZ_DRIVE: f32 = 8.0;
+
 const NAM_SAMPLE_RATE: u32 = 48_000;
 
-// Indexed by Voice's own discriminant (Classic=0, Eternal=1, VoiceC=2,
-// VoiceD=3) -- see zgicabra::Voice and this module's handle_event. VoiceD's
-// `None` is deliberate: bypass, so the pure synth signal stays available to
-// A/B against every model.
 const NAM_MODEL_PATHS: [Option<&str>; 4] = [
     Some("nam/comp-50.nam"), // Classic
     Some("nam/petrucci.nam"), // Eternal
@@ -65,30 +57,39 @@ const NAM_MODEL_PATHS: [Option<&str>; 4] = [
 ];
 
 pub struct RsOutput {
-    freq:         Shared,
-    gate:         Shared,
-    cutoff:       Shared,
-    nam_selected: Shared, // Voice discriminant as f32; read by NamStage on the audio thread
-    stream:       cpal::Stream, // kept alive to keep audio playing; dropping RsOutput stops it
+    freq:          Shared,
+    gate:          Shared,
+    bend:          Shared,
+    width:         Shared,
+    cutoff:        Shared,
+    fuzz:          Shared,
+    thump_amt:     Shared,
+    thump_trigger: Shared,
+    nam_selected:  Shared,
+    stream:        cpal::Stream,
 }
 
 impl RsOutput {
     pub fn new () -> io::Result<RsOutput> {
         println!("║ Starting native Rust audio backend... ");
 
-        let freq   = shared(110.0);
-        let gate   = shared(GATE_OFF);
-        let cutoff = shared(4000.0);
+        let freq          = shared(110.0);
+        let gate          = shared(GATE_OFF);
+        let bend          = shared(0.0);
+        let width         = shared(0.0);
+        let cutoff        = shared(4000.0);
+        let fuzz          = shared(0.0);
+        let thump_amt     = shared(0.0);
+        let thump_trigger = shared(0.0);
 
-        let mut pre_nam  = build_pre_nam(&freq, &gate);
-        let mut post_nam = build_post_nam(&cutoff);
+        let mut voice_engine = VoiceEngine::new(
+            freq.clone(), gate.clone(), bend.clone(), width.clone(),
+            thump_amt.clone(), thump_trigger.clone(),
+        );
+        let mut post_nam = build_post_nam(&cutoff, &fuzz);
 
-        // NAM stage: all four Voice slots loaded up front (VoiceD stays
-        // bypass), so switching mid-stream on the audio thread is just an
-        // index write -- no allocation/IO/locks there. See handle_event's
-        // VoiceChange arm, which is what drives nam_selected.
         println!("║ Loading NAM models... ");
-        let nam_selected = shared(0.0); // Voice::Classic, matching Zgicabra::new()'s default
+        let nam_selected = shared(0.0);
         let nam = NamStage { models: load_nam_models()?, selected: nam_selected.clone() };
         println!("║ NAM models loaded.");
 
@@ -100,15 +101,15 @@ impl RsOutput {
         let sample_format = supported.sample_format();
         let config: cpal::StreamConfig = supported.into();
 
-        pre_nam.set_sample_rate(config.sample_rate as f64);
+        voice_engine.set_sample_rate(config.sample_rate as f64);
         post_nam.set_sample_rate(config.sample_rate as f64);
 
         let err_fn = |e| eprintln!("║ 🟥 Audio stream error: {e}");
 
         let build_result = match sample_format {
-            cpal::SampleFormat::F32 => build_stream::<f32>(&device, config, pre_nam, post_nam, nam, err_fn),
-            cpal::SampleFormat::I16 => build_stream::<i16>(&device, config, pre_nam, post_nam, nam, err_fn),
-            cpal::SampleFormat::U16 => build_stream::<u16>(&device, config, pre_nam, post_nam, nam, err_fn),
+            cpal::SampleFormat::F32 => build_stream::<f32>(&device, config, voice_engine, post_nam, nam, err_fn),
+            cpal::SampleFormat::I16 => build_stream::<i16>(&device, config, voice_engine, post_nam, nam, err_fn),
+            cpal::SampleFormat::U16 => build_stream::<u16>(&device, config, voice_engine, post_nam, nam, err_fn),
             other => return Err(io::Error::new(io::ErrorKind::Other, format!("unsupported sample format: {other:?}"))),
         };
 
@@ -120,15 +121,11 @@ impl RsOutput {
 
         println!("║ Native Rust audio backend OK.");
 
-        Ok(RsOutput { freq, gate, cutoff, nam_selected, stream })
+        Ok(RsOutput { freq, gate, bend, width, cutoff, fuzz, thump_amt, thump_trigger, nam_selected, stream })
     }
 }
 
-// Picks an output config at exactly `target_rate` if the device supports it
-// (see NAM_SAMPLE_RATE's comment for why this matters); falls back to the
-// device default -- audibly wrong NAM output, but a working stream -- with a
-// loud warning rather than failing outright, since the pure fundsp voice
-// (VoiceD/bypass) doesn't care what rate it runs at.
+// Picks an output config at exactly `target_rate` to match NAM A2 models
 fn pick_output_config (device: &cpal::Device, target_rate: u32) -> io::Result<cpal::SupportedStreamConfig> {
     let mut ranges = device.supported_output_configs()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("no output configs available: {e}")))?;
@@ -143,9 +140,6 @@ fn pick_output_config (device: &cpal::Device, target_rate: u32) -> io::Result<cp
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("no usable output config: {e}")))
 }
 
-// Loads every path in NAM_MODEL_PATHS up front. A missing/corrupt file fails
-// the whole backend rather than silently falling back to bypass for that
-// slot -- if a model was supposed to be there, better to know immediately.
 fn load_nam_models () -> io::Result<[Option<Model>; 4]> {
     let mut models: [Option<Model>; 4] = [None, None, None, None];
 
@@ -163,27 +157,12 @@ fn load_nam_models () -> io::Result<[Option<Model>; 4]> {
     Ok(models)
 }
 
-// The NAM stage itself: an array of pre-built models (one per Voice slot,
-// VoiceD's `None` standing in for bypass) plus a live index into it.
-// Deliberately not a fundsp AudioUnit -- nam_rs::Model doesn't implement
-// Clone, which AudioUnit's DynClone bound requires, so it's simpler and just
-// as correct to run it as a plain post-processing step in the cpal callback
-// after the voice graph, rather than force it into the graph-combinator
-// type system.
 struct NamStage {
     models:   [Option<Model>; 4],
     selected: Shared,
 }
 
 impl NamStage {
-    // Runs the selected model's own block kernel over `block` in place (a
-    // no-op if VoiceD/bypass is selected). Processing a whole block at once
-    // rather than one sample at a time is what lets WaveNet use its
-    // "cache-friendly block kernel" (nam-rs's own docs) instead of the much
-    // more expensive one-sample path -- calling this per sample was cheap
-    // enough to *compile* but not fast enough to keep up with real-time audio,
-    // which is what caused the audio thread to fall behind and produce the
-    // glitching/blips-then-fade symptom.
     fn process_buffer (&mut self, block: &mut [f32]) {
         if let Some(model) = self.models.get_mut(self.selected.value() as usize).and_then(Option::as_mut) {
             model.process_buffer(block);
@@ -191,38 +170,148 @@ impl NamStage {
         // VoiceD/bypass (or an out-of-range index): leave `block` untouched.
     }
 }
-
-// Oscillator * envelope -- the raw excited tone NAM receives, matching
-// sc/main.scd's Saw.ar gated by Env.asr(0.01, 1, 0.3) before any filtering.
-// Split from the filter/amp stage below so NAM can sit between them (amp
-// distortion before tone-shaping, the conventional pedal/amp-then-tonestack
-// order) rather than after the whole voice like a bolted-on final effect.
-fn build_pre_nam (freq: &Shared, gate: &Shared) -> Box<dyn AudioUnit> {
-    let osc = var(freq) >> saw();
-    let env = var(gate) >> adsr_live(ATTACK, 0.0, 1.0, RELEASE);
-    Box::new(osc * env)
+struct FmVoice {
+    op_a: An<Sine<f64>>,
+    op_b: An<Sine<f64>>,
+    op_c: An<Sine<f64>>,
+    frac: f32,
 }
 
-// Resonant lowpass -> amp, matching sc/main.scd's RLPF.ar -> (* amp). Takes
-// NAM's output as its single input (`pass()` forwards it straight through
-// the stack into lowpass_q's audio input) rather than generating its own
-// signal, unlike build_pre_nam above.
-fn build_post_nam (cutoff: &Shared) -> Box<dyn AudioUnit> {
+impl FmVoice {
+    fn new (frac: f32) -> FmVoice {
+        FmVoice { op_a: sine(), op_b: sine(), op_c: sine(), frac }
+    }
+
+    fn set_sample_rate (&mut self, sr: f64) {
+        self.op_a.set_sample_rate(sr);
+        self.op_b.set_sample_rate(sr);
+        self.op_c.set_sample_rate(sr);
+    }
+
+    fn tick (&mut self, base_freq: f32, width: f32) -> f32 {
+        let detune = 2f32.powf(self.frac * width * DETUNE_CENTS_MAX / 1200.0);
+        let voice_freq = base_freq * detune;
+
+        let freq_c = voice_freq * RATIO_C;
+        let out_c = self.op_c.filter_mono(freq_c);
+
+        let freq_b = voice_freq * RATIO_B;
+        let out_b = self.op_b.filter_mono(freq_b + out_c * (INDEX_C * freq_c));
+
+        let freq_a = voice_freq * RATIO_A;
+        let out_a = self.op_a.filter_mono(freq_a + out_b * (INDEX_B * freq_b));
+
+        out_a
+    }
+}
+
+struct VoiceEngine {
+    freq:          Shared,
+    gate:          Shared,
+    bend:          Shared,
+    width:         Shared,
+    thump_amt:     Shared,
+    thump_trigger: Shared,
+
+    voices: Vec<FmVoice>,
+    sub:    An<Sine<f64>>,
+    bypass_sub: An<Sine<f64>>,
+    noise:  Box<dyn AudioUnit>,
+    glide:  An<Follow<f64>>,
+    envelope: Box<dyn AudioUnit>,
+
+    thump_last_trigger:    f32,
+    thump_elapsed_samples: f32,
+    sample_rate:           f32,
+}
+
+impl VoiceEngine {
+    fn new (
+        freq: Shared, gate: Shared, bend: Shared, width: Shared,
+        thump_amt: Shared, thump_trigger: Shared,
+    ) -> VoiceEngine {
+        VoiceEngine {
+            freq, gate, bend, width, thump_amt, thump_trigger,
+            voices: FRACS.iter().map(|&frac| FmVoice::new(frac)).collect(),
+            sub:    sine(),
+            bypass_sub: sine(),
+            noise:  Box::new(white() >> lowpass_hz(NOISE_LPF_HZ, 1.0)),
+            glide:  follow(GLIDE_TIME),
+            envelope: Box::new(adsr_live(ATTACK, 0.0, 1.0, RELEASE)),
+            thump_last_trigger:    0.0,
+            thump_elapsed_samples: 0.0,
+            sample_rate:           DEFAULT_SR as f32,
+        }
+    }
+
+    fn set_sample_rate (&mut self, sr: f64) {
+        for voice in self.voices.iter_mut() { voice.set_sample_rate(sr); }
+        self.sub.set_sample_rate(sr);
+        self.bypass_sub.set_sample_rate(sr);
+        self.noise.set_sample_rate(sr);
+        self.glide.set_sample_rate(sr);
+        self.envelope.set_sample_rate(sr);
+        self.sample_rate = sr as f32;
+    }
+
+    // `dry` => the full -voice signal for effect chain
+    // `bypass` => effect bypass (sub-osc)
+    fn tick (&mut self) -> (f32, f32) {
+        let glided    = self.glide.filter_mono(self.freq.value());
+        let bend_mult = 2f32.powf(self.bend.value());
+        let base_freq = glided * bend_mult * self.tick_thump() * OCTAVE_SHIFT;
+
+        let width = self.width.value();
+        let voice_count = self.voices.len() as f32;
+        let fm_sum: f32 = self.voices.iter_mut()
+            .map(|voice| voice.tick(base_freq, width))
+            .sum::<f32>() / voice_count;
+
+        let sub   = self.sub.filter_mono(base_freq * 0.5) * SUB_LEVEL;
+        let noise = self.noise.get_mono() * NOISE_LEVEL;
+
+        let dry = fm_sum + sub + noise;
+        let env = self.envelope.filter_mono(self.gate.value());
+
+        let bypass = self.bypass_sub.filter_mono(base_freq * BYPASS_SUB_RATIO) * BYPASS_SUB_LEVEL * env;
+
+        (dry * env, bypass)
+    }
+
+    fn tick_thump (&mut self) -> f32 {
+        let trigger = self.thump_trigger.value();
+        if trigger != self.thump_last_trigger {
+            self.thump_last_trigger = trigger;
+            self.thump_elapsed_samples = 0.0;
+        }
+
+        let t = self.thump_elapsed_samples / self.sample_rate;
+        self.thump_elapsed_samples += 1.0;
+
+        let decay = (-5.0 * t / THUMP_DECAY_SEC).exp();
+        1.0 + decay * self.thump_amt.value() * THUMP_PITCH_MULT
+    }
+}
+
+// FX after the NAM stage
+fn build_post_nam (cutoff: &Shared, fuzz: &Shared) -> Box<dyn AudioUnit> {
     let filtered = (pass() | var(cutoff)) >> lowpass_q(FILTER_Q);
-    Box::new(filtered * AMP)
+
+    let with_fuzz = (filtered | var(fuzz)) >> map(|i: &Frame<f32, U2>| {
+        let (x, f) = (i[0], i[1]);
+        let wet = (x * (1.0 + f * FUZZ_DRIVE)).tanh();
+        x * (1.0 - f) + wet * f
+    });
+
+    Box::new(with_fuzz * AMP)
 }
 
-// Generous upper bound on how many frames any single cpal callback will ever
-// ask for (real device callbacks are typically a few hundred). Processing in
-// chunks of at most this many samples lets the whole audio callback stay
-// allocation-free -- one fixed scratch buffer, reused every call, rather than
-// sizing a Vec to the callback's own (variable) length each time.
 const NAM_BLOCK_CAP: usize = 4096;
 
 fn build_stream<T> (
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    mut pre_nam: Box<dyn AudioUnit>,
+    mut pre_nam: VoiceEngine,
     mut post_nam: Box<dyn AudioUnit>,
     mut nam: NamStage,
     err_fn: impl FnMut(cpal::Error) + Send + 'static,
@@ -232,36 +321,32 @@ where
 {
     let channels = config.channels as usize;
     let mut scratch = [0.0f32; NAM_BLOCK_CAP];
+    let mut bypass_scratch = [0.0f32; NAM_BLOCK_CAP];
 
     device.build_output_stream(
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-            // The voice is genuinely mono throughout (sc/main.scd's
-            // Saw.ar(freq!2) is two identical channels, not independent
-            // ones), so NAM and the filter only need to run once per sample
-            // -- running them separately per output channel would interleave
-            // two copies of the same signal through NAM's stateful model and
-            // corrupt its recurrent/dilated state for no benefit.
             let frames = data.len() / channels;
             let mut done = 0;
 
             while done < frames {
                 let n = std::cmp::min(frames - done, NAM_BLOCK_CAP);
-                let block = &mut scratch[..n];
+                let block        = &mut scratch[..n];
+                let bypass_block = &mut bypass_scratch[..n];
 
-                for s in block.iter_mut() { *s = pre_nam.get_mono(); }
+                for i in 0..n {
+                    let (dry, bypass) = pre_nam.tick();
+                    block[i] = dry;
+                    bypass_block[i] = bypass;
+                }
 
                 nam.process_buffer(block);
 
                 for (i, &s) in block.iter().enumerate() {
-                    // nam-rs's docs are explicit that a model's raw output
-                    // isn't loudness-normalized (the reference plugin's DC
-                    // blocker/normalization is the host's job, not the
-                    // model's) -- clamp as a safety net against digital
-                    // clipping/wraparound before it reaches the filter, in
-                    // case a model's output pushes past -1..1.
+                    // nam-rs's raw output isn't loudness-normalized
                     let filtered = post_nam.filter_mono(s.clamp(-1.0, 1.0));
-                    let sample = T::from_sample(filtered);
+                    let mixed = (filtered + bypass_block[i]).clamp(-1.0, 1.0);
+                    let sample = T::from_sample(mixed);
                     let frame_start = (done + i) * channels;
                     for ch in 0..channels {
                         data[frame_start + ch] = sample;
@@ -282,8 +367,11 @@ impl DeltaConsumer for RsOutput {
     }
 
     fn handle_signal (&mut self, signal: &SignalState) {
-        // Matches sc/main.scd's ~setFilter: val.linexp(0, 1, 100, 8000).
-        self.cutoff.set_value(linexp(0.0, 1.0, 100.0, 8000.0, signal.filter));
+        self.bend.set_value(signal.bend);
+        self.width.set_value(signal.width);
+        self.fuzz.set_value(signal.fuzz);
+        self.thump_amt.set_value(signal.thump);
+        self.cutoff.set_value(linexp(0.0, 1.0, 100.0, 14000.0, signal.filter));
     }
 
     fn handle_event (&mut self, delta: &DeltaEvent) {
@@ -291,6 +379,7 @@ impl DeltaConsumer for RsOutput {
             DeltaEvent::NoteStart(note) => {
                 self.freq.set_value(midi_hz(*note as f32));
                 self.gate.set_value(GATE_ON);
+                self.thump_trigger.set_value(self.thump_trigger.value() + 1.0);
             },
             DeltaEvent::NoteChange(_, new_note) => {
                 self.freq.set_value(midi_hz(*new_note as f32));

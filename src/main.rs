@@ -93,7 +93,8 @@ fn main() {
         // Collect and process new frame
         hydra::update(&mut hydra_state);
         let voice_cycle = hydra::take_voice_cycle(&mut hydra_state);
-        zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state, voice_cycle, &mut delta_events);
+        let tune_cycle  = hydra::take_tune_cycle(&mut hydra_state);
+        zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state, voice_cycle, tune_cycle, &mut delta_events);
 
         // Draw UI
         if !args.no_ui {
