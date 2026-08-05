@@ -22,24 +22,8 @@ const GATE_OFF: f32 = -1.0;
 const FRACS: [f32; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
 
 const NAM_SAMPLE_RATE: u32 = 48_000;
-
-// Model files are discovered at startup from this directory (any *.nam
-// file), rather than a fixed hardcoded list -- see load_nam_models(). Model
-// selection is independent of Zgicabra's Voice/VoiceChange (that's a
-// separate concept driven by the physical Rocking button); the gui's model
-// cycler drives it directly instead -- see NamModelCycler.
 const NAM_DIR: &str = "nam";
 
-// --
-// Parameter matrix: every tunable value in the engine gets a default, a
-// valid range, an interpolation curve, and a weight against each live
-// signal. param_factor() is the single place any of that gets resolved --
-// call sites never touch a raw const again.
-//
-// Every leaf is a fundsp `Shared` cell (same lock-free atomic cell used for
-// freq/gate/bend/etc. below) rather than a plain f32, so a UI thread can
-// write to it while the audio thread reads it live -- see gui.rs.
-// --
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Curve { Linear, Exp }
@@ -54,10 +38,9 @@ impl Curve {
     }
 }
 
-// pitch: a natural future addition here once SignalState grows a matching
-// field -- nothing to weight against yet, so left out.
 #[derive(Clone, Copy)]
 struct SignalWeights {
+    pitch:        f32,
     width:        f32,
     filter:       f32,
     fuzz:         f32,
@@ -68,7 +51,7 @@ struct SignalWeights {
 
 impl SignalWeights {
     const NONE: SignalWeights = SignalWeights {
-        width: 0.0, filter: 0.0, fuzz: 0.0, thump: 0.0, velocity: 0.0, acceleration: 0.0,
+        pitch: 0.0, width: 0.0, filter: 0.0, fuzz: 0.0, thump: 0.0, velocity: 0.0, acceleration: 0.0,
     };
 }
 
@@ -78,7 +61,8 @@ pub struct ParamSpec {
     default:  Shared,
     lo:       Shared,
     hi:       Shared,
-    curve:    Shared, // Curve::to_f32/from_f32
+    curve:    Shared,
+    weight_pitch:        Shared,
     weight_width:        Shared,
     weight_filter:       Shared,
     weight_fuzz:         Shared,
@@ -95,6 +79,7 @@ impl ParamSpec {
             lo:      Shared::new(range.0),
             hi:      Shared::new(range.1),
             curve:   Shared::new(curve.to_f32()),
+            weight_pitch:        Shared::new(weights.pitch),
             weight_width:        Shared::new(weights.width),
             weight_filter:       Shared::new(weights.filter),
             weight_fuzz:         Shared::new(weights.fuzz),
@@ -105,11 +90,12 @@ impl ParamSpec {
     }
 
     // (column label, cell) pairs for every draggable numeric field, in display order.
-    pub fn cells (&self) -> [(&'static str, &Shared); 9] {
+    pub fn cells (&self) -> [(&'static str, &Shared); 10] {
         [
             ("default",      &self.default),
             ("lo",           &self.lo),
             ("hi",           &self.hi),
+            ("pitch",        &self.weight_pitch),
             ("width",        &self.weight_width),
             ("filter",       &self.weight_filter),
             ("fuzz",         &self.weight_fuzz),
@@ -144,6 +130,7 @@ fn param_factor (spec: &ParamSpec, signal: &SignalState) -> f32 {
     };
 
     let mut result = default;
+    result += spec.weight_pitch.value()        * (interp(signal.bend)         - default);
     result += spec.weight_width.value()        * (interp(signal.width)        - default);
     result += spec.weight_filter.value()       * (interp(signal.filter)       - default);
     result += spec.weight_fuzz.value()         * (interp(signal.fuzz)         - default);
@@ -565,7 +552,7 @@ impl VoiceEngine {
     }
 }
 
-// FX after the NAM stage (NAM itself now plays the fuzz/distortion role --
+// FX after the NAM stage
 // see NamStage::process_buffer -- so this is just filter + amp)
 fn build_post_nam (filter: &Shared, params: Arc<VoiceParams>) -> Box<dyn AudioUnit> {
     let cutoff_params = params.clone();
