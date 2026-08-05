@@ -69,6 +69,12 @@ pub fn smoothstep (a: f32, b: f32, t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+// Exponential range mapping (SC's `linexp`): val in [in_lo,in_hi] -> [out_lo,out_hi]
+pub fn linexp (in_lo: f32, in_hi: f32, out_lo: f32, out_hi: f32, val: f32) -> f32 {
+    let t = ((val - in_lo) / (in_hi - in_lo)).clamp(0.0, 1.0);
+    out_lo * (out_hi / out_lo).powf(t)
+}
+
 pub fn ease_in (t: f32) -> f32 {
     t * t
 }
@@ -84,6 +90,7 @@ pub fn ease_out (t: f32) -> f32 {
 pub enum Consumer {
     Osc,
     Sc,
+    Rs,
 }
 
 #[derive(Debug)]
@@ -98,13 +105,14 @@ pub fn parse_args() -> Args {
     let mut consumer = Consumer::Sc;
     let mut test = false;
 
-    let help_text = "║ Supported options:\n║  --no-ui    Disable TUI\n║  --osc      Send output via OSC (Bitwig/DrivenByMoss)\n║  --sc       Send output to the SuperCollider backend (default)\n║  --test     Run self-tests";
+    let help_text = "║ Supported options:\n║  --no-ui    Disable TUI\n║  --osc      Send output via OSC (Bitwig/DrivenByMoss)\n║  --sc       Send output to the SuperCollider backend (default)\n║  --rs       Send output to the native Rust audio backend (experimental)\n║  --test     Run self-tests";
 
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--no-ui" => no_ui = true,
             "--osc"   => consumer = Consumer::Osc,
             "--sc"    => consumer = Consumer::Sc,
+            "--rs"    => consumer = Consumer::Rs,
             "--test"  => test = true,
             other => {
                 eprintln!("║ Error: unrecognized flag '{other}'");

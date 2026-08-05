@@ -10,10 +10,12 @@ mod zgicabra;
 mod ui;
 mod osc;
 mod sc;
+mod rs;
 mod output;
 
 use osc::OscOutput;
 use sc::ScOutput;
+use rs::RsOutput;
 use output::DeltaConsumer;
 
 use hydra::HydraState;
@@ -71,6 +73,7 @@ fn main() {
     let mut output: Box<dyn DeltaConsumer> = match args.consumer {
         tools::Consumer::Sc  => Box::new(ScOutput::new(args.no_ui).unwrap_or_else(|e| panic!("║ 🟥 Failed to init SuperCollider backend: {e}"))),
         tools::Consumer::Osc => Box::new(OscOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init OSC connection: {e}"))),
+        tools::Consumer::Rs  => Box::new(RsOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init native Rust audio backend: {e}"))),
     };
     output.panic(); // Kill any overrunning notes
 
