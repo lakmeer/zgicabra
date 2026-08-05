@@ -9,6 +9,8 @@
 //
 //   'z' - toggle the left trigger
 //   '.' - toggle the right trigger
+//   'a' - cycle to the previous Voice (dev stand-in for the physical Rocking button)
+//   's' - cycle to the next Voice
 //
 
 use std::f32::consts::PI;
@@ -58,6 +60,7 @@ pub struct MockBackend {
     keys: Keys<AsyncReader>,
     left_trigger:  bool,
     right_trigger: bool,
+    voice_cycle: i8,
     quit: bool,
     sequence: u8,
     _cbreak_guard: CbreakGuard, // restores the terminal on drop
@@ -67,12 +70,13 @@ impl MockBackend {
     pub fn new() -> MockBackend {
         let cbreak_guard = CbreakGuard::enable();
 
-        println!("Hydra::start - mock backend active. 'z'/'.' toggle triggers, 'q' quits.");
+        println!("Hydra::start - mock backend active. 'z'/'.' toggle triggers, 'a'/'s' cycle voice, 'q' quits.");
 
         MockBackend {
             keys: termion::async_stdin().keys(),
             left_trigger:  false,
             right_trigger: false,
+            voice_cycle: 0,
             quit: false,
             sequence: 0,
             _cbreak_guard: cbreak_guard,
@@ -82,6 +86,14 @@ impl MockBackend {
     pub fn should_quit (&mut self) -> bool {
         self.poll_keys();
         self.quit
+    }
+
+    // Net voice-cycle direction accumulated since the last call; resets to
+    // zero on read. See hydra::take_voice_cycle.
+    pub fn take_voice_cycle (&mut self) -> i8 {
+        let v = self.voice_cycle;
+        self.voice_cycle = 0;
+        v
     }
 
     pub fn update (&mut self, controllers: &mut [ ControllerFrame; 2 ]) {
@@ -98,6 +110,8 @@ impl MockBackend {
             match key {
                 Key::Char('z') => self.left_trigger  = !self.left_trigger,
                 Key::Char('.') => self.right_trigger = !self.right_trigger,
+                Key::Char('a') => self.voice_cycle -= 1,
+                Key::Char('s') => self.voice_cycle += 1,
                 Key::Char('q') => self.quit = true,
                 _ => {},
             }

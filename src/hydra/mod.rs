@@ -166,6 +166,17 @@ pub fn update (state: &mut HydraState) {
     state.timestamp = Instant::now();
 }
 
+// Net voice-cycle direction accumulated since the last call (mock backend
+// only, 'a'/'s' -- see mock::MockBackend::take_voice_cycle). The real backend
+// has no keyboard, so it always returns 0; voice changes there come through
+// the physical Rocking button instead, handled entirely in zgicabra::update.
+pub fn take_voice_cycle (state: &mut HydraState) -> i8 {
+    match &mut state.backend {
+        Some(Backend::Mock(backend)) => backend.take_voice_cycle(),
+        _ => 0,
+    }
+}
+
 // True if the user has asked to quit. On the real backend this is any keypress
 // (unchanged from before); the mock backend reserves 'z' and '.' for the
 // triggers, so it listens for 'q' instead.
