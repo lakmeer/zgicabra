@@ -19,6 +19,8 @@ use libc::{c_float, c_int, c_uint, c_uchar, c_ushort};
 mod real;
 mod mock;
 
+pub use mock::MockControls;
+
 pub const LEFT_HAND:  c_uchar = 1;
 pub const RIGHT_HAND: c_uchar = 2;
 
@@ -185,6 +187,16 @@ pub fn take_tune_cycle (state: &mut HydraState) -> i8 {
     match &mut state.backend {
         Some(Backend::Mock(backend)) => backend.take_tune_cycle(),
         _ => 0,
+    }
+}
+
+// A shared handle onto the mock backend's inputs, for a UI to drive directly
+// (e.g. gui.rs's mock hydra panel). None on the real backend -- there's no
+// keyboard-driven input to hand out.
+pub fn mock_controls (state: &HydraState) -> Option<MockControls> {
+    match &state.backend {
+        Some(Backend::Mock(backend)) => Some(backend.controls()),
+        _ => None,
     }
 }
 

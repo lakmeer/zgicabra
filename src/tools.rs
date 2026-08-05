@@ -1,5 +1,6 @@
 
 use core::f32::consts::PI;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
 use rand::prelude::*;
@@ -12,6 +13,27 @@ lazy_static! {
 }
 
 const NOTE_NAME:&str = "C C#D D#E F F#G G#A A#B ";
+
+
+// A lock-free shared f32 cell (bit-cast through AtomicU32), for cross-thread
+// values that need to be read/written from a GUI without a mutex -- e.g.
+// hydra::mock's continuous joystick positions and zgicabra's signal-state
+// overrides.
+pub struct AtomicF32(AtomicU32);
+
+impl AtomicF32 {
+    pub fn new (value: f32) -> AtomicF32 {
+        AtomicF32(AtomicU32::new(value.to_bits()))
+    }
+
+    pub fn load (&self) -> f32 {
+        f32::from_bits(self.0.load(Ordering::Relaxed))
+    }
+
+    pub fn store (&self, value: f32) {
+        self.0.store(value.to_bits(), Ordering::Relaxed)
+    }
+}
 
 
 // Time
@@ -98,14 +120,16 @@ pub struct Args {
     pub no_ui: bool,
     pub consumer: Consumer,
     pub test: bool,
+    pub gui: bool,
 }
 
 pub fn parse_args() -> Args {
     let mut no_ui = false;
     let mut consumer = Consumer::Sc;
     let mut test = false;
+    let mut gui = false;
 
-    let help_text = "║ Supported options:\n║  --no-ui    Disable TUI\n║  --osc      Send output via OSC (Bitwig/DrivenByMoss)\n║  --sc       Send output to the SuperCollider backend (default)\n║  --rs       Send output to the native Rust audio backend (experimental)\n║  --test     Run self-tests";
+    let help_text = "║ Supported options:\n║  --no-ui    Disable TUI\n║  --osc      Send output via OSC (Bitwig/DrivenByMoss)\n║  --sc       Send output to the SuperCollider backend (default)\n║  --rs       Send output to the native Rust audio backend (experimental)\n║  --gui      Open the graphical voice-params/mock-hydra tuner window\n║  --test     Run self-tests";
 
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
@@ -113,6 +137,7 @@ pub fn parse_args() -> Args {
             "--osc"   => consumer = Consumer::Osc,
             "--sc"    => consumer = Consumer::Sc,
             "--rs"    => consumer = Consumer::Rs,
+            "--gui"   => gui = true,
             "--test"  => test = true,
             other => {
                 eprintln!("║ Error: unrecognized flag '{other}'");
@@ -122,7 +147,7 @@ pub fn parse_args() -> Args {
         }
     }
 
-    Args { no_ui, consumer, test }
+    Args { no_ui, consumer, test, gui }
 }
 
 

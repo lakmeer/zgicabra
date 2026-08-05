@@ -6,6 +6,8 @@
 //
 
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::io::{Error};
 use core::f32::consts::PI;
@@ -269,6 +271,99 @@ impl Zgicabra {
 
 
 //
+// GUI Bridge
+//
+// A shared handle between the engine loop (which owns the real Zgicabra
+// state) and gui.rs, running on separate threads. One SignalOverride per
+// SignalState field: every engine tick publishes the just-computed value
+// into `value` for the gui to display, unless `enabled` says the gui has
+// taken that field over, in which case the engine instead pulls `value`
+// back onto the live SignalState -- so a UI can freely drive raw signal
+// values for testing without needing to fight whatever normally computes
+// them. Rotation is read-only telemetry (no live wand hardware/mock signal
+// meaningfully maps onto a "gui override" for it), just published for
+// display.
+#[derive(Clone)]
+pub struct SignalOverride {
+    pub value:   Arc<AtomicF32>,
+    pub enabled: Arc<AtomicBool>,
+}
+
+impl SignalOverride {
+    fn new () -> SignalOverride {
+        SignalOverride { value: Arc::new(AtomicF32::new(0.0)), enabled: Arc::new(AtomicBool::new(false)) }
+    }
+
+    fn sync (&self, live: &mut f32) {
+        if self.enabled.load(Ordering::Relaxed) {
+            *live = self.value.load();
+        } else {
+            self.value.store(*live);
+        }
+    }
+
+    // Convenience for a plain on/off toggle button (thump/fuzz): take over
+    // the field and flip it, in one call.
+    pub fn toggle (&self) {
+        let next = if self.value.load() > 0.5 { 0.0 } else { 1.0 };
+        self.value.store(next);
+        self.enabled.store(true, Ordering::Relaxed);
+    }
+}
+
+#[derive(Clone)]
+pub struct ZgicabraBridge {
+    pub bend:         SignalOverride,
+    pub filter:       SignalOverride,
+    pub fuzz:         SignalOverride,
+    pub width:        SignalOverride,
+    pub thump:        SignalOverride,
+    pub velocity:     SignalOverride,
+    pub acceleration: SignalOverride,
+    pub jerk:         SignalOverride,
+
+    pub left_rot:  [Arc<AtomicF32>; 4],
+    pub right_rot: [Arc<AtomicF32>; 4],
+}
+
+impl ZgicabraBridge {
+    pub fn new () -> ZgicabraBridge {
+        ZgicabraBridge {
+            bend:         SignalOverride::new(),
+            filter:       SignalOverride::new(),
+            fuzz:         SignalOverride::new(),
+            width:        SignalOverride::new(),
+            thump:        SignalOverride::new(),
+            velocity:     SignalOverride::new(),
+            acceleration: SignalOverride::new(),
+            jerk:         SignalOverride::new(),
+            left_rot:  std::array::from_fn(|_| Arc::new(AtomicF32::new(0.0))),
+            right_rot: std::array::from_fn(|_| Arc::new(AtomicF32::new(0.0))),
+        }
+    }
+
+    // Called once per engine-loop tick, right after zgicabra::update(). Pulls
+    // any gui overrides onto `state.signal`, and publishes read-only
+    // telemetry (rotation) for the gui to display.
+    pub fn sync (&self, state: &mut Zgicabra) {
+        self.bend.sync(&mut state.signal.bend);
+        self.filter.sync(&mut state.signal.filter);
+        self.fuzz.sync(&mut state.signal.fuzz);
+        self.width.sync(&mut state.signal.width);
+        self.thump.sync(&mut state.signal.thump);
+        self.velocity.sync(&mut state.signal.velocity);
+        self.acceleration.sync(&mut state.signal.acceleration);
+        self.jerk.sync(&mut state.signal.jerk);
+
+        for i in 0..4 {
+            self.left_rot[i].store(state.left.rot[i]);
+            self.right_rot[i].store(state.right.rot[i]);
+        }
+    }
+}
+
+
+//
 // Module Functions
 //
 
@@ -488,6 +583,17 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     // Actual physical distance is empirically from abour 50 including fingers, to about 1500 at
     // full arm span. Tune that to get a normalised range
     curr_state.signal.width = (curr_state.separation - 50.0) / 1500.0;
+
+    // Velocity/acceleration: whichever wand is moving/accelerating harder,
+    // not just whichever was triggered most recently
+    let mut velocity: f32 = 0.0;
+    let mut acceleration: f32 = 0.0;
+    if curr_state.level > 0.0 {
+        velocity     = curr_state.left.scalar_vel.max(curr_state.right.scalar_vel);
+        acceleration = curr_state.left.scalar_acc.max(curr_state.right.scalar_acc);
+    }
+    curr_state.signal.velocity     = velocity;
+    curr_state.signal.acceleration = acceleration;
 
 }
 

@@ -17,3 +17,20 @@ rosc = "~0.10"
 fundsp = "0.23.0"
 cpal = "0.18.1"
 nam-rs = "0.4.0"
+imgui = { version = "0.12", features = ["tables-api"] }
+imgui-winit-support = "0.13"
+imgui-glow-renderer = "0.13"
+winit = "0.30"
+glutin = "0.32"
+glutin-winit = "0.5"
+glow = "0.14"
+raw-window-handle = "0.6"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# imgui-rs 0.12's DrawData::cmd_lists() calls slice::from_raw_parts on a
+# possibly-null pointer when a draw list is empty; harmless in Dear ImGui's C++
+# but trips Rust's debug-only UB precondition checks (stable since ~1.80).
+# Release builds skip these checks, so this only matters for `cargo build`
+# without --release. Upstream issue: imgui-rs/imgui-rs, unfixed as of 0.12.0.
+[profile.dev]
+debug-assertions = false
