@@ -13,39 +13,10 @@ use crate::output::DeltaConsumer;
 use crate::tools::linexp;
 use crate::zgicabra::{DeltaEvent, SignalState};
 
-const ATTACK:  f32 = 0.01;
-const RELEASE: f32 = 0.25;
-const AMP:     f32 = 0.3;
-
-const FILTER_Q: f32 = 0.6;
-
 const GATE_ON:  f32 = 1.0;
 const GATE_OFF: f32 = -1.0;
 
-const RATIO_A: f32 = 1.0;
-const RATIO_B: f32 = 1.007;
-const RATIO_C: f32 = 2.003;
-const INDEX_B: f32 = 2.2;
-const INDEX_C: f32 = 3.5;
-
 const FRACS: [f32; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
-const DETUNE_CENTS_MAX: f32 = 25.0;
-
-const SUB_LEVEL:    f32 = 0.35;
-const NOISE_LEVEL:  f32 = 0.05;
-const NOISE_LPF_HZ: f32 = 4000.0;
-
-const BYPASS_SUB_RATIO: f32 = 0.5;
-const BYPASS_SUB_LEVEL: f32 = 0.35;
-
-const GLIDE_TIME: f32 = 0.08;
-
-const OCTAVE_SHIFT: f32 = 0.5;
-
-const THUMP_DECAY_SEC:  f32 = 0.18;
-const THUMP_PITCH_MULT: f32 = 1.5;
-
-const FUZZ_DRIVE: f32 = 8.0;
 
 const NAM_SAMPLE_RATE: u32 = 48_000;
 
@@ -56,12 +27,123 @@ const NAM_MODEL_PATHS: [Option<&str>; 4] = [
     None,                    // VoiceD -- bypass
 ];
 
+// --
+// Parameter matrix: every tunable value in the engine gets a default, a
+// valid range, an interpolation curve, and a weight against each live
+// signal. param_factor() is the single place any of that gets resolved --
+// call sites never touch a raw const again.
+// --
+
+#[derive(Clone, Copy)]
+enum Curve { Linear, Exp }
+
+// pitch, left_vel, right_vel: natural future additions here once SignalState
+// grows matching fields -- nothing to weight against yet, so left out.
+#[derive(Clone, Copy)]
+struct SignalWeights {
+    width:  f32,
+    filter: f32,
+    fuzz:   f32,
+    thump:  f32,
+}
+
+impl SignalWeights {
+    const NONE: SignalWeights = SignalWeights { width: 0.0, filter: 0.0, fuzz: 0.0, thump: 0.0 };
+}
+
+#[derive(Clone, Copy)]
+struct ParamSpec {
+    default: f32,
+    range:   (f32, f32),
+    curve:   Curve,
+    weights: SignalWeights,
+}
+
+// Blends a param's default toward its range endpoints, weighted by how much
+// each live signal should influence it. All-zero weights => always `default`,
+// which is exactly today's plain-const behaviour.
+fn param_factor (spec: &ParamSpec, signal: &SignalState) -> f32 {
+    let (lo, hi) = spec.range;
+    let interp = |t: f32| match spec.curve {
+        Curve::Linear => lo + (hi - lo) * t,
+        Curve::Exp    => linexp(0.0, 1.0, lo, hi, t),
+    };
+
+    let mut result = spec.default;
+    result += spec.weights.width  * (interp(signal.width)  - spec.default);
+    result += spec.weights.filter * (interp(signal.filter) - spec.default);
+    result += spec.weights.fuzz   * (interp(signal.fuzz)   - spec.default);
+    result += spec.weights.thump  * (interp(signal.thump)  - spec.default);
+
+    result.clamp(lo.min(hi), lo.max(hi))
+}
+
+struct VoiceParams {
+    attack:           ParamSpec,
+    release:          ParamSpec,
+    amp:              ParamSpec,
+    filter_q:         ParamSpec,
+    filter_cutoff_hz: ParamSpec,
+    ratio_a:          ParamSpec,
+    ratio_b:          ParamSpec,
+    ratio_c:          ParamSpec,
+    index_b:          ParamSpec,
+    index_c:          ParamSpec,
+    detune_cents_max: ParamSpec,
+    sub_level:        ParamSpec,
+    noise_level:      ParamSpec,
+    noise_lpf_hz:     ParamSpec,
+    bypass_sub_ratio: ParamSpec,
+    bypass_sub_level: ParamSpec,
+    glide_time:       ParamSpec,
+    octave_shift:     ParamSpec,
+    thump_decay_sec:  ParamSpec,
+    thump_pitch_mult: ParamSpec,
+    fuzz_drive:       ParamSpec,
+}
+
+// `filter_q`, `attack`, `release`, `glide_time`, `noise_lpf_hz` and `amp` are
+// baked into fundsp AudioUnits at graph-construction time (lowpass_q's Q,
+// adsr_live's times, follow's response time, lowpass_hz's cutoff, and the
+// `*` amp multiply all take a fixed value once, not a live per-sample
+// input) -- so they're only ever evaluated with SignalState::new() (rest
+// state). That's provably identical to live evaluation as long as their
+// weights stay SignalWeights::NONE. Making them truly live would mean
+// forking adsr_live's closure or switching to fundsp's 3-input lowpass().
+const VOICE_PARAMS: VoiceParams = VoiceParams {
+    attack:           ParamSpec { default: 0.01,   range: (0.001, 1.0),     curve: Curve::Linear, weights: SignalWeights::NONE },
+    release:          ParamSpec { default: 0.25,   range: (0.01, 2.0),      curve: Curve::Linear, weights: SignalWeights::NONE },
+    amp:              ParamSpec { default: 0.3,    range: (0.0, 1.0),       curve: Curve::Linear, weights: SignalWeights::NONE },
+    filter_q:         ParamSpec { default: 0.6,    range: (0.1, 4.0),       curve: Curve::Linear, weights: SignalWeights::NONE },
+    // range must start at exactly 100.0 -- with weight=1.0 `default` fully cancels (see param_factor)
+    filter_cutoff_hz: ParamSpec { default: 100.0,  range: (100.0, 14000.0), curve: Curve::Exp,    weights: SignalWeights { filter: 1.0, ..SignalWeights::NONE } },
+    ratio_a:          ParamSpec { default: 1.0,    range: (0.5, 2.0),       curve: Curve::Linear, weights: SignalWeights::NONE },
+    ratio_b:          ParamSpec { default: 1.007,  range: (0.5, 2.0),       curve: Curve::Linear, weights: SignalWeights::NONE },
+    ratio_c:          ParamSpec { default: 2.003,  range: (0.5, 4.0),       curve: Curve::Linear, weights: SignalWeights::NONE },
+    index_b:          ParamSpec { default: 2.2,    range: (0.0, 8.0),       curve: Curve::Linear, weights: SignalWeights::NONE },
+    index_c:          ParamSpec { default: 3.5,    range: (0.0, 8.0),       curve: Curve::Linear, weights: SignalWeights::NONE },
+    // range must start at exactly 0.0 -- weight=1.0 reproduces today's `width * DETUNE_CENTS_MAX`
+    detune_cents_max: ParamSpec { default: 25.0,   range: (0.0, 25.0),      curve: Curve::Linear, weights: SignalWeights { width: 1.0, ..SignalWeights::NONE } },
+    sub_level:        ParamSpec { default: 0.35,   range: (0.0, 1.0),       curve: Curve::Linear, weights: SignalWeights::NONE },
+    noise_level:      ParamSpec { default: 0.05,   range: (0.0, 0.5),       curve: Curve::Linear, weights: SignalWeights::NONE },
+    noise_lpf_hz:     ParamSpec { default: 4000.0, range: (200.0, 12000.0), curve: Curve::Linear, weights: SignalWeights::NONE },
+    bypass_sub_ratio: ParamSpec { default: 0.5,    range: (0.25, 1.0),      curve: Curve::Linear, weights: SignalWeights::NONE },
+    bypass_sub_level: ParamSpec { default: 0.35,   range: (0.0, 1.0),       curve: Curve::Linear, weights: SignalWeights::NONE },
+    glide_time:       ParamSpec { default: 0.08,   range: (0.0, 0.5),       curve: Curve::Linear, weights: SignalWeights::NONE },
+    octave_shift:     ParamSpec { default: 0.5,    range: (0.25, 2.0),      curve: Curve::Linear, weights: SignalWeights::NONE },
+    thump_decay_sec:  ParamSpec { default: 0.18,   range: (0.02, 1.0),      curve: Curve::Linear, weights: SignalWeights::NONE },
+    // range must start at exactly 0.0 -- weight=1.0 reproduces today's `thump * THUMP_PITCH_MULT`
+    thump_pitch_mult: ParamSpec { default: 1.5,    range: (0.0, 1.5),       curve: Curve::Linear, weights: SignalWeights { thump: 1.0, ..SignalWeights::NONE } },
+    // range must start at exactly 0.0 -- weight=1.0 reproduces today's `fuzz * FUZZ_DRIVE`
+    fuzz_drive:       ParamSpec { default: 8.0,    range: (0.0, 8.0),       curve: Curve::Linear, weights: SignalWeights { fuzz: 1.0, ..SignalWeights::NONE } },
+};
+
 pub struct RsOutput {
     freq:          Shared,
     gate:          Shared,
     bend:          Shared,
     width:         Shared,
-    cutoff:        Shared,
+    filter:        Shared,
     fuzz:          Shared,
     thump_amt:     Shared,
     thump_trigger: Shared,
@@ -77,7 +159,7 @@ impl RsOutput {
         let gate          = shared(GATE_OFF);
         let bend          = shared(0.0);
         let width         = shared(0.0);
-        let cutoff        = shared(4000.0);
+        let filter        = shared(0.0);
         let fuzz          = shared(0.0);
         let thump_amt     = shared(0.0);
         let thump_trigger = shared(0.0);
@@ -86,7 +168,7 @@ impl RsOutput {
             freq.clone(), gate.clone(), bend.clone(), width.clone(),
             thump_amt.clone(), thump_trigger.clone(),
         );
-        let mut post_nam = build_post_nam(&cutoff, &fuzz);
+        let mut post_nam = build_post_nam(&filter, &fuzz);
 
         println!("║ Loading NAM models... ");
         let nam_selected = shared(0.0);
@@ -121,7 +203,7 @@ impl RsOutput {
 
         println!("║ Native Rust audio backend OK.");
 
-        Ok(RsOutput { freq, gate, bend, width, cutoff, fuzz, thump_amt, thump_trigger, nam_selected, stream })
+        Ok(RsOutput { freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, nam_selected, stream })
     }
 }
 
@@ -188,18 +270,24 @@ impl FmVoice {
         self.op_c.set_sample_rate(sr);
     }
 
-    fn tick (&mut self, base_freq: f32, width: f32) -> f32 {
-        let detune = 2f32.powf(self.frac * width * DETUNE_CENTS_MAX / 1200.0);
+    fn tick (&mut self, base_freq: f32, signal: &SignalState) -> f32 {
+        let detune_cents_max = param_factor(&VOICE_PARAMS.detune_cents_max, signal);
+        let detune = 2f32.powf(self.frac * detune_cents_max / 1200.0);
         let voice_freq = base_freq * detune;
 
-        let freq_c = voice_freq * RATIO_C;
+        let ratio_c = param_factor(&VOICE_PARAMS.ratio_c, signal);
+        let freq_c = voice_freq * ratio_c;
         let out_c = self.op_c.filter_mono(freq_c);
 
-        let freq_b = voice_freq * RATIO_B;
-        let out_b = self.op_b.filter_mono(freq_b + out_c * (INDEX_C * freq_c));
+        let ratio_b = param_factor(&VOICE_PARAMS.ratio_b, signal);
+        let index_c = param_factor(&VOICE_PARAMS.index_c, signal);
+        let freq_b = voice_freq * ratio_b;
+        let out_b = self.op_b.filter_mono(freq_b + out_c * (index_c * freq_c));
 
-        let freq_a = voice_freq * RATIO_A;
-        let out_a = self.op_a.filter_mono(freq_a + out_b * (INDEX_B * freq_b));
+        let ratio_a = param_factor(&VOICE_PARAMS.ratio_a, signal);
+        let index_b = param_factor(&VOICE_PARAMS.index_b, signal);
+        let freq_a = voice_freq * ratio_a;
+        let out_a = self.op_a.filter_mono(freq_a + out_b * (index_b * freq_b));
 
         out_a
     }
@@ -230,14 +318,18 @@ impl VoiceEngine {
         freq: Shared, gate: Shared, bend: Shared, width: Shared,
         thump_amt: Shared, thump_trigger: Shared,
     ) -> VoiceEngine {
+        let rest = SignalState::new();
         VoiceEngine {
             freq, gate, bend, width, thump_amt, thump_trigger,
             voices: FRACS.iter().map(|&frac| FmVoice::new(frac)).collect(),
             sub:    sine(),
             bypass_sub: sine(),
-            noise:  Box::new(white() >> lowpass_hz(NOISE_LPF_HZ, 1.0)),
-            glide:  follow(GLIDE_TIME),
-            envelope: Box::new(adsr_live(ATTACK, 0.0, 1.0, RELEASE)),
+            noise:  Box::new(white() >> lowpass_hz(param_factor(&VOICE_PARAMS.noise_lpf_hz, &rest), 1.0)),
+            glide:  follow(param_factor(&VOICE_PARAMS.glide_time, &rest)),
+            envelope: Box::new(adsr_live(
+                param_factor(&VOICE_PARAMS.attack, &rest), 0.0, 1.0,
+                param_factor(&VOICE_PARAMS.release, &rest),
+            )),
             thump_last_trigger:    0.0,
             thump_elapsed_samples: 0.0,
             sample_rate:           DEFAULT_SR as f32,
@@ -257,28 +349,37 @@ impl VoiceEngine {
     // `dry` => the full -voice signal for effect chain
     // `bypass` => effect bypass (sub-osc)
     fn tick (&mut self) -> (f32, f32) {
-        let glided    = self.glide.filter_mono(self.freq.value());
-        let bend_mult = 2f32.powf(self.bend.value());
-        let base_freq = glided * bend_mult * self.tick_thump() * OCTAVE_SHIFT;
+        let signal = SignalState {
+            bend: self.bend.value(), width: self.width.value(), thump: self.thump_amt.value(),
+            ..SignalState::new()
+        };
 
-        let width = self.width.value();
+        let glided       = self.glide.filter_mono(self.freq.value());
+        let bend_mult    = 2f32.powf(signal.bend);
+        let octave_shift = param_factor(&VOICE_PARAMS.octave_shift, &signal);
+        let base_freq    = glided * bend_mult * self.tick_thump(&signal) * octave_shift;
+
         let voice_count = self.voices.len() as f32;
         let fm_sum: f32 = self.voices.iter_mut()
-            .map(|voice| voice.tick(base_freq, width))
+            .map(|voice| voice.tick(base_freq, &signal))
             .sum::<f32>() / voice_count;
 
-        let sub   = self.sub.filter_mono(base_freq * 0.5) * SUB_LEVEL;
-        let noise = self.noise.get_mono() * NOISE_LEVEL;
+        let sub_level   = param_factor(&VOICE_PARAMS.sub_level, &signal);
+        let noise_level = param_factor(&VOICE_PARAMS.noise_level, &signal);
+        let sub   = self.sub.filter_mono(base_freq * 0.5) * sub_level;
+        let noise = self.noise.get_mono() * noise_level;
 
         let dry = fm_sum + sub + noise;
         let env = self.envelope.filter_mono(self.gate.value());
 
-        let bypass = self.bypass_sub.filter_mono(base_freq * BYPASS_SUB_RATIO) * BYPASS_SUB_LEVEL * env;
+        let bypass_ratio = param_factor(&VOICE_PARAMS.bypass_sub_ratio, &signal);
+        let bypass_level = param_factor(&VOICE_PARAMS.bypass_sub_level, &signal);
+        let bypass = self.bypass_sub.filter_mono(base_freq * bypass_ratio) * bypass_level * env;
 
         (dry * env, bypass)
     }
 
-    fn tick_thump (&mut self) -> f32 {
+    fn tick_thump (&mut self, signal: &SignalState) -> f32 {
         let trigger = self.thump_trigger.value();
         if trigger != self.thump_last_trigger {
             self.thump_last_trigger = trigger;
@@ -288,22 +389,35 @@ impl VoiceEngine {
         let t = self.thump_elapsed_samples / self.sample_rate;
         self.thump_elapsed_samples += 1.0;
 
-        let decay = (-5.0 * t / THUMP_DECAY_SEC).exp();
-        1.0 + decay * self.thump_amt.value() * THUMP_PITCH_MULT
+        let decay_sec  = param_factor(&VOICE_PARAMS.thump_decay_sec, signal);
+        // already includes the live thump amount (weights.thump = 1.0), i.e. == thump * THUMP_PITCH_MULT
+        let pitch_bump = param_factor(&VOICE_PARAMS.thump_pitch_mult, signal);
+        let decay = (-5.0 * t / decay_sec).exp();
+        1.0 + decay * pitch_bump
     }
 }
 
 // FX after the NAM stage
-fn build_post_nam (cutoff: &Shared, fuzz: &Shared) -> Box<dyn AudioUnit> {
-    let filtered = (pass() | var(cutoff)) >> lowpass_q(FILTER_Q);
+fn build_post_nam (filter: &Shared, fuzz: &Shared) -> Box<dyn AudioUnit> {
+    let cutoff_hz = var(filter) >> map(|i: &Frame<f32, U1>| {
+        let signal = SignalState { filter: i[0], ..SignalState::new() };
+        param_factor(&VOICE_PARAMS.filter_cutoff_hz, &signal)
+    });
+
+    let filter_q = param_factor(&VOICE_PARAMS.filter_q, &SignalState::new());
+    let filtered = (pass() | cutoff_hz) >> lowpass_q(filter_q);
 
     let with_fuzz = (filtered | var(fuzz)) >> map(|i: &Frame<f32, U2>| {
         let (x, f) = (i[0], i[1]);
-        let wet = (x * (1.0 + f * FUZZ_DRIVE)).tanh();
+        let signal = SignalState { fuzz: f, ..SignalState::new() };
+        // already includes the live fuzz amount (weights.fuzz = 1.0), i.e. == f * FUZZ_DRIVE
+        let drive = param_factor(&VOICE_PARAMS.fuzz_drive, &signal);
+        let wet = (x * (1.0 + drive)).tanh();
         x * (1.0 - f) + wet * f
     });
 
-    Box::new(with_fuzz * AMP)
+    let amp = param_factor(&VOICE_PARAMS.amp, &SignalState::new());
+    Box::new(with_fuzz * amp)
 }
 
 const NAM_BLOCK_CAP: usize = 4096;
@@ -369,9 +483,9 @@ impl DeltaConsumer for RsOutput {
     fn handle_signal (&mut self, signal: &SignalState) {
         self.bend.set_value(signal.bend);
         self.width.set_value(signal.width);
+        self.filter.set_value(signal.filter);
         self.fuzz.set_value(signal.fuzz);
         self.thump_amt.set_value(signal.thump);
-        self.cutoff.set_value(linexp(0.0, 1.0, 100.0, 14000.0, signal.filter));
     }
 
     fn handle_event (&mut self, delta: &DeltaEvent) {
