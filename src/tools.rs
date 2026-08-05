@@ -80,25 +80,32 @@ pub fn ease_out (t: f32) -> f32 {
 
 // CLI
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Consumer {
+    Osc,
+    Sc,
+}
+
 #[derive(Debug)]
 pub struct Args {
     pub no_ui: bool,
-    pub no_osc: bool,
+    pub consumer: Consumer,
     pub test: bool,
 }
 
 pub fn parse_args() -> Args {
     let mut no_ui = false;
-    let mut no_osc = false;
+    let mut consumer = Consumer::Sc;
     let mut test = false;
 
-    let help_text = "║ Supported options:\n║  --no-ui    Disable TUI\n║  --no-osc    Ignore OSC Output\n║  --test     Run self-tests";
+    let help_text = "║ Supported options:\n║  --no-ui    Disable TUI\n║  --osc      Send output via OSC (Bitwig/DrivenByMoss)\n║  --sc       Send output to the SuperCollider backend (default)\n║  --test     Run self-tests";
 
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
-            "--no-ui"  => no_ui = true,
-            "--no-osc" => no_osc = true,
-            "--test"   => test = true,
+            "--no-ui" => no_ui = true,
+            "--osc"   => consumer = Consumer::Osc,
+            "--sc"    => consumer = Consumer::Sc,
+            "--test"  => test = true,
             other => {
                 eprintln!("║ Error: unrecognized flag '{other}'");
                 println!("{}", help_text);
@@ -107,7 +114,7 @@ pub fn parse_args() -> Args {
         }
     }
 
-    Args { no_ui, no_osc, test }
+    Args { no_ui, consumer, test }
 }
 
 

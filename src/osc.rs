@@ -8,6 +8,7 @@ use std::io::{Result};
 
 use crate::zgicabra::{DeltaEvent,SignalState};
 use crate::hydra::HydraState;
+use crate::output::DeltaConsumer;
 
 const HOST_ADDR:&str = "127.0.0.1:0"; // Port 0 = arbitrary free port
 const TO_ADDR:&str   = "127.0.0.1:8000"; // Default port for OSC Bitwig plugin (DrivenByMoss)
@@ -26,26 +27,19 @@ fn osc_max (val: f32) -> i32 {
 
 
 pub struct OscOutput {
-    socket: Option<UdpSocket>,
+    socket: UdpSocket,
 }
 
 impl OscOutput {
-    pub fn new (enabled: bool) -> Result<OscOutput> {
-        if !enabled {
-            println!("║ OSC output disabled (--no-osc)");
-            return Ok(OscOutput { socket: None });
-        }
-
+    pub fn new () -> Result<OscOutput> {
         println!("║ Obtaining OSC connection... ");
         let socket = UdpSocket::bind(HOST_ADDR)?;
         socket.connect(TO_ADDR).unwrap();
         println!("║ OSC connection OK.");
-        Ok(OscOutput { socket: Some(socket) })
+        Ok(OscOutput { socket })
     }
 
     pub fn send (&self, addr: &str, args: &[i32]) {
-        let Some(socket) = &self.socket else { return };
-
         for &arg in args {
             assert!((arg >= 0 && arg <= MAX_VALUE), "OSC arg out of range 0-127: {arg} (addr: {addr})");
         }
@@ -55,7 +49,7 @@ impl OscOutput {
             args: args.iter().map(|&x| OscType::Int(x)).collect(),
         })).unwrap();
 
-        socket.send(&msg_buf).unwrap();
+        self.socket.send(&msg_buf).unwrap();
     }
 
     pub fn trigger (&self, addr: &str) {
@@ -106,5 +100,11 @@ impl OscOutput {
         }
     }
 
+}
+
+impl DeltaConsumer for OscOutput {
+    fn panic (&mut self) { OscOutput::panic(self); }
+    fn handle_signal (&mut self, signal: &SignalState) { OscOutput::handle_signal(self, signal); }
+    fn handle_event (&mut self, delta: &DeltaEvent) { OscOutput::handle_event(self, delta); }
 }
 

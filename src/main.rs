@@ -9,8 +9,12 @@ mod hydra;
 mod zgicabra;
 mod ui;
 mod osc;
+mod sc;
+mod output;
 
-use osc::{OscOutput};
+use osc::OscOutput;
+use sc::ScOutput;
+use output::DeltaConsumer;
 
 use hydra::HydraState;
 use zgicabra::{Zgicabra, DeltaEvent};
@@ -64,7 +68,10 @@ fn main() {
 
     // Setup
 
-    let output = OscOutput::new(!args.no_osc).unwrap_or_else(|e| panic!("║ 🟥 Failed to init OSC connection: {e}"));
+    let mut output: Box<dyn DeltaConsumer> = match args.consumer {
+        tools::Consumer::Sc  => Box::new(ScOutput::new(args.no_ui).unwrap_or_else(|e| panic!("║ 🟥 Failed to init SuperCollider backend: {e}"))),
+        tools::Consumer::Osc => Box::new(OscOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init OSC connection: {e}"))),
+    };
     output.panic(); // Kill any overrunning notes
 
     hydra::start(&mut hydra_state);
