@@ -2,29 +2,68 @@
 //
 // Hydra
 //
-// Public API for wand/controller input. Two interchangeable backends sit behind
-// it:
+// Public API for wand/controller input. Three interchangeable backends sit
+// behind a common `Backend` trait:
 //
-//  - `real` (linux x86_64 and macOS x86_64 only, see build.rs) talks to actual
-//    Hydra hardware via libsixense.
-//  - `mock` generates synthetic wand motion and simulates the triggers from the
-//    keyboard. It's used on any target without a libsixense build (build.rs
-//    sets `have_real_hydra`), and as a runtime fallback if no hardware
-//    responds within the detection window.
+//  - `sdk` (linux x86_64 only) talks to real Hydra hardware via libsixense.
+//  - `hid` (macOS x86_64 only) talks to real Hydra hardware directly over
+//    USB HID, bypassing the Sixense SDK entirely (see hid.rs's doc comment
+//    for why -- the SDK is dead and crashes on modern macOS).
+//  - `mock` generates synthetic wand motion and simulates the triggers from
+//    the keyboard. It's used on any target without a real backend, and as a
+//    runtime fallback on either real backend if no hardware responds within
+//    that backend's detection window.
 //
 
 use std::time::{Instant,Duration};
 
 use libc::{c_float, c_int, c_uint, c_uchar, c_ushort};
 
-#[cfg(have_real_hydra)]
-mod real;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod sdk;
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+mod hid;
 mod mock;
 
 pub use mock::MockControls;
 
 pub const LEFT_HAND:  c_uchar = 1;
 pub const RIGHT_HAND: c_uchar = 2;
+
+// Puts stdin in cbreak mode: keystrokes are available immediately (no waiting
+// for Enter) without local echo. Unlike termion's `into_raw_mode()` (which
+// uses POSIX `cfmakeraw` and also disables output post-processing), this
+// leaves stdout's normal `\n` -> `\r\n` translation alone, so it doesn't
+// break the rest of the app's plain `print!`/`println!` output. Shared by
+// any backend (mock, hid) that needs a non-blocking should_quit keypress
+// check instead of the Backend trait's blocking-read default.
+struct CbreakGuard {
+    original: libc::termios,
+}
+
+impl CbreakGuard {
+    fn enable() -> CbreakGuard {
+        unsafe {
+            let mut term: libc::termios = std::mem::zeroed();
+            libc::tcgetattr(libc::STDIN_FILENO, &mut term);
+            let original = term;
+
+            term.c_lflag &= !(libc::ICANON | libc::ECHO);
+            term.c_cc[libc::VMIN]  = 1;
+            term.c_cc[libc::VTIME] = 0;
+
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &term);
+
+            CbreakGuard { original }
+        }
+    }
+}
+
+impl Drop for CbreakGuard {
+    fn drop (&mut self) {
+        unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.original); }
+    }
+}
 
 pub const BUTTON_JOYCLICK : c_uint = 0b100000000;
 pub const BUTTON_BUMPER   : c_uint = 0b010000000;
@@ -39,7 +78,7 @@ pub const BUTTON_4        : c_uint = 0b000010000;
 // ControllerFrame
 //
 // One frame of all data from the hydra, shaped according to the Sixense API.
-// Both backends fill one of these in per wand per frame.
+// All backends fill one of these in per wand per frame.
 //
 
 #[repr(C)]
@@ -96,6 +135,32 @@ impl Default for ControllerFrame {
 
 
 //
+// Backend
+//
+// What any Hydra input source must provide. Voice/tune-cycle and
+// mock-controls are dev/mock-only conveniences (see hydra::take_voice_cycle
+// etc. below for why real backends don't need them) so they get no-op
+// defaults instead of forcing every implementor to restate them. Likewise
+// should_quit defaults to "any keypress" since that's identical on both real
+// backends -- only the mock backend, which reserves keys for wand input,
+// overrides it.
+//
+
+trait Backend: Send {
+    fn update (&mut self, controllers: &mut [ ControllerFrame; 2 ]);
+
+    fn should_quit (&mut self) -> bool {
+        use std::io::Read;
+        std::io::stdin().bytes().next().and_then(|result| result.ok()).is_some()
+    }
+
+    fn take_voice_cycle (&mut self) -> i8 { 0 }
+    fn take_tune_cycle (&mut self) -> i8 { 0 }
+    fn mock_controls (&self) -> Option<MockControls> { None }
+}
+
+
+//
 // HydraState
 //
 // Manages a block of memory in which we can record and manipulate incoming hydra data
@@ -105,13 +170,7 @@ pub struct HydraState {
     pub timestamp:   Instant,
     pub timedelta:   Duration,
     pub controllers: [ ControllerFrame; 2 ],
-    backend: Option<Backend>,
-}
-
-enum Backend {
-    #[cfg(have_real_hydra)]
-    Real,
-    Mock(mock::MockBackend),
+    backend: Option<Box<dyn Backend>>,
 }
 
 impl HydraState {
@@ -137,32 +196,29 @@ impl Default for HydraState {
 //
 
 pub fn start (state: &mut HydraState) {
-    #[cfg(have_real_hydra)]
-    {
-        if real::try_start() {
-            state.backend = Some(Backend::Real);
-            return;
-        }
-        println!("Hydra::start - falling back to mock hydra backend.");
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    if let Some(backend) = sdk::SdkBackend::try_start() {
+        state.backend = Some(Box::new(backend));
+        return;
     }
 
-    state.backend = Some(Backend::Mock(mock::MockBackend::new()));
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    if let Some(backend) = hid::HidBackend::try_start() {
+        state.backend = Some(Box::new(backend));
+        return;
+    }
+
+    println!("Hydra::start - falling back to mock hydra backend.");
+    state.backend = Some(Box::new(mock::MockBackend::new()));
 }
 
 pub fn stop (state: &mut HydraState) {
-    #[cfg(have_real_hydra)]
-    if let Some(Backend::Real) = &state.backend {
-        real::stop();
-    }
-
-    state.backend = None;
+    state.backend = None; // real backends clean up in Drop
 }
 
 pub fn update (state: &mut HydraState) {
     match &mut state.backend {
-        #[cfg(have_real_hydra)]
-        Some(Backend::Real) => real::update(&mut state.controllers),
-        Some(Backend::Mock(backend)) => backend.update(&mut state.controllers),
+        Some(backend) => backend.update(&mut state.controllers),
         None => panic!("hydra::update called before hydra::start"),
     }
 
@@ -171,14 +227,12 @@ pub fn update (state: &mut HydraState) {
 }
 
 // Net voice-cycle direction accumulated since the last call (mock backend
-// only, 'a'/'s' -- see mock::MockBackend::take_voice_cycle). The real backend
-// has no keyboard, so it always returns 0; voice changes there come through
-// the physical Rocking button instead, handled entirely in zgicabra::update.
+// only, 'a'/'s' -- see mock::MockBackend::take_voice_cycle). Real backends
+// have no keyboard, so they always return 0; voice changes there come
+// through the physical Rocking button instead, handled entirely in
+// zgicabra::update.
 pub fn take_voice_cycle (state: &mut HydraState) -> i8 {
-    match &mut state.backend {
-        Some(Backend::Mock(backend)) => backend.take_voice_cycle(),
-        _ => 0,
-    }
+    state.backend.as_mut().map_or(0, |backend| backend.take_voice_cycle())
 }
 
 // Net tune direction accumulated since the last call (mock backend only,
@@ -186,31 +240,19 @@ pub fn take_voice_cycle (state: &mut HydraState) -> i8 {
 // fallback reasoning as take_voice_cycle above: the physical Tune button
 // covers this on real hardware, handled entirely in zgicabra::update.
 pub fn take_tune_cycle (state: &mut HydraState) -> i8 {
-    match &mut state.backend {
-        Some(Backend::Mock(backend)) => backend.take_tune_cycle(),
-        _ => 0,
-    }
+    state.backend.as_mut().map_or(0, |backend| backend.take_tune_cycle())
 }
 
 // A shared handle onto the mock backend's inputs, for a UI to drive directly
-// (e.g. gui.rs's mock hydra panel). None on the real backend -- there's no
+// (e.g. gui.rs's mock hydra panel). None on real backends -- there's no
 // keyboard-driven input to hand out.
 pub fn mock_controls (state: &HydraState) -> Option<MockControls> {
-    match &state.backend {
-        Some(Backend::Mock(backend)) => Some(backend.controls()),
-        _ => None,
-    }
+    state.backend.as_ref().and_then(|backend| backend.mock_controls())
 }
 
-// True if the user has asked to quit. On the real backend this is any keypress
-// (unchanged from before); the mock backend reserves 'z' and '.' for the
-// triggers, so it listens for 'q' instead.
+// True if the user has asked to quit. On real backends this is any keypress
+// (the Backend trait's default); the mock backend reserves 'z' and '.' for
+// the triggers, so it listens for 'q' instead.
 pub fn should_quit (state: &mut HydraState) -> bool {
-    match &mut state.backend {
-        Some(Backend::Mock(backend)) => backend.should_quit(),
-        _ => {
-            use std::io::Read;
-            std::io::stdin().bytes().next().and_then(|result| result.ok()).is_some()
-        },
-    }
+    state.backend.as_mut().map_or(false, |backend| backend.should_quit())
 }

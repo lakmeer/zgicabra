@@ -33,7 +33,7 @@ use termion::input::{Keys,TermRead};
 
 use crate::tools::{sin, AtomicF32};
 
-use super::{ControllerFrame,LEFT_HAND,RIGHT_HAND,BUTTON_1,BUTTON_2,BUTTON_3,BUTTON_4};
+use super::{Backend,ControllerFrame,LEFT_HAND,RIGHT_HAND,BUTTON_1,BUTTON_2,BUTTON_3,BUTTON_4};
 
 const BUTTON_BITS: [u32; 4] = [BUTTON_1, BUTTON_2, BUTTON_3, BUTTON_4];
 
@@ -76,38 +76,7 @@ impl MockControls {
     }
 }
 
-// Puts stdin in cbreak mode: keystrokes are available immediately (no waiting
-// for Enter) without local echo. Unlike termion's `into_raw_mode()` (which
-// uses POSIX `cfmakeraw` and also disables output post-processing), this
-// leaves stdout's normal `\n` -> `\r\n` translation alone, so it doesn't
-// break the rest of the app's plain `print!`/`println!` output.
-struct CbreakGuard {
-    original: libc::termios,
-}
-
-impl CbreakGuard {
-    fn enable() -> CbreakGuard {
-        unsafe {
-            let mut term: libc::termios = std::mem::zeroed();
-            libc::tcgetattr(libc::STDIN_FILENO, &mut term);
-            let original = term;
-
-            term.c_lflag &= !(libc::ICANON | libc::ECHO);
-            term.c_cc[libc::VMIN]  = 1;
-            term.c_cc[libc::VTIME] = 0;
-
-            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &term);
-
-            CbreakGuard { original }
-        }
-    }
-}
-
-impl Drop for CbreakGuard {
-    fn drop (&mut self) {
-        unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.original); }
-    }
-}
+use super::CbreakGuard;
 
 pub struct MockBackend {
     keys: Keys<AsyncReader>,
@@ -254,5 +223,27 @@ impl MockBackend {
         }
 
         frame
+    }
+}
+
+impl Backend for MockBackend {
+    fn update (&mut self, controllers: &mut [ ControllerFrame; 2 ]) {
+        MockBackend::update(self, controllers)
+    }
+
+    fn should_quit (&mut self) -> bool {
+        MockBackend::should_quit(self)
+    }
+
+    fn take_voice_cycle (&mut self) -> i8 {
+        MockBackend::take_voice_cycle(self)
+    }
+
+    fn take_tune_cycle (&mut self) -> i8 {
+        MockBackend::take_tune_cycle(self)
+    }
+
+    fn mock_controls (&self) -> Option<MockControls> {
+        Some(self.controls())
     }
 }
