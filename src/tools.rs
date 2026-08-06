@@ -125,7 +125,7 @@ pub struct Args {
 
 pub fn parse_args() -> Args {
     let mut no_ui = false;
-    let mut consumer = Consumer::Sc;
+    let mut consumer = Consumer::Rs;
     let mut test = false;
     let mut gui = false;
 

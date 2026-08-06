@@ -67,9 +67,6 @@ fn main() {
 
     // Setup
 
-    // Only the Rs backend has tunable VoiceParams / a NAM model cycler to
-    // hand to the gui; other backends leave these None and the relevant
-    // panels just say so.
     let mut voice_params: Option<Arc<rs::VoiceParams>> = None;
     let mut nam_models: Option<rs::NamModelCycler> = None;
 
