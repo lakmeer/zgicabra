@@ -67,6 +67,7 @@ fn main() {
 
     let mut voice_params: Option<Arc<rs::VoiceParams>> = None;
     let mut nam_models: Option<rs::NamModelCycler> = None;
+    let mut nam_irs: Option<rs::IrCycler> = None;
 
     let mut output: Box<dyn DeltaConsumer + Send> = match args.consumer {
         tools::Consumer::Osc => Box::new(OscOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init OSC connection: {e}"))),
@@ -74,6 +75,7 @@ fn main() {
             let rs_output = RsOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init native Rust audio backend: {e}"));
             voice_params = Some(rs_output.voice_params());
             nam_models = Some(rs_output.nam_models());
+            nam_irs = Some(rs_output.nam_irs());
             Box::new(rs_output)
         },
     };
@@ -103,7 +105,7 @@ fn main() {
             run_engine_loop(args, hydra_state, output, engine_bridge, engine_quit);
         });
 
-        gui::run(voice_params, nam_models, mock_controls, bridge, quit);
+        gui::run(voice_params, nam_models, nam_irs, mock_controls, bridge, quit);
         engine_thread.join().expect("engine thread panicked");
     } else {
         run_engine_loop(args, hydra_state, output, bridge, Arc::new(AtomicBool::new(false)));

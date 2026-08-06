@@ -23,6 +23,14 @@ const FRACS: [f32; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
 
 const NAM_SAMPLE_RATE: u32 = 48_000;
 const NAM_DIR: &str = "nam";
+const NAM_IR_DIR: &str = "nam/ir";
+// Real cab IRs are tens to a few hundred ms; some files in nam/ir/ are ~75s
+// exports with the actual response in the first ~150ms and a near-silent
+// tail padding out the rest. Convolving live audio against the untrimmed
+// file means an FFT convolution with millions of taps per block -- nowhere
+// near real-time. Trim to this window on load.
+const NAM_IR_MAX_SECONDS: f64 = 0.5;
+const DEFAULT_NAM_MODEL: &str = "6505";
 
 
 #[derive(Clone, Copy, PartialEq)]
@@ -238,6 +246,29 @@ impl NamModelCycler {
     }
 }
 
+// Same shape as NamModelCycler, for cycling through the discovered cab IR
+// files (index 0 is always "Bypass" -- no convolution, raw amp signal).
+#[derive(Clone)]
+pub struct IrCycler {
+    selected: Shared,
+    names:    Arc<Vec<String>>,
+}
+
+impl IrCycler {
+    pub fn selected_name (&self) -> &str {
+        let i = self.selected.value() as usize;
+        self.names.get(i).map(String::as_str).unwrap_or("?")
+    }
+
+    pub fn cycle (&self, delta: i32) {
+        let count = self.names.len() as i32;
+        if count == 0 { return; }
+        let current = self.selected.value() as i32;
+        let next = (current + delta).rem_euclid(count);
+        self.selected.set_value(next as f32);
+    }
+}
+
 pub struct RsOutput {
     freq:            Shared,
     gate:            Shared,
@@ -249,6 +280,8 @@ pub struct RsOutput {
     thump_trigger:   Shared,
     nam_selected:    Shared,
     nam_model_names: Arc<Vec<String>>,
+    ir_selected:     Shared,
+    ir_names:        Arc<Vec<String>>,
     voice_params:    Arc<VoiceParams>,
     stream:          cpal::Stream,
 }
@@ -265,6 +298,12 @@ impl RsOutput {
     // clone (an Arc'd atomic cell plus an Arc'd name list).
     pub fn nam_models (&self) -> NamModelCycler {
         NamModelCycler { selected: self.nam_selected.clone(), names: self.nam_model_names.clone() }
+    }
+
+    // Handle to the IR cycler, for a UI to drive/display. Cheap to clone,
+    // same shape as nam_models().
+    pub fn nam_irs (&self) -> IrCycler {
+        IrCycler { selected: self.ir_selected.clone(), names: self.ir_names.clone() }
     }
 
     pub fn new () -> io::Result<RsOutput> {
@@ -289,14 +328,28 @@ impl RsOutput {
         println!("║ Loading NAM models... ");
         let (nam_model_list, nam_model_name_list) = load_nam_models()?;
         let nam_model_names = Arc::new(nam_model_name_list);
-        let nam_selected = shared(0.0);
+        let default_nam_index = nam_model_names.iter().position(|n| n == DEFAULT_NAM_MODEL).unwrap_or(0);
+        let nam_selected = shared(default_nam_index as f32);
+        println!("║ NAM models loaded: {}", nam_model_names.join(", "));
+
+        println!("║ Loading IR files... ");
+        let (ir_list, ir_name_list) = load_irs()?;
+        let ir_names = Arc::new(ir_name_list);
+        let ir_selected = shared(0.0);
+        println!("║ IRs loaded: {}", ir_names.join(", "));
+
         let nam = NamStage {
             models:      nam_model_list,
             selected:    nam_selected.clone(),
             fuzz:        fuzz.clone(),
             dry_scratch: [0.0; NAM_BLOCK_CAP],
+            irs:         ir_list,
+            ir_selected: ir_selected.clone(),
+            convolver:   None,
+            active_ir:   0,
+            ir_input:    BufferVec::new(1),
+            ir_output:   BufferVec::new(1),
         };
-        println!("║ NAM models loaded: {}", nam_model_names.join(", "));
 
         let host   = cpal::default_host();
         let device = host.default_output_device()
@@ -326,7 +379,7 @@ impl RsOutput {
 
         println!("║ Native Rust audio backend OK.");
 
-        Ok(RsOutput { freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, nam_selected, nam_model_names, voice_params, stream })
+        Ok(RsOutput { freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, nam_selected, nam_model_names, ir_selected, ir_names, voice_params, stream })
     }
 }
 
@@ -377,11 +430,58 @@ fn load_nam_models () -> io::Result<(Vec<Option<Model>>, Vec<String>)> {
     Ok((models, names))
 }
 
+// Discovers every *.wav file in NAM_IR_DIR (sorted for a stable, predictable
+// cycle order) and loads each as a cab impulse response. Index 0 is always a
+// "Bypass" slot (no convolution) so the cycler always has a way back to the
+// raw amp signal.
+fn load_irs () -> io::Result<(Vec<Option<Wave>>, Vec<String>)> {
+    let mut paths: Vec<std::path::PathBuf> = fs::read_dir(NAM_IR_DIR)
+        .map_err(|e| io::Error::new(e.kind(), format!("failed to read IR directory '{NAM_IR_DIR}': {e}")))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("wav")))
+        .collect();
+    paths.sort();
+
+    let mut irs:   Vec<Option<Wave>> = vec![None];
+    let mut names: Vec<String>       = vec!["Bypass".to_string()];
+
+    for path in paths {
+        let path_str = path.to_string_lossy().into_owned();
+
+        let mut wave = Wave::load(&path)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to load IR '{path_str}': {e}")))?;
+
+        if wave.sample_rate() as u32 != NAM_SAMPLE_RATE {
+            println!("║ ⚠ IR '{path_str}' is {}Hz, not {NAM_SAMPLE_RATE}Hz (the rate every NAM model in nam/ was captured at) -- convolution will be pitched/timed wrong.", wave.sample_rate());
+        }
+
+        let max_samples = (wave.sample_rate() * NAM_IR_MAX_SECONDS) as usize;
+        if wave.length() > max_samples {
+            println!("║ ⚠ IR '{path_str}' is {:.1}s -- trimming to {NAM_IR_MAX_SECONDS}s (cab IRs are short; the rest was silent tail and made convolution too slow for real-time).", wave.length() as f64 / wave.sample_rate());
+            wave.retain(0, max_samples);
+        }
+
+        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or(&path_str).to_string();
+
+        irs.push(Some(wave));
+        names.push(name);
+    }
+
+    Ok((irs, names))
+}
+
 struct NamStage {
     models:      Vec<Option<Model>>,
     selected:    Shared,
     fuzz:        Shared,
     dry_scratch: [f32; NAM_BLOCK_CAP],
+    irs:         Vec<Option<Wave>>,
+    ir_selected: Shared,
+    convolver:   Option<An<Convolver>>,
+    active_ir:   usize,
+    ir_input:    BufferVec,
+    ir_output:   BufferVec,
 }
 
 impl NamStage {
@@ -398,9 +498,34 @@ impl NamStage {
 
         self.dry_scratch[..block.len()].copy_from_slice(block);
         model.process_buffer(block);
+        self.apply_ir(block); // cab sim only applies to the modeled ("wet") signal
 
         for (i, wet) in block.iter_mut().enumerate() {
             *wet = self.dry_scratch[i] * (1.0 - fuzz) + *wet * fuzz;
+        }
+    }
+
+    // Rebuilds the convolver only when the selection actually changes
+    // (switching is a rare UI action, not a per-block cost).
+    //
+    // Must go through AudioNode::process() in MAX_BUFFER_SIZE chunks, not
+    // filter_mono()/tick() per sample: Convolver is a partitioned FFT
+    // convolution sized for block input (see fft-convolver's `init`) --
+    // driving it one sample at a time re-runs its block machinery per
+    // sample, which is what caused the stutter.
+    fn apply_ir (&mut self, block: &mut [f32]) {
+        let index = self.ir_selected.value() as usize;
+        if index != self.active_ir {
+            self.active_ir = index;
+            self.convolver = self.irs.get(index).and_then(Option::as_ref).map(|wave| convolve(wave, 0));
+        }
+
+        let Some(conv) = &mut self.convolver else { return; };
+
+        for chunk in block.chunks_mut(MAX_BUFFER_SIZE) {
+            self.ir_input.channel_f32_mut(0)[..chunk.len()].copy_from_slice(chunk);
+            conv.process(chunk.len(), &self.ir_input.buffer_ref(), &mut self.ir_output.buffer_mut());
+            chunk.copy_from_slice(&self.ir_output.channel_f32_mut(0)[..chunk.len()]);
         }
     }
 }

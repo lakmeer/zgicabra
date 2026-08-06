@@ -31,7 +31,7 @@ use winit::event_loop::EventLoop;
 use winit::window::WindowAttributes;
 
 use crate::hydra::MockControls;
-use crate::rs::{NamModelCycler, VoiceParams};
+use crate::rs::{IrCycler, NamModelCycler, VoiceParams};
 use crate::tools::AtomicF32;
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
 
@@ -196,6 +196,14 @@ fn draw_nam_model (ui: &imgui::Ui, models: &NamModelCycler) {
     if ui.button("Model >") { models.cycle(1); }
 }
 
+// IR cycler -- same idea as draw_nam_model, drives rs.rs's cab IR selection.
+fn draw_nam_ir (ui: &imgui::Ui, irs: &IrCycler) {
+    ui.text(format!("IR: {}", irs.selected_name()));
+    if ui.button("< IR") { irs.cycle(-1); }
+    ui.same_line();
+    if ui.button("IR >") { irs.cycle(1); }
+}
+
 // One draggable row for a SignalState field: an "override" checkbox that
 // takes the field over from whatever normally computes it, and a drag box
 // for the value itself (greyed out until override is checked, since
@@ -236,7 +244,7 @@ fn draw_signal_state (ui: &imgui::Ui, bridge: &ZgicabraBridge) {
     if ui.button("Toggle Fuzz") { bridge.fuzz.toggle(); }
 }
 
-fn draw_ui (ui: &imgui::Ui, voice_params: Option<&VoiceParams>, nam_models: Option<&NamModelCycler>, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge) {
+fn draw_ui (ui: &imgui::Ui, voice_params: Option<&VoiceParams>, nam_models: Option<&NamModelCycler>, nam_irs: Option<&IrCycler>, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge) {
     ui.window("Voice Params")
         .position([10.0, 10.0], imgui::Condition::FirstUseEver)
         .size([760.0, 560.0], imgui::Condition::FirstUseEver)
@@ -244,6 +252,10 @@ fn draw_ui (ui: &imgui::Ui, voice_params: Option<&VoiceParams>, nam_models: Opti
             match nam_models {
                 Some(models) => draw_nam_model(ui, models),
                 None => ui.text("NAM model only available with the --rs audio backend."),
+            }
+            match nam_irs {
+                Some(irs) => draw_nam_ir(ui, irs),
+                None => ui.text("IR only available with the --rs audio backend."),
             }
             ui.spacing();
 
@@ -302,7 +314,7 @@ fn save_screenshot (gl: &glow::Context, width: u32, height: u32, path: &str) {
 
 // Runs the GUI event loop on the calling (main) thread until the window is
 // closed, at which point `quit` is set so the background loop can shut down.
-pub fn run (voice_params: Option<Arc<VoiceParams>>, nam_models: Option<NamModelCycler>, mock_controls: Option<MockControls>, bridge: ZgicabraBridge, quit: Arc<AtomicBool>) {
+pub fn run (voice_params: Option<Arc<VoiceParams>>, nam_models: Option<NamModelCycler>, nam_irs: Option<IrCycler>, mock_controls: Option<MockControls>, bridge: ZgicabraBridge, quit: Arc<AtomicBool>) {
     let screenshot_path = env::var("ZGICABRA_GUI_SCREENSHOT").ok();
     let mut frame_count: u32 = 0;
     let event_loop = EventLoop::new().expect("failed to create winit event loop");
@@ -373,7 +385,7 @@ pub fn run (voice_params: Option<Arc<VoiceParams>>, nam_models: Option<NamModelC
             }
             Event::WindowEvent { event: WindowEvent::RedrawRequested, .. } => {
                 let ui = imgui_context.frame();
-                draw_ui(ui, voice_params.as_deref(), nam_models.as_ref(), mock_controls.as_ref(), &bridge);
+                draw_ui(ui, voice_params.as_deref(), nam_models.as_ref(), nam_irs.as_ref(), mock_controls.as_ref(), &bridge);
 
                 winit_platform.prepare_render(ui, &window);
                 let draw_data = imgui_context.render();
