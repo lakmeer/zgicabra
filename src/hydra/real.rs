@@ -2,8 +2,9 @@
 //
 // Real Hydra backend
 //
-// Talks to actual Hydra hardware via the Sixense SDK. Only ever compiled on
-// linux x86_64, since libsixense_x64.so is a Linux ELF binary.
+// Talks to actual Hydra hardware via the Sixense SDK. Only ever compiled when
+// build.rs sets `have_real_hydra` (linux x86_64 or macOS x86_64), since
+// libsixense_x64 only ships as a Linux ELF / macOS Mach-O x86_64 binary.
 //
 
 use std::time::{Instant,Duration};

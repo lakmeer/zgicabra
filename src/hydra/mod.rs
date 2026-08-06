@@ -5,17 +5,19 @@
 // Public API for wand/controller input. Two interchangeable backends sit behind
 // it:
 //
-//  - `real` (linux x86_64 only) talks to actual Hydra hardware via libsixense.
+//  - `real` (linux x86_64 and macOS x86_64 only, see build.rs) talks to actual
+//    Hydra hardware via libsixense.
 //  - `mock` generates synthetic wand motion and simulates the triggers from the
-//    keyboard. It's used on any other target, and as a runtime fallback on
-//    linux x86_64 if no hardware responds within the detection window.
+//    keyboard. It's used on any target without a libsixense build (build.rs
+//    sets `have_real_hydra`), and as a runtime fallback if no hardware
+//    responds within the detection window.
 //
 
 use std::time::{Instant,Duration};
 
 use libc::{c_float, c_int, c_uint, c_uchar, c_ushort};
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(have_real_hydra)]
 mod real;
 mod mock;
 
@@ -107,7 +109,7 @@ pub struct HydraState {
 }
 
 enum Backend {
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(have_real_hydra)]
     Real,
     Mock(mock::MockBackend),
 }
@@ -135,7 +137,7 @@ impl Default for HydraState {
 //
 
 pub fn start (state: &mut HydraState) {
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(have_real_hydra)]
     {
         if real::try_start() {
             state.backend = Some(Backend::Real);
@@ -148,7 +150,7 @@ pub fn start (state: &mut HydraState) {
 }
 
 pub fn stop (state: &mut HydraState) {
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(have_real_hydra)]
     if let Some(Backend::Real) = &state.backend {
         real::stop();
     }
@@ -158,7 +160,7 @@ pub fn stop (state: &mut HydraState) {
 
 pub fn update (state: &mut HydraState) {
     match &mut state.backend {
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        #[cfg(have_real_hydra)]
         Some(Backend::Real) => real::update(&mut state.controllers),
         Some(Backend::Mock(backend)) => backend.update(&mut state.controllers),
         None => panic!("hydra::update called before hydra::start"),
