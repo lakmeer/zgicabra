@@ -80,16 +80,20 @@ fn parse_controller(buf: &[u8], which_hand: u8, sequence: u8) -> ControllerFrame
     frame.enabled          = 1;
     frame.sequence_number  = sequence;
 
+    // Wire order is (x, z, y) with y negated -- and quat (w, x, y, z) with y/z
+    // negated -- per Monado's axis fixup (hydra_driver.c), which hid_test's
+    // raw probe deliberately skips (see its "axis fixup not applied" comment).
+    // Applied here since this is the production path.
     frame.pos = [
-        read_i16_le(buf, 0) as f32 * POS_SCALE,
-        read_i16_le(buf, 2) as f32 * POS_SCALE,
-        read_i16_le(buf, 4) as f32 * POS_SCALE,
+        read_i16_le(buf, 0)  as f32 * POS_SCALE,
+        read_i16_le(buf, 4)  as f32 * -POS_SCALE,
+        read_i16_le(buf, 2)  as f32 * POS_SCALE,
     ];
     frame.rot_quat = [
-        read_i16_le(buf, 6)  as f32 * ROT_SCALE,
+        read_i16_le(buf, 6)  as f32 * -ROT_SCALE,
         read_i16_le(buf, 8)  as f32 * ROT_SCALE,
-        read_i16_le(buf, 10) as f32 * ROT_SCALE,
-        read_i16_le(buf, 12) as f32 * ROT_SCALE,
+        read_i16_le(buf, 12) as f32 * -ROT_SCALE, // swap q[2] and q[3]
+        read_i16_le(buf, 10) as f32 * ROT_SCALE, // this seems to match the SDK output better
     ];
     frame.buttons     = convert_buttons(buf[14]);
     frame.joystick_x  = read_i16_le(buf, 15) as f32 * ROT_SCALE;
@@ -122,7 +126,7 @@ impl HidBackend {
     // None if the device isn't present, or never starts streaming motion
     // reports within two detect-and-retry windows.
     pub fn try_start () -> Option<HidBackend> {
-        print!("Hydra::start - opening HID interfaces... ");
+        print!("Hydra::Hid::start - opening HID interfaces... ");
         let api = HidApi::new().ok()?;
 
         let open = |interface: i32| -> Option<HidDevice> {
@@ -136,7 +140,7 @@ impl HidBackend {
         let command_hid = open(1)?;
         println!("✅");
 
-        print!("Hydra::start - awaiting first motion frame...");
+        print!("Hydra::Hid::start - awaiting first motion frame...");
         command_hid.send_feature_report(&feature_report(true)).ok()?;
 
         // Throwaway get-feature, part of the handshake (matches Monado).
@@ -172,12 +176,11 @@ impl Backend for HidBackend {
         let mut buf = [0u8; 64];
         match self.data_hid.read_timeout(&mut buf, 5) {
             Ok(52) => {
-                eprintln!("DEBUG hid ok seq={}", buf[7]);
                 controllers[0] = parse_controller(&buf[8..30],  LEFT_HAND,  buf[7]);
                 controllers[1] = parse_controller(&buf[30..52], RIGHT_HAND, buf[7]);
             },
-            Ok(n)  => eprintln!("DEBUG hid ok-but-wrong-size {n}"),
-            Err(e) => eprintln!("DEBUG hid err {e}"),
+            Ok(n)  => eprintln!("Hydra::Hid::update - hid ok-but-wrong-size {n}"),
+            Err(e) => eprintln!("Hydra::Hid::update - hid err {e}"),
         }
     }
 
@@ -191,9 +194,9 @@ impl Backend for HidBackend {
 
 impl Drop for HidBackend {
     fn drop (&mut self) {
-        println!("Hydra::stop - closing down... ");
+        println!("Hydra::Hid::stop - closing down... ");
         // Leave the device the way we found it (gamepad mode) for whatever's next.
         self.command_hid.send_feature_report(&feature_report(false)).ok();
-        println!("Hydra::stop - done.");
+        println!("Hydra::Hid::stop - done.");
     }
 }

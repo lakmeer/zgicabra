@@ -33,7 +33,6 @@ const DEVICE_NAME: &str = "Zgicabra";
 //
 // TODOs
 //
-// - Better debug output
 // - Represent stick click on UI
 // - CLI args:
 //   - no-ui mode
@@ -50,7 +49,6 @@ const DEVICE_NAME: &str = "Zgicabra";
 //
 // BUGS
 // - Fix pitchbend accuracy
-// - B4 crash
 //
 
 
