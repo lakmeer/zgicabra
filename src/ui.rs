@@ -11,7 +11,6 @@ use textplots::{ColorPlot,Chart,Shape};
 use drawille::{Canvas,PixelColor};
 use drawille::PixelColor::TrueColor;
 
-//use crate::midi_event::MidiEvent;
 use crate::hydra::HydraState;
 use crate::zgicabra::{DeltaEvent,Zgicabra,Wand,Hand,Direction,Joystick,NoteState,SignalState};
 use crate::tools::*;

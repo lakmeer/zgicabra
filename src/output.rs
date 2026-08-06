@@ -3,7 +3,7 @@
 // DeltaConsumer
 //
 // Common interface for anything that turns Zgicabra's continuous signal
-// state and discrete DeltaEvents into sound. OscOutput and sc::ScOutput both
+// state and discrete DeltaEvents into sound. OscOutput and rs::RsOutput both
 // implement this, so main.rs can pick either one behind a single trait
 // object rather than branching on which backend is active at every call
 // site.

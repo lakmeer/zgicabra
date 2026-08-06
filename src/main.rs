@@ -11,13 +11,11 @@ mod hydra;
 mod zgicabra;
 mod ui;
 mod osc;
-mod sc;
 mod rs;
 mod output;
 mod gui;
 
 use osc::OscOutput;
-use sc::ScOutput;
 use rs::RsOutput;
 use output::DeltaConsumer;
 
@@ -71,7 +69,6 @@ fn main() {
     let mut nam_models: Option<rs::NamModelCycler> = None;
 
     let mut output: Box<dyn DeltaConsumer + Send> = match args.consumer {
-        tools::Consumer::Sc  => Box::new(ScOutput::new(args.no_ui).unwrap_or_else(|e| panic!("║ 🟥 Failed to init SuperCollider backend: {e}"))),
         tools::Consumer::Osc => Box::new(OscOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init OSC connection: {e}"))),
         tools::Consumer::Rs  => {
             let rs_output = RsOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init native Rust audio backend: {e}"));

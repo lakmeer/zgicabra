@@ -111,7 +111,6 @@ pub fn ease_out (t: f32) -> f32 {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Consumer {
     Osc,
-    Sc,
     Rs,
 }
 
@@ -129,13 +128,12 @@ pub fn parse_args() -> Args {
     let mut test = false;
     let mut gui = false;
 
-    let help_text = "║ Supported options:\n║  --no-ui    Disable TUI\n║  --osc      Send output via OSC (Bitwig/DrivenByMoss)\n║  --sc       Send output to the SuperCollider backend (default)\n║  --rs       Send output to the native Rust audio backend (experimental)\n║  --gui      Open the graphical voice-params/mock-hydra tuner window\n║  --test     Run self-tests";
+    let help_text = "║ Supported options:\n║  --no-ui    Disable TUI\n║  --osc      Send output via OSC (Bitwig/DrivenByMoss)\n║  --rs       Send output to the native Rust audio backend (default)\n║  --gui      Open the graphical voice-params/mock-hydra tuner window\n║  --test     Run self-tests";
 
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--no-ui" => no_ui = true,
             "--osc"   => consumer = Consumer::Osc,
-            "--sc"    => consumer = Consumer::Sc,
             "--rs"    => consumer = Consumer::Rs,
             "--gui"   => gui = true,
             "--test"  => test = true,
