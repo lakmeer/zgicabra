@@ -152,13 +152,15 @@ use crate::zgicabra::{DeltaEvent, SignalState};
 mod nam;
 mod stutter;
 mod audition;
+mod reese;
+mod fm;
+mod dsf;
 pub mod snapshot;
 
 use nam::NamStage;
-use stutter::StutterVoice;
 use audition::AuditionVoice;
 pub use nam::{NamModelCycler, IrCycler};
-pub use audition::AuditionCycler;
+pub use audition::{AuditionCycler, AUDITION_PARAM_SLOTS};
 
 const GATE_ON:  f32 = 1.0;
 const GATE_OFF: f32 = -1.0;
@@ -313,14 +315,11 @@ pub struct VoiceParams {
     filter_q:         ParamSpec,
     filter_cutoff_hz: ParamSpec,
     sub_level:        ParamSpec,
-    noise_level:      ParamSpec,
-    noise_lpf_hz:     ParamSpec,
     bypass_sub_ratio: ParamSpec,
     bypass_sub_level: ParamSpec,
     octave_shift:     ParamSpec,
     thump_decay_sec:  ParamSpec,
     thump_pitch_mult: ParamSpec,
-    stutter_level:    ParamSpec,
     audition_a_level: ParamSpec,
     audition_b_level: ParamSpec,
     audition_c_level: ParamSpec,
@@ -331,7 +330,7 @@ pub struct VoiceParams {
 }
 
 impl VoiceParams {
-    // `filter_q`, `noise_lpf_hz` and `amp` are read live every ~2ms via
+    // `filter_q` and `amp` are read live every ~2ms via
     // envelope() (see build_post_nam / VoiceEngine::new) rather than baked
     // in once, so GUI edits to their default/lo/hi/curve take effect
     // immediately -- their SignalWeights are always 0 today though, so they
@@ -350,17 +349,12 @@ impl VoiceParams {
             // range must start at exactly 100.0 -- with weight=1.0 `default` fully cancels (see param_factor)
             filter_cutoff_hz: ParamSpec::new("filter_cutoff_hz", 100.0,  (100.0, 14000.0), Curve::Exp,    SignalWeights { filter: 1.0, ..SignalWeights::NONE }),
             sub_level:        ParamSpec::new("sub_level",        0.35,   (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
-            noise_level:      ParamSpec::new("noise_level",      0.05,   (0.0, 0.5),       Curve::Linear, SignalWeights::NONE),
-            noise_lpf_hz:     ParamSpec::new("noise_lpf_hz",     4000.0, (200.0, 12000.0), Curve::Linear, SignalWeights::NONE),
             bypass_sub_ratio: ParamSpec::new("bypass_sub_ratio", 0.5,    (0.25, 1.0),      Curve::Linear, SignalWeights::NONE),
             bypass_sub_level: ParamSpec::new("bypass_sub_level", 0.35,   (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
             octave_shift:     ParamSpec::new("octave_shift",     1.0,    (0.25, 2.0),      Curve::Linear, SignalWeights::NONE),
             thump_decay_sec:  ParamSpec::new("thump_decay_sec",  0.18,   (0.02, 1.0),      Curve::Linear, SignalWeights::NONE),
             // range must start at exactly 0.0 -- weight=1.0 reproduces today's `thump * THUMP_PITCH_MULT`
             thump_pitch_mult: ParamSpec::new("thump_pitch_mult", 1.5,    (0.0, 1.5),       Curve::Linear, SignalWeights { thump: 1.0, ..SignalWeights::NONE }),
-            // Stutter: triangle sub osc ring-modulated by white noise, gates the noise into a
-            // sputtering/crackling texture that tracks base_freq instead of sitting at a fixed pitch.
-            stutter_level:    ParamSpec::new("stutter_level",    0.1,    (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
             // Audition voices A/B/C: cycle through fundsp's Generators (see AuditionVoice) for
             // experimenting with raw oscillator/noise character. Default to silent (index 0 =
             // Bypass on all three, see AudioOutput::new) so a fresh run isn't a wall of noise.
@@ -379,12 +373,12 @@ impl VoiceParams {
     }
 
     // All params in a stable display order, for building the UI grid.
-    pub fn entries (&self) -> [&ParamSpec; 21] {
+    pub fn entries (&self) -> [&ParamSpec; 18] {
         [
             &self.attack, &self.release, &self.amp, &self.filter_q, &self.filter_cutoff_hz,
-            &self.sub_level, &self.noise_level, &self.noise_lpf_hz,
+            &self.sub_level,
             &self.bypass_sub_ratio, &self.bypass_sub_level, &self.octave_shift,
-            &self.thump_decay_sec, &self.thump_pitch_mult, &self.stutter_level,
+            &self.thump_decay_sec, &self.thump_pitch_mult,
             &self.audition_a_level, &self.audition_b_level, &self.audition_c_level,
             &self.reverb_room_size, &self.reverb_time, &self.reverb_damping, &self.reverb_level,
         ]
@@ -444,6 +438,9 @@ pub struct AudioOutput {
     audition_a_selected: Shared,
     audition_b_selected: Shared,
     audition_c_selected: Shared,
+    audition_a_params: [Shared; AUDITION_PARAM_SLOTS],
+    audition_b_params: [Shared; AUDITION_PARAM_SLOTS],
+    audition_c_params: [Shared; AUDITION_PARAM_SLOTS],
     voice_params:      Arc<VoiceParams>,
     stream:            cpal::Stream,
 }
@@ -457,9 +454,9 @@ impl AudioOutput {
             nam_models:    NamModelCycler::new(self.nam_selected.clone(), self.nam_model_names.clone()),
             nam_irs:       IrCycler::new(self.ir_selected.clone(), self.ir_names.clone()),
             audition_note: AuditionNote { freq: self.freq.clone(), gate: self.gate.clone() },
-            audition_a:    AuditionCycler::new(self.audition_a_selected.clone()),
-            audition_b:    AuditionCycler::new(self.audition_b_selected.clone()),
-            audition_c:    AuditionCycler::new(self.audition_c_selected.clone()),
+            audition_a:    AuditionCycler::new(self.audition_a_selected.clone(), self.audition_a_params.clone()),
+            audition_b:    AuditionCycler::new(self.audition_b_selected.clone(), self.audition_b_params.clone()),
+            audition_c:    AuditionCycler::new(self.audition_c_selected.clone(), self.audition_c_params.clone()),
         }
     }
 
@@ -481,6 +478,14 @@ impl AudioOutput {
         let audition_a_selected = shared(0.0);
         let audition_b_selected = shared(0.0);
         let audition_c_selected = shared(0.0);
+        // Extra-input slots for whichever generator each audition slot has
+        // selected -- see AuditionVoice/AuditionCycler (audition.rs). 0.5
+        // is a neutral starting point for 0..1-range params (roughness,
+        // pulse width); Hz/cents-range params just get dragged up from
+        // there in the GUI.
+        let audition_a_params: [Shared; AUDITION_PARAM_SLOTS] = std::array::from_fn(|_| shared(0.5));
+        let audition_b_params: [Shared; AUDITION_PARAM_SLOTS] = std::array::from_fn(|_| shared(0.5));
+        let audition_c_params: [Shared; AUDITION_PARAM_SLOTS] = std::array::from_fn(|_| shared(0.5));
         let voice_params  = Arc::new(VoiceParams::new());
 
         let mut voice_engine = VoiceEngine::new(
@@ -488,6 +493,7 @@ impl AudioOutput {
             filter.clone(), fuzz.clone(), thump_amt.clone(), thump_trigger.clone(),
             velocity.clone(), acceleration.clone(),
             audition_a_selected.clone(), audition_b_selected.clone(), audition_c_selected.clone(),
+            audition_a_params.clone(), audition_b_params.clone(), audition_c_params.clone(),
             voice_params.clone(),
         );
         let mut post_nam = build_post_nam(&filter, voice_params.clone());
@@ -551,6 +557,7 @@ impl AudioOutput {
             freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration,
             nam_selected, nam_model_names, ir_selected, ir_names,
             audition_a_selected, audition_b_selected, audition_c_selected,
+            audition_a_params, audition_b_params, audition_c_params,
             voice_params, stream,
         })
     }
@@ -586,8 +593,6 @@ struct VoiceEngine {
 
     sub:    An<Sine<f64>>,
     bypass_sub: An<Sine<f64>>,
-    noise:  Box<dyn AudioUnit>,
-    stutter: StutterVoice,
     audition_a: AuditionVoice,
     audition_b: AuditionVoice,
     audition_c: AuditionVoice,
@@ -604,26 +609,18 @@ impl VoiceEngine {
         filter: Shared, fuzz: Shared, thump_amt: Shared, thump_trigger: Shared,
         velocity: Shared, acceleration: Shared,
         audition_a_selected: Shared, audition_b_selected: Shared, audition_c_selected: Shared,
+        audition_a_params: [Shared; AUDITION_PARAM_SLOTS], audition_b_params: [Shared; AUDITION_PARAM_SLOTS], audition_c_params: [Shared; AUDITION_PARAM_SLOTS],
         params: Arc<VoiceParams>,
     ) -> VoiceEngine {
         let rest = SignalState::new();
-
-        // noise_lpf_hz has no live SignalWeights today, so its live value
-        // only tracks GUI edits to default/lo/hi/curve -- envelope()
-        // re-evaluates that at control rate (~2ms) instead of baking it in
-        // once here, same idea as build_post_nam's filter_q/amp.
-        let noise_params = params.clone();
-        let noise_cutoff_hz = envelope(move |_t: f64| param_factor(&noise_params.noise_lpf_hz, &SignalState::new()) as f64);
 
         VoiceEngine {
             freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration,
             sub:    sine(),
             bypass_sub: sine(),
-            noise:  Box::new((white() | noise_cutoff_hz) >> lowpass_q(1.0)),
-            stutter:    StutterVoice::new(),
-            audition_a: AuditionVoice::new(audition_a_selected),
-            audition_b: AuditionVoice::new(audition_b_selected),
-            audition_c: AuditionVoice::new(audition_c_selected),
+            audition_a: AuditionVoice::new(audition_a_selected, audition_a_params),
+            audition_b: AuditionVoice::new(audition_b_selected, audition_b_params),
+            audition_c: AuditionVoice::new(audition_c_selected, audition_c_params),
             envelope: Box::new(adsr_live(
                 param_factor(&params.attack, &rest), 0.0, 1.0,
                 param_factor(&params.release, &rest),
@@ -638,8 +635,6 @@ impl VoiceEngine {
     fn set_sample_rate (&mut self, sr: f64) {
         self.sub.set_sample_rate(sr);
         self.bypass_sub.set_sample_rate(sr);
-        self.noise.set_sample_rate(sr);
-        self.stutter.set_sample_rate(sr);
         self.audition_a.set_sample_rate(sr);
         self.audition_b.set_sample_rate(sr);
         self.audition_c.set_sample_rate(sr);
@@ -674,15 +669,10 @@ impl VoiceEngine {
             self.audition_b.tick(&freq_input)[0] * audition_b_level +
             self.audition_c.tick(&freq_input)[0] * audition_c_level;
 
-        let sub_level   = param_factor(&params.sub_level, &signal);
-        let noise_level = param_factor(&params.noise_level, &signal);
-        let sub   = self.sub.filter_mono(base_freq * 0.5) * sub_level;
-        let noise = self.noise.get_mono() * noise_level;
+        let sub_level = param_factor(&params.sub_level, &signal);
+        let sub       = self.sub.filter_mono(base_freq * 0.5) * sub_level;
 
-        let stutter_level = param_factor(&params.stutter_level, &signal);
-        let stutter = self.stutter.tick(&freq_input)[0] * stutter_level;
-
-        let dry = audition_sum + sub + noise + stutter;
+        let dry = audition_sum + sub;
         let env = self.envelope.filter_mono(self.gate.value());
 
         let bypass_ratio = param_factor(&params.bypass_sub_ratio, &signal);

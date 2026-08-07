@@ -31,7 +31,7 @@ use winit::event_loop::EventLoop;
 use winit::window::WindowAttributes;
 
 use crate::hydra::MockControls;
-use crate::audio::{AudioHandles, AuditionCycler, AuditionNote, VoiceParams, snapshot};
+use crate::audio::{AudioHandles, AuditionCycler, AuditionNote, VoiceParams, snapshot, AUDITION_PARAM_SLOTS};
 use crate::tools::AtomicF32;
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
 
@@ -249,6 +249,62 @@ fn draw_audition_voice (ui: &imgui::Ui, label: &str, cycler: &AuditionCycler) {
     if ui.button(format!("{label} >")) { cycler.cycle(1); }
 }
 
+// Every audition param shares this fixed 0..10 range regardless of label --
+// a wide auto-scaled range made it hard to land on a precise value by drag,
+// so this trades reach for precision (drag the whole width to cover 0..10).
+const AUDITION_PARAM_LO:    f32 = 0.0;
+const AUDITION_PARAM_HI:    f32 = 10.0;
+const AUDITION_PARAM_SPEED: f32 = 0.002;
+
+// Up to AUDITION_PARAM_SLOTS live-editable extra inputs per audition-voice
+// slot (A/B/C), wired straight through to whichever generator that slot
+// currently has selected (see AuditionVoice/AuditionCycler in
+// audio/audition.rs). Labels come from the same GENERATOR_PARAMS table the
+// audio thread reads to know which slots a generator actually uses -- a
+// slot past that generator's arity just shows "--" instead of a slider.
+fn draw_audition_params (ui: &imgui::Ui, audio: &AudioHandles) {
+    let Some(_table) = ui.begin_table_with_flags(
+        "audition_params_grid",
+        4,
+        TableFlags::BORDERS | TableFlags::ROW_BG | TableFlags::RESIZABLE,
+    ) else { return };
+
+    ui.table_setup_column("#");
+    ui.table_setup_column("A");
+    ui.table_setup_column("B");
+    ui.table_setup_column("C");
+    ui.table_headers_row();
+
+    let slots: [(char, &AuditionCycler); 3] = [('A', &audio.audition_a), ('B', &audio.audition_b), ('C', &audio.audition_c)];
+
+    for i in 0..AUDITION_PARAM_SLOTS {
+        ui.table_next_row();
+
+        ui.table_next_column();
+        ui.text(format!("{}", i + 1));
+
+        for (slot, cycler) in slots {
+            ui.table_next_column();
+
+            let Some(&label) = cycler.selected_params().get(i) else {
+                ui.text_disabled("--");
+                continue;
+            };
+
+            ui.text_disabled(label);
+            let cell = cycler.param(i);
+            let mut value = cell.value();
+            if Drag::new(format!("##audition_{slot}_{i}"))
+                .speed(AUDITION_PARAM_SPEED)
+                .range(AUDITION_PARAM_LO, AUDITION_PARAM_HI)
+                .build(ui, &mut value)
+            {
+                cell.set_value(value);
+            }
+        }
+    }
+}
+
 // "Hold Note" toggle: drives AudioOutput's freq/gate cells directly so
 // weights/generators can be auditioned by ear without touching the wand
 // controller. Click to trigger and hold the gate open; click again to
@@ -356,6 +412,9 @@ fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<
                     draw_audition_voice(ui, "B", &audio.audition_b);
                     draw_audition_voice(ui, "C", &audio.audition_c);
                     draw_audition_note(ui, &audio.audition_note, audition_state);
+                    ui.spacing();
+
+                    draw_audition_params(ui, audio);
                     ui.spacing();
 
                     draw_snapshot_browser(ui, &audio.voice_params, snapshot_browser);
