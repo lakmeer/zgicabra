@@ -191,11 +191,13 @@ struct SignalWeights {
     thump:        f32,
     velocity:     f32,
     acceleration: f32,
+    lfo:          [f32; 8],
 }
 
 impl SignalWeights {
     const NONE: SignalWeights = SignalWeights {
         pitch: 0.0, width: 0.0, filter: 0.0, fuzz: 0.0, thump: 0.0, velocity: 0.0, acceleration: 0.0,
+        lfo: [0.0; 8],
     };
 }
 
@@ -213,6 +215,7 @@ pub struct ParamSpec {
     weight_thump:        Shared,
     weight_velocity:     Shared,
     weight_acceleration: Shared,
+    weight_lfo:          [Shared; 8],
 }
 
 impl ParamSpec {
@@ -230,11 +233,12 @@ impl ParamSpec {
             weight_thump:        Shared::new(weights.thump),
             weight_velocity:     Shared::new(weights.velocity),
             weight_acceleration: Shared::new(weights.acceleration),
+            weight_lfo:          std::array::from_fn(|i| Shared::new(weights.lfo[i])),
         }
     }
 
     // (column label, cell) pairs for every draggable numeric field, in display order.
-    pub fn cells (&self) -> [(&'static str, &Shared); 10] {
+    pub fn cells (&self) -> [(&'static str, &Shared); 18] {
         [
             ("default",      &self.default),
             ("lo",           &self.lo),
@@ -246,6 +250,14 @@ impl ParamSpec {
             ("thump",        &self.weight_thump),
             ("velocity",     &self.weight_velocity),
             ("acceleration", &self.weight_acceleration),
+            ("lfo1", &self.weight_lfo[0]),
+            ("lfo2", &self.weight_lfo[1]),
+            ("lfo3", &self.weight_lfo[2]),
+            ("lfo4", &self.weight_lfo[3]),
+            ("lfo5", &self.weight_lfo[4]),
+            ("lfo6", &self.weight_lfo[5]),
+            ("lfo7", &self.weight_lfo[6]),
+            ("lfo8", &self.weight_lfo[7]),
         ]
     }
 
@@ -281,6 +293,9 @@ fn param_factor (spec: &ParamSpec, signal: &SignalState) -> f32 {
     result += spec.weight_thump.value()        * (interp(signal.thump)        - default);
     result += spec.weight_velocity.value()     * (interp(signal.velocity)     - default);
     result += spec.weight_acceleration.value() * (interp(signal.acceleration) - default);
+    for (weight, &lfo) in spec.weight_lfo.iter().zip(signal.lfo.iter()) {
+        result += weight.value() * (interp(lfo) - default);
+    }
 
     result.clamp(lo.min(hi), lo.max(hi))
 }
@@ -327,7 +342,18 @@ pub struct VoiceParams {
     reverb_time:      ParamSpec,
     reverb_damping:   ParamSpec,
     reverb_level:     ParamSpec,
+    // 8 general-purpose LFOs: rate (Hz) and depth (0..1, scales the raw
+    // -1..1 sine) are themselves weight-matrix rows, and each LFO's live
+    // output becomes a `lfo1`..`lfo8` weight-matrix column every other
+    // param (including other LFOs, one tick delayed -- see
+    // VoiceEngine::tick) can route into. Post-NAM params (filter_q,
+    // filter_cutoff_hz, amp) don't see it -- see build_post_nam.
+    lfo_rate:  [ParamSpec; 8],
+    lfo_depth: [ParamSpec; 8],
 }
+
+const LFO_RATE_NAMES:  [&str; 8] = ["lfo1_rate",  "lfo2_rate",  "lfo3_rate",  "lfo4_rate",  "lfo5_rate",  "lfo6_rate",  "lfo7_rate",  "lfo8_rate"];
+const LFO_DEPTH_NAMES: [&str; 8] = ["lfo1_depth", "lfo2_depth", "lfo3_depth", "lfo4_depth", "lfo5_depth", "lfo6_depth", "lfo7_depth", "lfo8_depth"];
 
 impl VoiceParams {
     // `filter_q` and `amp` are read live every ~2ms via
@@ -369,19 +395,27 @@ impl VoiceParams {
             reverb_time:      ParamSpec::new("reverb_time",      0.6,    (0.1, 4.0),       Curve::Exp,    SignalWeights::NONE),
             reverb_damping:   ParamSpec::new("reverb_damping",   0.5,    (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
             reverb_level:     ParamSpec::new("reverb_level",     0.12,   (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
+            // Rate in a musically-useful sub-audio range; depth defaults to
+            // 0 (silent/inert) so a fresh run isn't wobbling everything --
+            // same "off by default" convention as audition_*_level/Bypass.
+            lfo_rate:  std::array::from_fn(|i| ParamSpec::new(LFO_RATE_NAMES[i],  2.0, (0.01, 20.0), Curve::Exp,    SignalWeights::NONE)),
+            lfo_depth: std::array::from_fn(|i| ParamSpec::new(LFO_DEPTH_NAMES[i], 0.0, (0.0, 1.0),   Curve::Linear, SignalWeights::NONE)),
         }
     }
 
     // All params in a stable display order, for building the UI grid.
-    pub fn entries (&self) -> [&ParamSpec; 18] {
-        [
+    pub fn entries (&self) -> Vec<&ParamSpec> {
+        let mut entries: Vec<&ParamSpec> = vec![
             &self.attack, &self.release, &self.amp, &self.filter_q, &self.filter_cutoff_hz,
             &self.sub_level,
             &self.bypass_sub_ratio, &self.bypass_sub_level, &self.octave_shift,
             &self.thump_decay_sec, &self.thump_pitch_mult,
             &self.audition_a_level, &self.audition_b_level, &self.audition_c_level,
             &self.reverb_room_size, &self.reverb_time, &self.reverb_damping, &self.reverb_level,
-        ]
+        ];
+        entries.extend(self.lfo_rate.iter());
+        entries.extend(self.lfo_depth.iter());
+        entries
     }
 }
 
@@ -597,6 +631,8 @@ struct VoiceEngine {
     audition_b: AuditionVoice,
     audition_c: AuditionVoice,
     envelope: Box<dyn AudioUnit>,
+    lfos:     [An<Sine<f64>>; 8],
+    last_lfo: [f32; 8],
 
     thump_last_trigger:    f32,
     thump_elapsed_samples: f32,
@@ -625,6 +661,8 @@ impl VoiceEngine {
                 param_factor(&params.attack, &rest), 0.0, 1.0,
                 param_factor(&params.release, &rest),
             )),
+            lfos:     std::array::from_fn(|_| sine()),
+            last_lfo: [0.0; 8],
             thump_last_trigger:    0.0,
             thump_elapsed_samples: 0.0,
             sample_rate:           DEFAULT_SR as f32,
@@ -639,6 +677,7 @@ impl VoiceEngine {
         self.audition_b.set_sample_rate(sr);
         self.audition_c.set_sample_rate(sr);
         self.envelope.set_sample_rate(sr);
+        for lfo in self.lfos.iter_mut() { lfo.set_sample_rate(sr); }
         self.sample_rate = sr as f32;
     }
 
@@ -646,14 +685,28 @@ impl VoiceEngine {
     // `bypass` => effect bypass (sub-osc)
     // `reverb_level` => live dry/wet mix for the final reverb stage
     fn tick (&mut self) -> (f32, f32, f32) {
-        let signal = SignalState {
+        let mut signal = SignalState {
             bend: self.bend.value(), width: self.width.value(), thump: self.thump_amt.value(),
             filter: self.filter.value(), fuzz: self.fuzz.value(),
             velocity: self.velocity.value(), acceleration: self.acceleration.value(),
+            // Last tick's LFO output, so an LFO's own rate/depth can be
+            // weighted by another LFO (or itself) without a same-tick
+            // circular dependency -- one sample behind, same idea as any
+            // audio-rate feedback loop.
+            lfo: self.last_lfo,
             ..SignalState::new()
         };
 
-        let params       = self.params.clone();
+        let params = self.params.clone();
+        for i in 0..8 {
+            let rate  = param_factor(&params.lfo_rate[i], &signal);
+            let depth = param_factor(&params.lfo_depth[i], &signal);
+            self.last_lfo[i] = self.lfos[i].filter_mono(rate) * depth;
+        }
+        // Refresh with this tick's values so every param computed below
+        // (not just other LFOs) reacts without a tick of lag.
+        signal.lfo = self.last_lfo;
+
         let bend_mult    = 2f32.powf(signal.bend);
         let octave_shift = param_factor(&params.octave_shift, &signal);
         let base_freq    = self.freq.value() * bend_mult * self.tick_thump(&signal) * octave_shift;

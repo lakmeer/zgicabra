@@ -77,7 +77,7 @@ fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
 
     let Some(_table) = ui.begin_table_with_flags(
         "voice_params_grid",
-        12,
+        20,
         TableFlags::BORDERS | TableFlags::ROW_BG | TableFlags::RESIZABLE,
     ) else { return };
 
@@ -92,6 +92,14 @@ fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
     ui.table_setup_column("thump");
     ui.table_setup_column("velocity");
     ui.table_setup_column("acceleration");
+    ui.table_setup_column("lfo1");
+    ui.table_setup_column("lfo2");
+    ui.table_setup_column("lfo3");
+    ui.table_setup_column("lfo4");
+    ui.table_setup_column("lfo5");
+    ui.table_setup_column("lfo6");
+    ui.table_setup_column("lfo7");
+    ui.table_setup_column("lfo8");
     ui.table_setup_column("curve");
     ui.table_headers_row();
 
@@ -105,10 +113,10 @@ fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
         let hi = spec.cells()[2].1.value();
         let speed = drag_speed(lo, hi);
 
-        // cells() is [default, lo, hi, width, filter, fuzz, thump, velocity,
-        // acceleration] -- indices 0..2 are the base value/range, 3.. are
-        // the weight matrix, which gets the little no-label reset-to-zero
-        // button next to it.
+        // cells() is [default, lo, hi, pitch, width, filter, fuzz, thump,
+        // velocity, acceleration, lfo1..lfo8] -- indices 0..2 are the base
+        // value/range, 3.. are the weight matrix, which gets the little
+        // no-label reset-to-zero button next to it.
         for (i, (cell_name, cell)) in spec.cells().into_iter().enumerate() {
             ui.table_next_column();
             let mut value = cell.value();

@@ -189,6 +189,10 @@ pub struct SignalState {
     pub velocity:     f32,
     pub acceleration: f32,
     pub jerk:         f32,
+    // Live output of the 8 general-purpose LFOs (see audio::VoiceParams'
+    // lfo_rate/lfo_depth), one tick behind for any param this same signal
+    // also weights an LFO's own rate/depth by -- see VoiceEngine::tick.
+    pub lfo:          [f32; 8],
 }
 
 impl SignalState {
@@ -202,6 +206,7 @@ impl SignalState {
             velocity:     0.0,
             acceleration: 0.0,
             jerk:         0.0,
+            lfo:          [0.0; 8],
         }
     }
 }
