@@ -31,7 +31,7 @@ use winit::event_loop::EventLoop;
 use winit::window::WindowAttributes;
 
 use crate::hydra::MockControls;
-use crate::rs::{IrCycler, NamModelCycler, VoiceParams};
+use crate::audio::{IrCycler, NamModelCycler, VoiceParams};
 use crate::tools::AtomicF32;
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
 
@@ -46,7 +46,7 @@ fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
 
     let Some(_table) = ui.begin_table_with_flags(
         "voice_params_grid",
-        11,
+        12,
         TableFlags::BORDERS | TableFlags::ROW_BG | TableFlags::RESIZABLE,
     ) else { return };
 
@@ -54,6 +54,7 @@ fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
     ui.table_setup_column("default");
     ui.table_setup_column("lo");
     ui.table_setup_column("hi");
+    ui.table_setup_column("pitch");
     ui.table_setup_column("width");
     ui.table_setup_column("filter");
     ui.table_setup_column("fuzz");
@@ -81,6 +82,7 @@ fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
             ui.table_next_column();
             let mut value = cell.value();
             let id = format!("##{}_{}", spec.name, cell_name);
+
             if Drag::new(id).speed(speed).build(ui, &mut value) {
                 cell.set_value(value);
             }
@@ -94,10 +96,12 @@ fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
         }
 
         ui.table_next_column();
+
         let curve_label = match spec.curve() {
-            crate::rs::Curve::Linear => "Lin",
-            crate::rs::Curve::Exp    => "Exp",
+            crate::audio::Curve::Linear => "Lin",
+            crate::audio::Curve::Exp    => "Exp",
         };
+
         if ui.button(format!("{}##{}_curve", curve_label, spec.name)) {
             spec.toggle_curve();
         }

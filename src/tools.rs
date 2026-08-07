@@ -111,7 +111,7 @@ pub fn ease_out (t: f32) -> f32 {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Consumer {
     Osc,
-    Rs,
+    Audio,
 }
 
 #[derive(Debug)]
@@ -124,17 +124,17 @@ pub struct Args {
 
 pub fn parse_args() -> Args {
     let mut no_ui = false;
-    let mut consumer = Consumer::Rs;
+    let mut consumer = Consumer::Audio;
     let mut test = false;
     let mut gui = false;
 
-    let help_text = "║ Supported options:\n║  --no-ui    Disable TUI\n║  --osc      Send output via OSC (Bitwig/DrivenByMoss)\n║  --rs       Send output to the native Rust audio backend (default)\n║  --gui      Open the graphical voice-params/mock-hydra tuner window\n║  --test     Run self-tests";
+    let help_text = "║ Supported options:\n║  --no-ui    Disable TUI\n║  --osc      Send output via OSC (Bitwig/DrivenByMoss)\n║  --audio    Send output to the native audio backend (default)\n║  --gui      Open the graphical voice-params/mock-hydra tuner window\n║  --test     Run self-tests";
 
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--no-ui" => no_ui = true,
             "--osc"   => consumer = Consumer::Osc,
-            "--rs"    => consumer = Consumer::Rs,
+            "--audio" => consumer = Consumer::Audio,
             "--gui"   => gui = true,
             "--test"  => test = true,
             other => {

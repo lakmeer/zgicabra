@@ -1,4 +1,138 @@
 
+// fundsp AudioNodes (https://github.com/SamiPerttu/fundsp)
+//
+// Generators
+//   brown                 - Brownian noise source
+//   dsf_saw / dsf_saw_r   - Discrete summation formula sawtooth oscillator
+//   dsf_square / _r       - Discrete summation formula square oscillator
+//   hammond / hammond_hz  - Hammond organ-like oscillator
+//   impulse               - Multichannel impulse signal
+//   mls / mls_bits        - Maximum length sequence noise
+//   noise / white         - White noise source
+//   organ / organ_hz      - Organ wave oscillator
+//   pink                  - Pink noise source
+//   poly_pulse(_hz)       - PolyBLEP pulse wave
+//   poly_saw(_hz)         - PolyBLEP sawtooth wave
+//   poly_square(_hz)      - PolyBLEP square wave
+//   pulse                 - Bandlimited pulse wave
+//   ramp / ramp_hz        - Non-bandlimited sawtooth ramp
+//   saw / saw_hz          - Bandlimited sawtooth wave
+//   sine / sine_hz        - Sine oscillator
+//   soft_saw(_hz)         - Soft sawtooth oscillator
+//   square / square_hz    - Bandlimited square wave
+//   triangle / triangle_hz- Bandlimited triangle wave
+//   zero / multizero      - Silence signal
+//   constant / dc         - Constant signal value
+//
+// Linear Filters
+//   allpass(_hz/_q)       - 2nd order allpass filter
+//   allpole / allpole_delay - 1st order allpass filter
+//   bandpass(_hz/_q)      - 2nd order bandpass filter
+//   bell(_hz/_q)          - Peaking/bell equalizer filter
+//   biquad                - Arbitrary biquad filter with coefficients
+//   butterpass(_hz)       - Butterworth lowpass filter
+//   dcblock(_hz)          - DC blocking filter
+//   highpass(_hz/_q)      - 2nd order highpass filter
+//   highpole(_hz)         - 1st order highpass filter
+//   highshelf(_hz/_q)     - High shelf equalizer
+//   lowpass(_hz/_q)       - 2nd order lowpass filter
+//   lowpole(_hz)          - 1st order lowpass filter
+//   lowshelf(_hz/_q)      - Low shelf equalizer
+//   morph(_hz)            - Morphing filter (lowpass/peak/highpass)
+//   notch(_hz/_q)         - Notch filter
+//   peak(_hz/_q)          - Peaking filter
+//   pinkpass              - Pink noise shaping filter
+//   resonator(_hz)        - Constant-gain bandpass resonator
+//   allnest(_c)           - Nested allpass filter
+//   fir                   - FIR filter with specified weights
+//   fir3                  - Symmetric 3-point FIR filter
+//
+// Nonlinear Filters
+//   bandrez(_hz/_q)       - Resonant bandpass filter
+//   dbell(_hz)            - Dirty biquad bell equalizer
+//   dhighpass(_hz)        - Dirty biquad highpass
+//   dlowpass(_hz)         - Dirty biquad lowpass
+//   dresonator(_hz)       - Dirty biquad resonator
+//   fbell(_hz)            - Feedback biquad bell equalizer
+//   fhighpass(_hz)        - Feedback biquad highpass
+//   flowpass(_hz)         - Feedback biquad lowpass
+//   fresonator(_hz)       - Feedback biquad resonator
+//   lowrez(_hz/_q)        - Resonant lowpass filter
+//   moog(_hz/_q)          - Moog ladder lowpass filter
+//
+// Delay & Time Effects
+//   delay                 - Delay by specified time
+//   tap / tap_linear      - Tapped delay with interpolation
+//   multitap(_linear)     - Multi-tap delay line
+//   tick / multitick      - Single sample delay
+//   flanger               - Flanging effect
+//   phaser                - Phaser effect
+//
+// Dynamics & Envelopes
+//   adsr_live             - ADSR envelope with live control
+//   afollow               - Asymmetric smoothing filter
+//   follow                - Smoothing filter with response time
+//   limiter / limiter_stereo - Look-ahead limiter
+//   declick(_s)           - Fade-in declick
+//
+// Reverb & Spatial
+//   reverb_stereo         - FDN stereo reverb
+//   reverb2_stereo        - Hybrid FDN stereo reverb
+//   reverb3_stereo        - Allpass loop stereo reverb
+//   pan                   - Fixed pan to stereo
+//   panner                - Dynamic mono-to-stereo panner
+//   rotate                - Stereo rotation with gain
+//
+// Special Processing
+//   resynth               - Frequency domain resynthesis
+//   convolve               - Convolution filter
+//   pluck                 - Karplus-Strong plucked string
+//   shape / shape_fn       - Waveshaper distortion
+//   clip / clip_to         - Signal clipping
+//   meter                  - Signal metering
+//   monitor                - Monitoring pass-through
+//   hold(_hz)              - Sample-and-hold
+//
+// Oscillator Modulation
+//   lorenz                - Lorenz system oscillator
+//   rossler               - Rössler system oscillator
+//   envelope / lfo         - Time-varying control
+//   envelope2 / lfo2        - Input-dependent control
+//   envelope3 / lfo3        - 2-input dependent control
+//   envelope_in / lfo_in    - Frame-based control
+//
+// Signal Routing & Combination
+//   pass / multipass       - Pass-through signal
+//   sink / multisink        - Consume signal
+//   split / multisplit      - Split to multichannel
+//   join / multijoin        - Join multichannel
+//   reverse                 - Reverse channel order
+//   add / sub / mul          - Arithmetic operations
+//   product / sum            - Multiply/sum two nodes
+//   pipe(i/f)                - Serial chaining
+//   branch(i/f)               - Parallel branching
+//   bus(i/f)                  - Signal busing
+//   stack(i/f)                - Parallel stacking
+//   thru                      - Pass-through with parameter adjustment
+//
+// Wave & Sample Playback
+//   playwave(_at)             - Play back wave data
+//   resample                  - Resample generator at variable speed
+//   resample_fir               - FIR-based sinc resampling
+//
+// Control & Feedback
+//   feedback / feedback2       - Single-sample feedback loop
+//   fdn / fdn2                 - Feedback Delay Network
+//   listen                     - Setting listener wrapper
+//   update                     - Update node with interval
+//   var / var_fn                - Shared variable output
+//   timer                       - Stream time tracking
+//   oversample                  - 2x oversampling
+//   biquad_bank                 - SIMD-accelerated biquad bank
+//   chorus                      - Chorus effect
+//   map                         - Custom channel mapping
+//   unit                        - Convert AudioUnit to AudioNode
+//
 //
 // Audio Engine
 //
@@ -10,27 +144,27 @@ use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use fundsp::prelude64::*;
-use nam_rs::{Model, NamModel};
 
 use crate::output::DeltaConsumer;
 use crate::tools::linexp;
 use crate::zgicabra::{DeltaEvent, SignalState};
 
+mod nam;
+mod reese;
+mod fm;
+
+use nam::NamStage;
+use reese::ReeseVoice;
+use fm::FmVoice;
+pub use nam::{NamModelCycler, IrCycler};
+
 const GATE_ON:  f32 = 1.0;
 const GATE_OFF: f32 = -1.0;
 
-const FRACS: [f32; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
+const FM_OSCS: [f32; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
+const REESE_OSCS: [f32; 4] = [-1.0, -0.3333333, 0.3333333, 1.0];
 
 const NAM_SAMPLE_RATE: u32 = 48_000;
-const NAM_DIR: &str = "nam";
-const NAM_IR_DIR: &str = "nam/ir";
-// Real cab IRs are tens to a few hundred ms; some files in nam/ir/ are ~75s
-// exports with the actual response in the first ~150ms and a near-silent
-// tail padding out the rest. Convolving live audio against the untrimmed
-// file means an FFT convolution with millions of taps per block -- nowhere
-// near real-time. Trim to this window on load.
-const NAM_IR_MAX_SECONDS: f64 = 0.5;
-const DEFAULT_NAM_MODEL: &str = "6505";
 
 
 #[derive(Clone, Copy, PartialEq)]
@@ -149,6 +283,29 @@ fn param_factor (spec: &ParamSpec, signal: &SignalState) -> f32 {
     result.clamp(lo.min(hi), lo.max(hi))
 }
 
+// Thin AudioNode adapter over param_factor: makes ParamSpec graph-notation-
+// capable (composable via >>/|/etc, boxable as Box<dyn AudioUnit>) without
+// changing param_factor's existing call sites, which stay on the cheap
+// &self path rather than needing a live &mut ParamSpec pulled out of the
+// widely shared Arc<VoiceParams>.
+// Input order matches SignalWeights: [pitch(bend), width, filter, fuzz, thump, velocity, acceleration].
+impl AudioNode for ParamSpec {
+    const ID: u64 = 0x7A_20;
+    type Inputs = U7;
+    type Outputs = U1;
+
+    fn tick (&mut self, input: &Frame<f32, U7>) -> Frame<f32, U1> {
+        let signal = SignalState {
+            bend: input[0], width: input[1], filter: input[2], fuzz: input[3],
+            thump: input[4], velocity: input[5], acceleration: input[6],
+            ..SignalState::new()
+        };
+        let mut output: Frame<f32, U1> = Frame::default();
+        output[0] = param_factor(self, &signal);
+        output
+    }
+}
+
 pub struct VoiceParams {
     attack:           ParamSpec,
     release:          ParamSpec,
@@ -166,25 +323,29 @@ pub struct VoiceParams {
     noise_lpf_hz:     ParamSpec,
     bypass_sub_ratio: ParamSpec,
     bypass_sub_level: ParamSpec,
-    glide_time:       ParamSpec,
     octave_shift:     ParamSpec,
     thump_decay_sec:  ParamSpec,
     thump_pitch_mult: ParamSpec,
+    reese_detune_cents_max: ParamSpec,
+    reese_level:            ParamSpec,
+    sputter_level:          ParamSpec,
 }
 
 impl VoiceParams {
-    // `filter_q`, `attack`, `release`, `glide_time`, `noise_lpf_hz` and `amp` are
-    // baked into fundsp AudioUnits at graph-construction time (lowpass_q's Q,
-    // adsr_live's times, follow's response time, lowpass_hz's cutoff, and the
-    // `*` amp multiply all take a fixed value once, not a live per-sample
-    // input) -- so editing them here only takes effect on the next
-    // RsOutput::new() (process restart), not live. Making them truly live
-    // would mean forking adsr_live's closure or switching to fundsp's
-    // 3-input lowpass().
+    // `filter_q`, `noise_lpf_hz` and `amp` are read live every ~2ms via
+    // envelope() (see build_post_nam / VoiceEngine::new) rather than baked
+    // in once, so GUI edits to their default/lo/hi/curve take effect
+    // immediately -- their SignalWeights are always 0 today though, so they
+    // only ever track `default` (no live signal drives them yet).
+    // `attack` and `release` are still baked into fundsp AudioUnits at
+    // graph-construction time (adsr_live's times take a fixed value once)
+    // -- editing them only takes effect on the next AudioOutput::new()
+    // (process restart). Making them truly live means forking adsr_live's
+    // closure, since fundsp doesn't expose those as live audio-rate inputs.
     pub fn new () -> VoiceParams {
         VoiceParams {
-            attack:           ParamSpec::new("attack",           0.01,   (0.001, 1.0),     Curve::Linear, SignalWeights::NONE),
-            release:          ParamSpec::new("release",          0.25,   (0.01, 2.0),      Curve::Linear, SignalWeights::NONE),
+            attack:           ParamSpec::new("attack",           0.003,  (0.001, 1.0),     Curve::Linear, SignalWeights::NONE),
+            release:          ParamSpec::new("release",          0.1,    (0.01, 2.0),      Curve::Linear, SignalWeights::NONE),
             amp:              ParamSpec::new("amp",               0.3,   (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
             filter_q:         ParamSpec::new("filter_q",          0.6,   (0.1, 4.0),       Curve::Linear, SignalWeights::NONE),
             // range must start at exactly 100.0 -- with weight=1.0 `default` fully cancels (see param_factor)
@@ -201,75 +362,34 @@ impl VoiceParams {
             noise_lpf_hz:     ParamSpec::new("noise_lpf_hz",     4000.0, (200.0, 12000.0), Curve::Linear, SignalWeights::NONE),
             bypass_sub_ratio: ParamSpec::new("bypass_sub_ratio", 0.5,    (0.25, 1.0),      Curve::Linear, SignalWeights::NONE),
             bypass_sub_level: ParamSpec::new("bypass_sub_level", 0.35,   (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
-            glide_time:       ParamSpec::new("glide_time",       0.08,   (0.0, 0.5),       Curve::Linear, SignalWeights::NONE),
-            octave_shift:     ParamSpec::new("octave_shift",     0.5,    (0.25, 2.0),      Curve::Linear, SignalWeights::NONE),
+            octave_shift:     ParamSpec::new("octave_shift",     1.0,    (0.25, 2.0),      Curve::Linear, SignalWeights::NONE),
             thump_decay_sec:  ParamSpec::new("thump_decay_sec",  0.18,   (0.02, 1.0),      Curve::Linear, SignalWeights::NONE),
             // range must start at exactly 0.0 -- weight=1.0 reproduces today's `thump * THUMP_PITCH_MULT`
             thump_pitch_mult: ParamSpec::new("thump_pitch_mult", 1.5,    (0.0, 1.5),       Curve::Linear, SignalWeights { thump: 1.0, ..SignalWeights::NONE }),
+            // Reese bass: 4-voice detuned-saw beating stack (see ../zgi-sc/experiments/exp2.scd).
+            // range must start at exactly 12.0 -- with weight=1.0 reproduces exp2's width.linlin(0,1,12,35)
+            reese_detune_cents_max: ParamSpec::new("reese_detune_cents_max", 12.0, (12.0, 35.0), Curve::Linear, SignalWeights { width: 1.0, ..SignalWeights::NONE }),
+            reese_level:            ParamSpec::new("reese_level",            0.25, (0.0, 1.0),   Curve::Linear, SignalWeights::NONE),
+            // Sputter: triangle sub osc ring-modulated by white noise, gates the noise into a
+            // sputtering/crackling texture that tracks base_freq instead of sitting at a fixed pitch.
+            sputter_level:          ParamSpec::new("sputter_level",          0.1,  (0.0, 1.0),   Curve::Linear, SignalWeights::NONE),
         }
     }
 
     // All params in a stable display order, for building the UI grid.
-    pub fn entries (&self) -> [&ParamSpec; 20] {
+    pub fn entries (&self) -> [&ParamSpec; 22] {
         [
             &self.attack, &self.release, &self.amp, &self.filter_q, &self.filter_cutoff_hz,
             &self.ratio_a, &self.ratio_b, &self.ratio_c, &self.index_b, &self.index_c,
             &self.detune_cents_max, &self.sub_level, &self.noise_level, &self.noise_lpf_hz,
-            &self.bypass_sub_ratio, &self.bypass_sub_level, &self.glide_time, &self.octave_shift,
+            &self.bypass_sub_ratio, &self.bypass_sub_level, &self.octave_shift,
             &self.thump_decay_sec, &self.thump_pitch_mult,
+            &self.reese_detune_cents_max, &self.reese_level, &self.sputter_level,
         ]
     }
 }
 
-// A handle for cycling through the discovered NAM models (index 0 is always
-// "Bypass" -- no model, dry passthrough) and reading the current selection's
-// name. Independent of Zgicabra's Voice enum: something else (currently
-// gui.rs's Model cycler buttons) drives `selected` directly.
-#[derive(Clone)]
-pub struct NamModelCycler {
-    selected: Shared,
-    names:    Arc<Vec<String>>,
-}
-
-impl NamModelCycler {
-    pub fn selected_name (&self) -> &str {
-        let i = self.selected.value() as usize;
-        self.names.get(i).map(String::as_str).unwrap_or("?")
-    }
-
-    pub fn cycle (&self, delta: i32) {
-        let count = self.names.len() as i32;
-        if count == 0 { return; }
-        let current = self.selected.value() as i32;
-        let next = (current + delta).rem_euclid(count);
-        self.selected.set_value(next as f32);
-    }
-}
-
-// Same shape as NamModelCycler, for cycling through the discovered cab IR
-// files (index 0 is always "Bypass" -- no convolution, raw amp signal).
-#[derive(Clone)]
-pub struct IrCycler {
-    selected: Shared,
-    names:    Arc<Vec<String>>,
-}
-
-impl IrCycler {
-    pub fn selected_name (&self) -> &str {
-        let i = self.selected.value() as usize;
-        self.names.get(i).map(String::as_str).unwrap_or("?")
-    }
-
-    pub fn cycle (&self, delta: i32) {
-        let count = self.names.len() as i32;
-        if count == 0 { return; }
-        let current = self.selected.value() as i32;
-        let next = (current + delta).rem_euclid(count);
-        self.selected.set_value(next as f32);
-    }
-}
-
-pub struct RsOutput {
+pub struct AudioOutput {
     freq:            Shared,
     gate:            Shared,
     bend:            Shared,
@@ -278,6 +398,8 @@ pub struct RsOutput {
     fuzz:            Shared,
     thump_amt:       Shared,
     thump_trigger:   Shared,
+    velocity:        Shared,
+    acceleration:    Shared,
     nam_selected:    Shared,
     nam_model_names: Arc<Vec<String>>,
     ir_selected:     Shared,
@@ -286,7 +408,7 @@ pub struct RsOutput {
     stream:          cpal::Stream,
 }
 
-impl RsOutput {
+impl AudioOutput {
     // Handle to the live parameter matrix, for a UI to read/write. Cheap to
     // clone (each field is an Arc'd atomic cell); the audio thread reads the
     // same cells lock-free every sample.
@@ -297,17 +419,17 @@ impl RsOutput {
     // Handle to the NAM model cycler, for a UI to drive/display. Cheap to
     // clone (an Arc'd atomic cell plus an Arc'd name list).
     pub fn nam_models (&self) -> NamModelCycler {
-        NamModelCycler { selected: self.nam_selected.clone(), names: self.nam_model_names.clone() }
+        NamModelCycler::new(self.nam_selected.clone(), self.nam_model_names.clone())
     }
 
     // Handle to the IR cycler, for a UI to drive/display. Cheap to clone,
     // same shape as nam_models().
     pub fn nam_irs (&self) -> IrCycler {
-        IrCycler { selected: self.ir_selected.clone(), names: self.ir_names.clone() }
+        IrCycler::new(self.ir_selected.clone(), self.ir_names.clone())
     }
 
-    pub fn new () -> io::Result<RsOutput> {
-        println!("║ Starting native Rust audio backend... ");
+    pub fn new () -> io::Result<AudioOutput> {
+        println!("║ Starting native audio backend... ");
 
         let freq          = shared(110.0);
         let gate          = shared(GATE_OFF);
@@ -317,39 +439,31 @@ impl RsOutput {
         let fuzz          = shared(0.0);
         let thump_amt     = shared(0.0);
         let thump_trigger = shared(0.0);
+        let velocity      = shared(0.0);
+        let acceleration  = shared(0.0);
         let voice_params  = Arc::new(VoiceParams::new());
 
         let mut voice_engine = VoiceEngine::new(
             freq.clone(), gate.clone(), bend.clone(), width.clone(),
-            thump_amt.clone(), thump_trigger.clone(), voice_params.clone(),
+            filter.clone(), fuzz.clone(), thump_amt.clone(), thump_trigger.clone(),
+            velocity.clone(), acceleration.clone(), voice_params.clone(),
         );
         let mut post_nam = build_post_nam(&filter, voice_params.clone());
 
         println!("║ Loading NAM models... ");
-        let (nam_model_list, nam_model_name_list) = load_nam_models()?;
+        let (nam_model_list, nam_model_name_list) = nam::load_nam_models()?;
         let nam_model_names = Arc::new(nam_model_name_list);
-        let default_nam_index = nam_model_names.iter().position(|n| n == DEFAULT_NAM_MODEL).unwrap_or(0);
+        let default_nam_index = nam::default_model_index(&nam_model_names);
         let nam_selected = shared(default_nam_index as f32);
         println!("║ NAM models loaded: {}", nam_model_names.join(", "));
 
         println!("║ Loading IR files... ");
-        let (ir_list, ir_name_list) = load_irs()?;
+        let (ir_list, ir_name_list) = nam::load_irs()?;
         let ir_names = Arc::new(ir_name_list);
         let ir_selected = shared(0.0);
         println!("║ IRs loaded: {}", ir_names.join(", "));
 
-        let nam = NamStage {
-            models:      nam_model_list,
-            selected:    nam_selected.clone(),
-            fuzz:        fuzz.clone(),
-            dry_scratch: [0.0; NAM_BLOCK_CAP],
-            irs:         ir_list,
-            ir_selected: ir_selected.clone(),
-            convolver:   None,
-            active_ir:   0,
-            ir_input:    BufferVec::new(1),
-            ir_output:   BufferVec::new(1),
-        };
+        let nam = NamStage::new(nam_model_list, nam_selected.clone(), fuzz.clone(), ir_list, ir_selected.clone());
 
         let host   = cpal::default_host();
         let device = host.default_output_device()
@@ -377,9 +491,9 @@ impl RsOutput {
         stream.play()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to start audio stream: {e}")))?;
 
-        println!("║ Native Rust audio backend OK.");
+        println!("║ Native audio backend OK.");
 
-        Ok(RsOutput { freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, nam_selected, nam_model_names, ir_selected, ir_names, voice_params, stream })
+        Ok(AudioOutput { freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration, nam_selected, nam_model_names, ir_selected, ir_names, voice_params, stream })
     }
 }
 
@@ -398,192 +512,26 @@ fn pick_output_config (device: &cpal::Device, target_rate: u32) -> io::Result<cp
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("no usable output config: {e}")))
 }
 
-// Discovers every *.nam file in NAM_DIR (sorted for a stable, predictable
-// cycle order) and loads each one. Index 0 is always a "Bypass" slot (no
-// model, dry passthrough) so the cycler always has a way back to clean.
-fn load_nam_models () -> io::Result<(Vec<Option<Model>>, Vec<String>)> {
-    let mut paths: Vec<std::path::PathBuf> = fs::read_dir(NAM_DIR)
-        .map_err(|e| io::Error::new(e.kind(), format!("failed to read NAM model directory '{NAM_DIR}': {e}")))?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("nam")))
-        .collect();
-    paths.sort();
-
-    let mut models: Vec<Option<Model>> = vec![None];
-    let mut names:  Vec<String>        = vec!["Bypass".to_string()];
-
-    for path in paths {
-        let path_str = path.to_string_lossy().into_owned();
-
-        let nam_model = NamModel::from_file(&path_str)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to load NAM model '{path_str}': {e}")))?;
-        let model = Model::from_nam(&nam_model)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to build NAM model '{path_str}': {e}")))?;
-
-        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or(&path_str).to_string();
-
-        models.push(Some(model));
-        names.push(name);
-    }
-
-    Ok((models, names))
-}
-
-// Discovers every *.wav file in NAM_IR_DIR (sorted for a stable, predictable
-// cycle order) and loads each as a cab impulse response. Index 0 is always a
-// "Bypass" slot (no convolution) so the cycler always has a way back to the
-// raw amp signal.
-fn load_irs () -> io::Result<(Vec<Option<Wave>>, Vec<String>)> {
-    let mut paths: Vec<std::path::PathBuf> = fs::read_dir(NAM_IR_DIR)
-        .map_err(|e| io::Error::new(e.kind(), format!("failed to read IR directory '{NAM_IR_DIR}': {e}")))?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("wav")))
-        .collect();
-    paths.sort();
-
-    let mut irs:   Vec<Option<Wave>> = vec![None];
-    let mut names: Vec<String>       = vec!["Bypass".to_string()];
-
-    for path in paths {
-        let path_str = path.to_string_lossy().into_owned();
-
-        let mut wave = Wave::load(&path)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to load IR '{path_str}': {e}")))?;
-
-        if wave.sample_rate() as u32 != NAM_SAMPLE_RATE {
-            println!("║ ⚠ IR '{path_str}' is {}Hz, not {NAM_SAMPLE_RATE}Hz (the rate every NAM model in nam/ was captured at) -- convolution will be pitched/timed wrong.", wave.sample_rate());
-        }
-
-        let max_samples = (wave.sample_rate() * NAM_IR_MAX_SECONDS) as usize;
-        if wave.length() > max_samples {
-            println!("║ ⚠ IR '{path_str}' is {:.1}s -- trimming to {NAM_IR_MAX_SECONDS}s (cab IRs are short; the rest was silent tail and made convolution too slow for real-time).", wave.length() as f64 / wave.sample_rate());
-            wave.retain(0, max_samples);
-        }
-
-        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or(&path_str).to_string();
-
-        irs.push(Some(wave));
-        names.push(name);
-    }
-
-    Ok((irs, names))
-}
-
-struct NamStage {
-    models:      Vec<Option<Model>>,
-    selected:    Shared,
-    fuzz:        Shared,
-    dry_scratch: [f32; NAM_BLOCK_CAP],
-    irs:         Vec<Option<Wave>>,
-    ir_selected: Shared,
-    convolver:   Option<An<Convolver>>,
-    active_ir:   usize,
-    ir_input:    BufferVec,
-    ir_output:   BufferVec,
-}
-
-impl NamStage {
-    // NAM plays the role of the fuzz/distortion stage: signal_state.fuzz is
-    // the dry/wet blend against the selected model's output, rather than a
-    // separate waveshaper after the NAM stage.
-    fn process_buffer (&mut self, block: &mut [f32]) {
-        let Some(model) = self.models.get_mut(self.selected.value() as usize).and_then(Option::as_mut) else {
-            return; // VoiceD/bypass (or an out-of-range index): leave `block` untouched.
-        };
-
-        let fuzz = self.fuzz.value().clamp(0.0, 1.0);
-        if fuzz <= 0.0 { return; } // fully dry: skip the model entirely
-
-        self.dry_scratch[..block.len()].copy_from_slice(block);
-        model.process_buffer(block);
-        self.apply_ir(block); // cab sim only applies to the modeled ("wet") signal
-
-        for (i, wet) in block.iter_mut().enumerate() {
-            *wet = self.dry_scratch[i] * (1.0 - fuzz) + *wet * fuzz;
-        }
-    }
-
-    // Rebuilds the convolver only when the selection actually changes
-    // (switching is a rare UI action, not a per-block cost).
-    //
-    // Must go through AudioNode::process() in MAX_BUFFER_SIZE chunks, not
-    // filter_mono()/tick() per sample: Convolver is a partitioned FFT
-    // convolution sized for block input (see fft-convolver's `init`) --
-    // driving it one sample at a time re-runs its block machinery per
-    // sample, which is what caused the stutter.
-    fn apply_ir (&mut self, block: &mut [f32]) {
-        let index = self.ir_selected.value() as usize;
-        if index != self.active_ir {
-            self.active_ir = index;
-            self.convolver = self.irs.get(index).and_then(Option::as_ref).map(|wave| convolve(wave, 0));
-        }
-
-        let Some(conv) = &mut self.convolver else { return; };
-
-        for chunk in block.chunks_mut(MAX_BUFFER_SIZE) {
-            self.ir_input.channel_f32_mut(0)[..chunk.len()].copy_from_slice(chunk);
-            conv.process(chunk.len(), &self.ir_input.buffer_ref(), &mut self.ir_output.buffer_mut());
-            chunk.copy_from_slice(&self.ir_output.channel_f32_mut(0)[..chunk.len()]);
-        }
-    }
-}
-struct FmVoice {
-    op_a: An<Sine<f64>>,
-    op_b: An<Sine<f64>>,
-    op_c: An<Sine<f64>>,
-    frac: f32,
-}
-
-impl FmVoice {
-    fn new (frac: f32) -> FmVoice {
-        FmVoice { op_a: sine(), op_b: sine(), op_c: sine(), frac }
-    }
-
-    fn set_sample_rate (&mut self, sr: f64) {
-        self.op_a.set_sample_rate(sr);
-        self.op_b.set_sample_rate(sr);
-        self.op_c.set_sample_rate(sr);
-    }
-
-    fn tick (&mut self, base_freq: f32, signal: &SignalState, params: &VoiceParams) -> f32 {
-        let detune_cents_max = param_factor(&params.detune_cents_max, signal);
-        let detune = 2f32.powf(self.frac * detune_cents_max / 1200.0);
-        let voice_freq = base_freq * detune;
-
-        let ratio_c = param_factor(&params.ratio_c, signal);
-        let freq_c = voice_freq * ratio_c;
-        let out_c = self.op_c.filter_mono(freq_c);
-
-        let ratio_b = param_factor(&params.ratio_b, signal);
-        let index_c = param_factor(&params.index_c, signal);
-        let freq_b = voice_freq * ratio_b;
-        let out_b = self.op_b.filter_mono(freq_b + out_c * (index_c * freq_c));
-
-        let ratio_a = param_factor(&params.ratio_a, signal);
-        let index_b = param_factor(&params.index_b, signal);
-        let freq_a = voice_freq * ratio_a;
-        let out_a = self.op_a.filter_mono(freq_a + out_b * (index_b * freq_b));
-
-        out_a
-    }
-}
-
 struct VoiceEngine {
     freq:          Shared,
     gate:          Shared,
     bend:          Shared,
     width:         Shared,
+    filter:        Shared,
+    fuzz:          Shared,
     thump_amt:     Shared,
     thump_trigger: Shared,
+    velocity:      Shared,
+    acceleration:  Shared,
     params:        Arc<VoiceParams>,
 
-    voices: Vec<FmVoice>,
+    fm_voices: Vec<FmVoice>,
+    reese_voices: Vec<ReeseVoice>,
     sub:    An<Sine<f64>>,
     bypass_sub: An<Sine<f64>>,
     noise:  Box<dyn AudioUnit>,
-    glide:  An<Follow<f64>>,
+    sputter_tri:   An<WaveSynth<U1>>,
+    sputter_noise: Box<dyn AudioUnit>,
     envelope: Box<dyn AudioUnit>,
 
     thump_last_trigger:    f32,
@@ -594,16 +542,27 @@ struct VoiceEngine {
 impl VoiceEngine {
     fn new (
         freq: Shared, gate: Shared, bend: Shared, width: Shared,
-        thump_amt: Shared, thump_trigger: Shared, params: Arc<VoiceParams>,
+        filter: Shared, fuzz: Shared, thump_amt: Shared, thump_trigger: Shared,
+        velocity: Shared, acceleration: Shared, params: Arc<VoiceParams>,
     ) -> VoiceEngine {
         let rest = SignalState::new();
+
+        // noise_lpf_hz has no live SignalWeights today, so its live value
+        // only tracks GUI edits to default/lo/hi/curve -- envelope()
+        // re-evaluates that at control rate (~2ms) instead of baking it in
+        // once here, same idea as build_post_nam's filter_q/amp.
+        let noise_params = params.clone();
+        let noise_cutoff_hz = envelope(move |_t: f64| param_factor(&noise_params.noise_lpf_hz, &SignalState::new()) as f64);
+
         VoiceEngine {
-            freq, gate, bend, width, thump_amt, thump_trigger,
-            voices: FRACS.iter().map(|&frac| FmVoice::new(frac)).collect(),
+            freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration,
+            fm_voices: FM_OSCS.iter().map(|&frac| FmVoice::new(frac)).collect(),
+            reese_voices: REESE_OSCS.iter().map(|&frac| ReeseVoice::new(frac)).collect(),
             sub:    sine(),
             bypass_sub: sine(),
-            noise:  Box::new(white() >> lowpass_hz(param_factor(&params.noise_lpf_hz, &rest), 1.0)),
-            glide:  follow(param_factor(&params.glide_time, &rest)),
+            noise:  Box::new((white() | noise_cutoff_hz) >> lowpass_q(1.0)),
+            sputter_tri:   triangle(),
+            sputter_noise: Box::new(white()),
             envelope: Box::new(adsr_live(
                 param_factor(&params.attack, &rest), 0.0, 1.0,
                 param_factor(&params.release, &rest),
@@ -616,11 +575,13 @@ impl VoiceEngine {
     }
 
     fn set_sample_rate (&mut self, sr: f64) {
-        for voice in self.voices.iter_mut() { voice.set_sample_rate(sr); }
+        for voice in self.fm_voices.iter_mut() { voice.set_sample_rate(sr); }
+        for voice in self.reese_voices.iter_mut() { voice.set_sample_rate(sr); }
         self.sub.set_sample_rate(sr);
         self.bypass_sub.set_sample_rate(sr);
         self.noise.set_sample_rate(sr);
-        self.glide.set_sample_rate(sr);
+        self.sputter_tri.set_sample_rate(sr);
+        self.sputter_noise.set_sample_rate(sr);
         self.envelope.set_sample_rate(sr);
         self.sample_rate = sr as f32;
     }
@@ -630,26 +591,54 @@ impl VoiceEngine {
     fn tick (&mut self) -> (f32, f32) {
         let signal = SignalState {
             bend: self.bend.value(), width: self.width.value(), thump: self.thump_amt.value(),
+            filter: self.filter.value(), fuzz: self.fuzz.value(),
+            velocity: self.velocity.value(), acceleration: self.acceleration.value(),
             ..SignalState::new()
         };
 
         let params       = self.params.clone();
-        let glided       = self.glide.filter_mono(self.freq.value());
         let bend_mult    = 2f32.powf(signal.bend);
         let octave_shift = param_factor(&params.octave_shift, &signal);
-        let base_freq    = glided * bend_mult * self.tick_thump(&signal) * octave_shift;
+        let base_freq    = self.freq.value() * bend_mult * self.tick_thump(&signal) * octave_shift;
 
-        let voice_count = self.voices.len() as f32;
-        let fm_sum: f32 = self.voices.iter_mut()
-            .map(|voice| voice.tick(base_freq, &signal, &params))
-            .sum::<f32>() / voice_count;
+        // Same for every voice in the stack -- computed once here rather
+        // than inside each voice's tick(), unlike the per-voice `frac`
+        // detune baked into each FmVoice/ReeseVoice at construction.
+        let mut fm_input: Frame<f32, U7> = Frame::default();
+        fm_input[0] = base_freq;
+        fm_input[1] = param_factor(&params.ratio_a, &signal);
+        fm_input[2] = param_factor(&params.ratio_b, &signal);
+        fm_input[3] = param_factor(&params.ratio_c, &signal);
+        fm_input[4] = param_factor(&params.index_b, &signal);
+        fm_input[5] = param_factor(&params.index_c, &signal);
+        fm_input[6] = param_factor(&params.detune_cents_max, &signal);
+
+        let fm_voice_count = self.fm_voices.len() as f32;
+        let fm_sum: f32 = self.fm_voices.iter_mut()
+            .map(|voice| voice.tick(&fm_input)[0])
+            .sum::<f32>() / fm_voice_count;
+
+        let mut reese_input: Frame<f32, U2> = Frame::default();
+        reese_input[0] = base_freq;
+        reese_input[1] = param_factor(&params.reese_detune_cents_max, &signal);
+
+        let reese_voice_count = self.reese_voices.len() as f32;
+        let reese_level = param_factor(&params.reese_level, &signal);
+        let reese_sum: f32 = self.reese_voices.iter_mut()
+            .map(|voice| voice.tick(&reese_input)[0])
+            .sum::<f32>() / reese_voice_count * reese_level;
 
         let sub_level   = param_factor(&params.sub_level, &signal);
         let noise_level = param_factor(&params.noise_level, &signal);
         let sub   = self.sub.filter_mono(base_freq * 0.5) * sub_level;
         let noise = self.noise.get_mono() * noise_level;
 
-        let dry = fm_sum + sub + noise;
+        // Sputter: triangle sub osc at base_freq ring-modulated by white noise --
+        // gates the noise on/off with the pitch instead of a fixed-frequency hiss.
+        let sputter_level = param_factor(&params.sputter_level, &signal);
+        let sputter = self.sputter_tri.filter_mono(base_freq) * self.sputter_noise.get_mono() * sputter_level;
+
+        let dry = fm_sum + reese_sum + sub + noise + sputter;
         let env = self.envelope.filter_mono(self.gate.value());
 
         let bypass_ratio = param_factor(&params.bypass_sub_ratio, &signal);
@@ -686,10 +675,16 @@ fn build_post_nam (filter: &Shared, params: Arc<VoiceParams>) -> Box<dyn AudioUn
         param_factor(&cutoff_params.filter_cutoff_hz, &signal)
     });
 
-    let filter_q = param_factor(&params.filter_q, &SignalState::new());
-    let filtered = (pass() | cutoff_hz) >> lowpass_q(filter_q);
+    // filter_q and amp have no live SignalWeights today, so their live
+    // value only tracks GUI edits to default/lo/hi/curve -- envelope()
+    // re-evaluates that at control rate (~2ms) instead of baking it in
+    // once here (which needed a process restart to pick up an edit).
+    let q_params = params.clone();
+    let q = envelope(move |_t: f64| param_factor(&q_params.filter_q, &SignalState::new()) as f64);
+    let filtered = (pass() | cutoff_hz | q) >> lowpass();
 
-    let amp = param_factor(&params.amp, &SignalState::new());
+    let amp_params = params.clone();
+    let amp = envelope(move |_t: f64| param_factor(&amp_params.amp, &SignalState::new()) as f64);
     Box::new(filtered * amp)
 }
 
@@ -709,6 +704,8 @@ where
     let channels = config.channels as usize;
     let mut scratch = [0.0f32; NAM_BLOCK_CAP];
     let mut bypass_scratch = [0.0f32; NAM_BLOCK_CAP];
+    let mut nam_input  = BufferVec::new(1);
+    let mut nam_output = BufferVec::new(1);
 
     device.build_output_stream(
         config,
@@ -727,7 +724,13 @@ where
                     bypass_block[i] = bypass;
                 }
 
-                nam.process_buffer(block);
+                // AudioNode::process() must be driven in <=MAX_BUFFER_SIZE
+                // chunks -- see nam.rs.
+                for chunk in block.chunks_mut(MAX_BUFFER_SIZE) {
+                    nam_input.channel_f32_mut(0)[..chunk.len()].copy_from_slice(chunk);
+                    nam.process(chunk.len(), &nam_input.buffer_ref(), &mut nam_output.buffer_mut());
+                    chunk.copy_from_slice(&nam_output.channel_f32_mut(0)[..chunk.len()]);
+                }
 
                 for (i, &s) in block.iter().enumerate() {
                     // nam-rs's raw output isn't loudness-normalized
@@ -748,7 +751,7 @@ where
     )
 }
 
-impl DeltaConsumer for RsOutput {
+impl DeltaConsumer for AudioOutput {
     fn panic (&mut self) {
         self.gate.set_value(GATE_OFF);
     }
@@ -759,6 +762,8 @@ impl DeltaConsumer for RsOutput {
         self.filter.set_value(signal.filter);
         self.fuzz.set_value(signal.fuzz);
         self.thump_amt.set_value(signal.thump);
+        self.velocity.set_value(signal.velocity);
+        self.acceleration.set_value(signal.acceleration);
     }
 
     fn handle_event (&mut self, delta: &DeltaEvent) {

@@ -11,12 +11,12 @@ mod hydra;
 mod zgicabra;
 mod ui;
 mod osc;
-mod rs;
+mod audio;
 mod output;
 mod gui;
 
 use osc::OscOutput;
-use rs::RsOutput;
+use audio::AudioOutput;
 use output::DeltaConsumer;
 
 use hydra::HydraState;
@@ -65,18 +65,18 @@ fn main() {
 
     // Setup
 
-    let mut voice_params: Option<Arc<rs::VoiceParams>> = None;
-    let mut nam_models: Option<rs::NamModelCycler> = None;
-    let mut nam_irs: Option<rs::IrCycler> = None;
+    let mut voice_params: Option<Arc<audio::VoiceParams>> = None;
+    let mut nam_models: Option<audio::NamModelCycler> = None;
+    let mut nam_irs: Option<audio::IrCycler> = None;
 
     let mut output: Box<dyn DeltaConsumer + Send> = match args.consumer {
-        tools::Consumer::Osc => Box::new(OscOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init OSC connection: {e}"))),
-        tools::Consumer::Rs  => {
-            let rs_output = RsOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init native Rust audio backend: {e}"));
-            voice_params = Some(rs_output.voice_params());
-            nam_models = Some(rs_output.nam_models());
-            nam_irs = Some(rs_output.nam_irs());
-            Box::new(rs_output)
+        tools::Consumer::Osc   => Box::new(OscOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init OSC connection: {e}"))),
+        tools::Consumer::Audio => {
+            let audio_output = AudioOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init native audio backend: {e}"));
+            voice_params = Some(audio_output.voice_params());
+            nam_models = Some(audio_output.nam_models());
+            nam_irs = Some(audio_output.nam_irs());
+            Box::new(audio_output)
         },
     };
     output.panic(); // Kill any overrunning notes

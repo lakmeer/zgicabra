@@ -1,2 +1,3 @@
-./target/*
-./libs/*
+target/
+libs/
+hid_test/target/

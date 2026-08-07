@@ -1,0 +1,147 @@
+Zgicabra Audio Engine -- signal graph (src/rs.rs)
+==================================================
+
+Per-sample synth engine (VoiceEngine::tick), sample rate 48000 Hz (NAM_SAMPLE_RATE)
+
+                     freq (MIDI note, Hz)
+                       |
+                       v
+              +-----------------+
+              | glide: follow() |  glide_time = 0.08s
+              +-----------------+
+                       | glided
+                       v
+              base_freq = glided
+                       * bend_mult        = 2 ^ bend
+                       * tick_thump()     (see THUMP below)
+                       * octave_shift     = 1.0  (range 0.25..2.0)
+                       |
+       +---------------+---------------+---------------+--------+--------+
+       |                               |                |        |        |
+       v                               v                v        v        v
+ FM VOICES x5                    REESE VOICES x4      SUB OSC   NOISE   SPUTTER
+ (FRACS = -1,-.5,0,.5,1)         (REESE_FRACS =        sine()   white()  (tri x noise,
+ unison detune spread             -1,-1/3,1/3,1)        freq =    |       see below)
+       |                          detuned-saw beat       base_freq  |         |
+       |  per voice, frac f:      stack (see ../zgi-sc/   *0.5      v         |
+       |  detune = 2^(f*detune_cents_max/1200)  experiments/exp2)   |    +----------+   |
+       |    detune_cents_max = 25.0 cents        |          * sub_level | lowpass_hz|   |
+       |    (weight: width = 1.0)                |            = 0.35 | cutoff =   |   |
+       |  voice_freq = base_freq * detune         |               |  | noise_lpf_hz|   |
+       |                                          |               |  |  = 4000 Hz |   |
+       |  +-----------------------------------+   |  per voice, frac f:  +----------+   |
+       |  | 3-op FM chain (phase-mod, C->B->A)|   |  detune = 2^(f*reese_detune_cents_max/1200)  |
+       |  |                                    |   |    reese_detune_cents_max = 12..35 cents  |
+       |  |   freq_c = voice_freq * ratio_c(2.003)|  (weight: width = 1.0, range starts at 12)  |
+       |  |   out_c  = sine(freq_c)            |   |  voice_freq = base_freq * detune     |     |
+       |  |                                    |   |  out = Saw(voice_freq)                |     |
+       |  |   freq_b = voice_freq * ratio_b(1.007)|         |                              |     |
+       |  |   out_b  = sine(freq_b + out_c*index_c*freq_c)  |                              |     |
+       |  |            index_c = 3.5           |   |  (4 voices summed, / 4)               |     |
+       |  |                                    |   |         * reese_level = 0.25          |     v
+       |  |   freq_a = voice_freq * ratio_a(1.0)|  |               |                    +-------------+
+       |  |   out_a  = sine(freq_a + out_b*index_b*freq_b)         |                    | tri sub osc |
+       |  |            index_b = 2.2           |   |               |                    | (triangle())|
+       |  +-----------------------------------+   |               |                    | freq =      |
+       |         (5 voices summed, / 5 = fm_sum)  |               |                    | base_freq   |
+       |                                          |               |                    +-------------+
+       |                                          |               |                           |
+       |                                          |               |                    tri_out * white_noise
+       |                                          |               |                     * sputter_level = 0.1
+       |                                          |               |                    ("sputtering" gated
+       |                                          |               |                     noise, tracks pitch
+       |                                          |               |                     instead of fixed hiss)
+       |                                          |               |                           |
+       +----------> fm_sum ---------> reese_sum --+---> sub -----+---> noise -----------------+
+                                                                       |
+                                        dry = fm_sum + reese_sum + sub + noise + sputter
+                                                                       |
+                                                                       v
+                              +----------------------+  attack=0.003s  (reduced, was 0.01s)
+                              | envelope: adsr_live  |  sustain=1.0
+                              | gate: on(+1)/off(-1) |  decay=0.0
+                              +----------------------+  release=0.1s   (reduced, was 0.25s)
+                                        | env
+                                        v
+                                    dry * env ----+
+                                                  |
+                                                  |
+   bypass_sub: sine()                             |
+     base_freq                                    |
+          * bypass_sub_ratio(0.5))                |
+          * bypass_sub_level(0.35)                |
+          * env                                   |
+          |                                       |
+          v                                       |
+    bypass_out                                    |
+          |                                       |
+          |                                       v
+          |                        +-------------------------------+
+          |                        |        NamStage               |
+          |                        |  (per-block, NAM_BLOCK_CAP    |
+          |                        |   = 4096 samples/chunk)       |
+          |                        |                               |
+          |                        |  dry_scratch = copy(block)    |
+          |                        |  wet = NAM_model.process()    |  selected via nam_selected
+          |                        |         (neural amp sim,      |  index 0 = Bypass
+          |                        |          default "6505")      |
+          |                        |    |                          |
+          |                        |    v                          |
+          |                        |  cab IR convolution           |  selected via ir_selected
+          |                        |  (FFT partitioned convolver,  |  index 0 = Bypass
+          |                        |   IR trimmed to 0.5s max)     |
+          |                        |    |                          |
+          |                        |    v                          |
+          |                        |  block = dry*(1-fuzz)         |
+          |                        |          + wet*fuzz           |
+          |                        |  fuzz = SignalState.fuzz      |
+          |                        +-------------------------------+
+          |                                       |
+          |                                       v
+          |                        +------------------------------+
+          |                        |       build_post_nam         |
+          |                        |                              |
+          |                        |  cutoff_hz = f(filter live)  |
+          |                        |    filter_cutoff_hz: 100..14000 Hz, exp curve
+          |                        |    (weight: filter = 1.0)    |
+          |                        |                              |
+          |                        |  (pass | cutoff_hz)          |
+          |                        |     >> lowpass_q(Q=0.6)      |
+          |                        |     * amp (0.3)              |
+          |                        +------------------------------+
+          |                                       |
+          |                                       v
+          |                                  filtered_out
+          |                                       |
+          +----------------------->  mix = clamp(filtered_out + bypass_out)
+                                                  |
+                                                  v
+                                        cpal output stream
+                            (device sample format, N channels, duplicated)
+
+
+Live control inputs (Shared cells, written by DeltaConsumer):
+  freq            <- DeltaEvent::NoteStart/NoteChange (midi_hz)
+  gate            <- NoteStart(+1.0) / NoteEnd,Panic(-1.0)
+  bend            <- SignalState.bend
+  width           <- SignalState.width      (drives detune_cents_max, reese_detune_cents_max)
+  filter          <- SignalState.filter     (drives filter_cutoff_hz)
+  fuzz            <- SignalState.fuzz       (drives NAM dry/wet)
+  thump_amt       <- SignalState.thump      (drives thump_pitch_mult)
+  thump_trigger   <- incremented on NoteStart (resets thump decay clock)
+  nam_selected    <- UI model cycler (NamModelCycler)
+  ir_selected     <- UI IR cycler (IrCycler)
+
+Note: filter_q, attack, release, glide_time, noise_lpf_hz, amp are baked into
+the fundsp AudioUnits at graph-construction time -- editing them takes effect
+on next RsOutput::new() (process restart), not live.
+
+New in this pass:
+  - Reese bass: 4-voice detuned-saw beating stack (REESE_FRACS), width-driven
+    detune (reese_detune_cents_max, 12..35 cents), mixed at reese_level (0.25).
+    Ported from ../zgi-sc/experiments/exp2.scd.
+  - Sputter: triangle sub osc at base_freq, ring-modulated by white noise
+    (sputter_level = 0.1) -- gated/crackling noise texture that tracks pitch
+    instead of sitting at a fixed frequency like the existing NOISE source.
+  - Amp envelope attack reduced 0.01s -> 0.003s, release reduced 0.25s -> 0.1s
+    (snappier onset/tail).
