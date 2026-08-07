@@ -65,17 +65,13 @@ fn main() {
 
     // Setup
 
-    let mut voice_params: Option<Arc<audio::VoiceParams>> = None;
-    let mut nam_models: Option<audio::NamModelCycler> = None;
-    let mut nam_irs: Option<audio::IrCycler> = None;
+    let mut audio: Option<audio::AudioHandles> = None;
 
     let mut output: Box<dyn DeltaConsumer + Send> = match args.consumer {
         tools::Consumer::Osc   => Box::new(OscOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init OSC connection: {e}"))),
         tools::Consumer::Audio => {
             let audio_output = AudioOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init native audio backend: {e}"));
-            voice_params = Some(audio_output.voice_params());
-            nam_models = Some(audio_output.nam_models());
-            nam_irs = Some(audio_output.nam_irs());
+            audio = Some(audio_output.handles());
             Box::new(audio_output)
         },
     };
@@ -105,7 +101,7 @@ fn main() {
             run_engine_loop(args, hydra_state, output, engine_bridge, engine_quit);
         });
 
-        gui::run(voice_params, nam_models, nam_irs, mock_controls, bridge, quit);
+        gui::run(audio, mock_controls, bridge, quit);
         engine_thread.join().expect("engine thread panicked");
     } else {
         run_engine_loop(args, hydra_state, output, bridge, Arc::new(AtomicBool::new(false)));

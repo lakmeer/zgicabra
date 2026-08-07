@@ -31,9 +31,40 @@ use winit::event_loop::EventLoop;
 use winit::window::WindowAttributes;
 
 use crate::hydra::MockControls;
-use crate::audio::{IrCycler, NamModelCycler, VoiceParams};
+use crate::audio::{AudioHandles, AuditionCycler, AuditionNote, VoiceParams, snapshot};
 use crate::tools::AtomicF32;
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
+
+// Local (GUI-thread-only) browser state for saved weight-matrix snapshots --
+// save/load are one-off file actions the GUI thread can just do directly on
+// the same VoiceParams cells the sliders already write to, no cross-thread
+// cycler needed (contrast NamModelCycler, which the audio thread also reads
+// every block).
+struct SnapshotBrowser {
+    names: Vec<String>,
+    index: usize,
+}
+
+impl SnapshotBrowser {
+    fn new () -> SnapshotBrowser {
+        let mut browser = SnapshotBrowser { names: Vec::new(), index: 0 };
+        browser.refresh();
+        browser
+    }
+
+    fn refresh (&mut self) {
+        self.names = snapshot::list_snapshots().unwrap_or_default();
+        if self.index >= self.names.len() {
+            self.index = self.names.len().saturating_sub(1);
+        }
+    }
+}
+
+// Local (GUI-thread-only) state for the "hold note" audition button.
+struct AuditionState {
+    held:  bool,
+    pitch: f32,
+}
 
 // Drag widgets need a step size that feels right whether the underlying
 // range is 0..1 or 100..14000 -- scale it off the row's own lo/hi span.
@@ -193,7 +224,7 @@ fn draw_mock_hydra (ui: &imgui::Ui, controls: &MockControls, bridge: &ZgicabraBr
 // VoiceChange path (rs.rs no longer reacts to it, see NamModelCycler's
 // doc comment); these buttons drive rs.rs's model selection directly, so
 // they work the same whether the mock or real hydra backend is active.
-fn draw_nam_model (ui: &imgui::Ui, models: &NamModelCycler) {
+fn draw_nam_model (ui: &imgui::Ui, models: &crate::audio::NamModelCycler) {
     ui.text(format!("Model: {}", models.selected_name()));
     if ui.button("< Model") { models.cycle(-1); }
     ui.same_line();
@@ -201,11 +232,73 @@ fn draw_nam_model (ui: &imgui::Ui, models: &NamModelCycler) {
 }
 
 // IR cycler -- same idea as draw_nam_model, drives rs.rs's cab IR selection.
-fn draw_nam_ir (ui: &imgui::Ui, irs: &IrCycler) {
+fn draw_nam_ir (ui: &imgui::Ui, irs: &crate::audio::IrCycler) {
     ui.text(format!("IR: {}", irs.selected_name()));
     if ui.button("< IR") { irs.cycle(-1); }
     ui.same_line();
     if ui.button("IR >") { irs.cycle(1); }
+}
+
+// One row per audition-voice slot (A/B/C): cycles which fundsp Generator
+// that slot's AuditionVoice is currently running. Same idea as
+// draw_nam_model, three independent instances mixed together in the graph.
+fn draw_audition_voice (ui: &imgui::Ui, label: &str, cycler: &AuditionCycler) {
+    ui.text(format!("{label}: {}", cycler.selected_name()));
+    if ui.button(format!("< {label}")) { cycler.cycle(-1); }
+    ui.same_line();
+    if ui.button(format!("{label} >")) { cycler.cycle(1); }
+}
+
+// "Hold Note" toggle: drives AudioOutput's freq/gate cells directly so
+// weights/generators can be auditioned by ear without touching the wand
+// controller. Click to trigger and hold the gate open; click again to
+// release.
+fn draw_audition_note (ui: &imgui::Ui, note: &AuditionNote, state: &mut AuditionState) {
+    ui.set_next_item_width(80.0);
+    Drag::new("Note##audition_pitch").range(0.0, 127.0).speed(0.2).build(ui, &mut state.pitch);
+    ui.same_line();
+
+    let label = if state.held { "Release Note" } else { "Hold Note" };
+    if ui.button(label) {
+        state.held = !state.held;
+        if state.held { note.hold(state.pitch as u8); } else { note.release(); }
+    }
+}
+
+// Save/load buttons for the weight matrix (VoiceParams), plus a cycler over
+// every snapshot found on disk -- each save writes a new timestamped file
+// rather than overwriting, see audio::snapshot.
+fn draw_snapshot_browser (ui: &imgui::Ui, params: &VoiceParams, browser: &mut SnapshotBrowser) {
+    if ui.button("Save Snapshot") {
+        if let Err(e) = snapshot::save_snapshot(params) {
+            eprintln!("║ 🟥 Failed to save snapshot: {e}");
+        }
+        browser.refresh();
+        browser.index = browser.names.len().saturating_sub(1);
+    }
+    ui.same_line();
+
+    match browser.names.get(browser.index) {
+        Some(name) => ui.text(format!("Snapshot: {name}")),
+        None       => ui.text("Snapshot: (none saved)"),
+    }
+
+    if ui.button("< Snap") && !browser.names.is_empty() {
+        browser.index = (browser.index + browser.names.len() - 1) % browser.names.len();
+    }
+    ui.same_line();
+    if ui.button("Snap >") && !browser.names.is_empty() {
+        browser.index = (browser.index + 1) % browser.names.len();
+    }
+    ui.same_line();
+    if ui.button("Load Snapshot") {
+        if let Some(name) = browser.names.get(browser.index) {
+            let path = snapshot::snapshot_path(name);
+            if let Err(e) = snapshot::load_snapshot(&path, params) {
+                eprintln!("║ 🟥 Failed to load snapshot: {e}");
+            }
+        }
+    }
 }
 
 // One draggable row for a SignalState field: an "override" checkbox that
@@ -248,24 +341,29 @@ fn draw_signal_state (ui: &imgui::Ui, bridge: &ZgicabraBridge) {
     if ui.button("Toggle Fuzz") { bridge.fuzz.toggle(); }
 }
 
-fn draw_ui (ui: &imgui::Ui, voice_params: Option<&VoiceParams>, nam_models: Option<&NamModelCycler>, nam_irs: Option<&IrCycler>, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge) {
+fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge, audition_state: &mut AuditionState, snapshot_browser: &mut SnapshotBrowser) {
     ui.window("Voice Params")
         .position([10.0, 10.0], imgui::Condition::FirstUseEver)
-        .size([760.0, 560.0], imgui::Condition::FirstUseEver)
+        .size([760.0, 620.0], imgui::Condition::FirstUseEver)
         .build(|| {
-            match nam_models {
-                Some(models) => draw_nam_model(ui, models),
-                None => ui.text("NAM model only available with the --rs audio backend."),
-            }
-            match nam_irs {
-                Some(irs) => draw_nam_ir(ui, irs),
-                None => ui.text("IR only available with the --rs audio backend."),
-            }
-            ui.spacing();
+            match audio {
+                Some(audio) => {
+                    draw_nam_model(ui, &audio.nam_models);
+                    draw_nam_ir(ui, &audio.nam_irs);
+                    ui.spacing();
 
-            match voice_params {
-                Some(params) => draw_voice_params(ui, params),
-                None => ui.text("Voice params only available with the --rs audio backend."),
+                    draw_audition_voice(ui, "A", &audio.audition_a);
+                    draw_audition_voice(ui, "B", &audio.audition_b);
+                    draw_audition_voice(ui, "C", &audio.audition_c);
+                    draw_audition_note(ui, &audio.audition_note, audition_state);
+                    ui.spacing();
+
+                    draw_snapshot_browser(ui, &audio.voice_params, snapshot_browser);
+                    ui.spacing();
+
+                    draw_voice_params(ui, &audio.voice_params);
+                },
+                None => ui.text("Voice params only available with the --audio backend."),
             }
         });
 
@@ -318,9 +416,11 @@ fn save_screenshot (gl: &glow::Context, width: u32, height: u32, path: &str) {
 
 // Runs the GUI event loop on the calling (main) thread until the window is
 // closed, at which point `quit` is set so the background loop can shut down.
-pub fn run (voice_params: Option<Arc<VoiceParams>>, nam_models: Option<NamModelCycler>, nam_irs: Option<IrCycler>, mock_controls: Option<MockControls>, bridge: ZgicabraBridge, quit: Arc<AtomicBool>) {
+pub fn run (audio: Option<AudioHandles>, mock_controls: Option<MockControls>, bridge: ZgicabraBridge, quit: Arc<AtomicBool>) {
     let screenshot_path = env::var("ZGICABRA_GUI_SCREENSHOT").ok();
     let mut frame_count: u32 = 0;
+    let mut audition_state = AuditionState { held: false, pitch: 57.0 };
+    let mut snapshot_browser = SnapshotBrowser::new();
     let event_loop = EventLoop::new().expect("failed to create winit event loop");
 
     let window_attributes = WindowAttributes::default()
@@ -389,7 +489,7 @@ pub fn run (voice_params: Option<Arc<VoiceParams>>, nam_models: Option<NamModelC
             }
             Event::WindowEvent { event: WindowEvent::RedrawRequested, .. } => {
                 let ui = imgui_context.frame();
-                draw_ui(ui, voice_params.as_deref(), nam_models.as_ref(), nam_irs.as_ref(), mock_controls.as_ref(), &bridge);
+                draw_ui(ui, audio.as_ref(), mock_controls.as_ref(), &bridge, &mut audition_state, &mut snapshot_browser);
 
                 winit_platform.prepare_render(ui, &window);
                 let draw_data = imgui_context.render();
