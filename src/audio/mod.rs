@@ -819,8 +819,11 @@ where
                 }
 
                 for (i, &s) in block.iter().enumerate() {
-                    // nam-rs's raw output isn't loudness-normalized
-                    let filtered = post_nam.filter_mono(s.clamp(-1.0, 1.0));
+                    // NamStage already normalizes toward TARGET_LOUDNESS_DB and
+                    // gain-matches input, so this only needs to catch rare
+                    // transient peaks -- soft-clip instead of a hard wall so
+                    // those peaks saturate instead of digitally clipping.
+                    let filtered = post_nam.filter_mono(s.tanh());
                     let mixed = (filtered + bypass_block[i]).clamp(-1.0, 1.0);
 
                     // Reverb tail: fed from the mono mix, dry/wet blended per

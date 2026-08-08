@@ -23,6 +23,14 @@ const NAM_IR_DIR: &str = "nam/ir";
 // near real-time. Trim to this window on load.
 const NAM_IR_MAX_SECONDS: f64 = 0.5;
 const DEFAULT_NAM_MODEL: &str = "6505";
+// TONE3000's A2 recipe normalizes training data to -18dB RMS and folds the
+// rescale into head_scale, and the reference plugin's "Normalized" output
+// mode targets the same figure -- match it so cycling models doesn't jump
+// wildly in level.
+const TARGET_LOUDNESS_DB: f32 = -18.0;
+// ~5Hz one-pole highpass to strip WaveNet DC bias post-inference, same as
+// the reference plugin's DC blocker. R = exp(-2*pi*fc/fs).
+const DC_BLOCKER_R: f32 = 0.9993;
 
 // A handle for cycling through the discovered NAM models (index 0 is always
 // "Bypass" -- no model, dry passthrough) and reading the current selection's
@@ -83,7 +91,7 @@ impl IrCycler {
 // Discovers every *.nam file in NAM_DIR (sorted for a stable, predictable
 // cycle order) and loads each one. Index 0 is always a "Bypass" slot (no
 // model, dry passthrough) so the cycler always has a way back to clean.
-pub fn load_nam_models () -> io::Result<(Vec<Option<Model>>, Vec<String>)> {
+pub fn load_nam_models () -> io::Result<(Vec<Option<NamModelSlot>>, Vec<String>)> {
     let mut paths: Vec<std::path::PathBuf> = fs::read_dir(NAM_DIR)
         .map_err(|e| io::Error::new(e.kind(), format!("failed to read NAM model directory '{NAM_DIR}': {e}")))?
         .filter_map(|entry| entry.ok())
@@ -92,8 +100,17 @@ pub fn load_nam_models () -> io::Result<(Vec<Option<Model>>, Vec<String>)> {
         .collect();
     paths.sort();
 
-    let mut models: Vec<Option<Model>> = vec![None];
-    let mut names:  Vec<String>        = vec!["Bypass".to_string()];
+    let mut slots: Vec<Option<NamModelSlot>> = vec![None];
+    let mut names: Vec<String>               = vec!["Bypass".to_string()];
+    // Relative input calibration: every model's input_gain is trimmed toward
+    // this model's input_level_dbu (falls back to the first model that has
+    // one), so switching models doesn't over/under-drive one relative to how
+    // it was captured. There's no absolute hardware calibration reference
+    // here (no calibrated interface input), so "relative to the default
+    // model" is the best available anchor.
+    let mut target_input_dbu: Option<f32> = None;
+
+    let mut loaded: Vec<(String, Model, Option<f32>, f32)> = Vec::new();
 
     for path in paths {
         let path_str = path.to_string_lossy().into_owned();
@@ -105,11 +122,34 @@ pub fn load_nam_models () -> io::Result<(Vec<Option<Model>>, Vec<String>)> {
 
         let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or(&path_str).to_string();
 
-        models.push(Some(model));
+        // Output gain: normalize toward TARGET_LOUDNESS_DB using the file's
+        // own loudness metadata, same reference TONE3000's A2 recipe trains
+        // against. Models without loudness metadata pass through unscaled.
+        let output_gain = nam_model.loudness()
+            .map(|loudness| db_amp(TARGET_LOUDNESS_DB - loudness))
+            .unwrap_or(1.0);
+
+        let input_dbu = nam_model.input_level_dbu();
+        if name == DEFAULT_NAM_MODEL {
+            target_input_dbu = input_dbu.or(target_input_dbu);
+        } else if target_input_dbu.is_none() {
+            target_input_dbu = input_dbu;
+        }
+
+        loaded.push((name, model, input_dbu, output_gain));
+    }
+
+    for (name, model, input_dbu, output_gain) in loaded {
+        let input_gain = match (input_dbu, target_input_dbu) {
+            (Some(own), Some(target)) => db_amp(target - own),
+            _ => 1.0,
+        };
+
+        slots.push(Some(NamModelSlot { model: Arc::new(Mutex::new(model)), input_gain, output_gain }));
         names.push(name);
     }
 
-    Ok((models, names))
+    Ok((slots, names))
 }
 
 // Discovers every *.wav file in NAM_IR_DIR (sorted for a stable, predictable
@@ -165,8 +205,20 @@ pub fn default_model_index (names: &[String]) -> usize {
 // mutex is never contended since only the audio callback thread ever
 // touches it.
 #[derive(Clone)]
+pub struct NamModelSlot {
+    model:       Arc<Mutex<Model>>,
+    // Relative to the .nam's own input_level_dbu metadata, trimmed toward a
+    // common target so every model gets driven at roughly the level it was
+    // captured at (see load_nam_models).
+    input_gain:  f32,
+    // Toward TARGET_LOUDNESS_DB from the .nam's own loudness metadata, so
+    // cycling models doesn't jump wildly in level.
+    output_gain: f32,
+}
+
+#[derive(Clone)]
 pub struct NamStage {
-    models:      Vec<Option<Arc<Mutex<Model>>>>,
+    models:      Vec<Option<NamModelSlot>>,
     selected:    Shared,
     fuzz:        Shared,
     dry_scratch: [f32; MAX_BUFFER_SIZE],
@@ -176,11 +228,13 @@ pub struct NamStage {
     active_ir:   usize,
     ir_input:    BufferVec,
     ir_output:   BufferVec,
+    // One-pole DC blocker state, carried across calls (see DC_BLOCKER_R).
+    dc_prev_x:   f32,
+    dc_prev_y:   f32,
 }
 
 impl NamStage {
-    pub fn new (models: Vec<Option<Model>>, selected: Shared, fuzz: Shared, irs: Vec<Option<Wave>>, ir_selected: Shared) -> NamStage {
-        let models = models.into_iter().map(|m| m.map(|model| Arc::new(Mutex::new(model)))).collect();
+    pub fn new (models: Vec<Option<NamModelSlot>>, selected: Shared, fuzz: Shared, irs: Vec<Option<Wave>>, ir_selected: Shared) -> NamStage {
         NamStage {
             models, selected, fuzz, irs, ir_selected,
             dry_scratch: [0.0; MAX_BUFFER_SIZE],
@@ -188,23 +242,54 @@ impl NamStage {
             active_ir:   0,
             ir_input:    BufferVec::new(1),
             ir_output:   BufferVec::new(1),
+            dc_prev_x:   0.0,
+            dc_prev_y:   0.0,
         }
     }
 
+    // Always runs the selected model, even at fuzz=0, so its internal state
+    // (WaveNet dilation history) stays warm -- otherwise every fuzz sweep
+    // from 0 restarts the model cold and its first receptive_field() samples
+    // are a startup transient (see nam_rs::Model::receptive_field docs)
+    // mixed straight into the output. The dry/wet blend below already
+    // reduces to 100% dry at fuzz=0, so behavior at the output is unchanged.
     fn process_buffer (&mut self, block: &mut [f32]) {
-        let Some(model) = self.models.get(self.selected.value() as usize).and_then(Option::as_ref) else {
+        let Some(slot) = self.models.get(self.selected.value() as usize).and_then(Option::as_ref) else {
             return; // Bypass (or an out-of-range index): leave `block` untouched.
         };
+        let model = slot.model.clone();
+        let (input_gain, output_gain) = (slot.input_gain, slot.output_gain);
 
         let fuzz = self.fuzz.value().clamp(0.0, 1.0);
-        if fuzz <= 0.0 { return; } // fully dry: skip the model entirely
 
         self.dry_scratch[..block.len()].copy_from_slice(block);
+
+        if input_gain != 1.0 {
+            for s in block.iter_mut() { *s *= input_gain; }
+        }
+
         model.lock().unwrap().process_buffer(block);
+        self.dc_block(block);
+
+        if output_gain != 1.0 {
+            for s in block.iter_mut() { *s *= output_gain; }
+        }
+
         self.apply_ir(block); // cab sim only applies to the modeled ("wet") signal
 
         for (i, wet) in block.iter_mut().enumerate() {
             *wet = self.dry_scratch[i] * (1.0 - fuzz) + *wet * fuzz;
+        }
+    }
+
+    // ~5Hz one-pole highpass to strip WaveNet DC bias (see DC_BLOCKER_R).
+    fn dc_block (&mut self, block: &mut [f32]) {
+        for s in block.iter_mut() {
+            let x = *s;
+            let y = x - self.dc_prev_x + DC_BLOCKER_R * self.dc_prev_y;
+            self.dc_prev_x = x;
+            self.dc_prev_y = y;
+            *s = y;
         }
     }
 
