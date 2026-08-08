@@ -267,6 +267,17 @@ fn draw_nam_ir (ui: &imgui::Ui, irs: &crate::audio::IrCycler) {
     if ui.button("IR >") { irs.cycle(1); }
 }
 
+// Dry/wet blend for the always-on second NAM stage (hardcoded to "lowgain",
+// just before the reverb -- see AudioOutput::new). Direct Shared editor,
+// same pattern as the audition param drags in draw_audition_params.
+fn draw_lowgain_blend (ui: &imgui::Ui, blend: &fundsp::shared::Shared) {
+    let mut value = blend.value();
+    ui.set_next_item_width(120.0);
+    if Drag::new("Lowgain Blend").range(0.0, 1.0).speed(0.002).build(ui, &mut value) {
+        blend.set_value(value);
+    }
+}
+
 // One row per audition-voice slot (A/B/C): cycles which fundsp Generator
 // that slot's AuditionVoice is currently running. Same idea as
 // draw_nam_model, three independent instances mixed together in the graph.
@@ -434,6 +445,7 @@ fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<
                 Some(audio) => {
                     draw_nam_model(ui, &audio.nam_models);
                     draw_nam_ir(ui, &audio.nam_irs);
+                    draw_lowgain_blend(ui, &audio.lowgain_blend);
                     ui.spacing();
 
                     draw_audition_voice(ui, "A", &audio.audition_a);
@@ -513,7 +525,7 @@ fn save_screenshot (gl: &glow::Context, width: u32, height: u32, path: &str) {
 pub fn run (audio: Option<AudioHandles>, mock_controls: Option<MockControls>, bridge: ZgicabraBridge, quit: Arc<AtomicBool>) {
     let screenshot_path = env::var("ZGICABRA_GUI_SCREENSHOT").ok();
     let mut frame_count: u32 = 0;
-    let mut audition_state = AuditionState { held: false, pitch: 57.0 };
+    let mut audition_state = AuditionState { held: false, pitch: 43.0 };
     let mut snapshot_browser = SnapshotBrowser::new();
     let event_loop = EventLoop::new().expect("failed to create winit event loop");
 

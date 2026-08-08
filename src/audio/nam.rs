@@ -198,6 +198,24 @@ pub fn default_model_index (names: &[String]) -> usize {
     names.iter().position(|n| n == DEFAULT_NAM_MODEL).unwrap_or(0)
 }
 
+// Loads a single named .nam model from NAM_DIR (e.g. for a hardcoded, always-on
+// second NamStage) -- same output_gain normalization as load_nam_models, but no
+// peer group to calibrate input level against, so input_gain is left neutral.
+pub fn load_nam_model (name: &str) -> io::Result<NamModelSlot> {
+    let path_str = format!("{NAM_DIR}/{name}.nam");
+
+    let nam_model = NamModel::from_file(&path_str)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to load NAM model '{path_str}': {e}")))?;
+    let model = Model::from_nam(&nam_model)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to build NAM model '{path_str}': {e}")))?;
+
+    let output_gain = nam_model.loudness()
+        .map(|loudness| db_amp(TARGET_LOUDNESS_DB - loudness))
+        .unwrap_or(1.0);
+
+    Ok(NamModelSlot { model: Arc::new(Mutex::new(model)), input_gain: 1.0, output_gain })
+}
+
 // `Model` (nam-rs) isn't Clone, but AudioNode requires `Self: Clone` as a
 // structural bound (fundsp's generic combinator plumbing needs it, even
 // though nothing here actually clones a live NamStage). Arc<Mutex<_>> gets
