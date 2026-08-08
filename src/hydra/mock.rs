@@ -56,6 +56,10 @@ pub struct MockControls {
     pub left_buttons:  [Arc<AtomicBool>; 4],
     pub right_buttons: [Arc<AtomicBool>; 4],
 
+    // Toggles the steady sine wander on pos/rot_quat (see wand_frame) --
+    // off by default so a mock wand sits still until asked to drift.
+    pub sine_drift: Arc<AtomicBool>,
+
     voice_cycle: Arc<AtomicI8>,
     tune_cycle:  Arc<AtomicI8>,
 }
@@ -93,6 +97,8 @@ pub struct MockBackend {
     left_buttons:  [Arc<AtomicBool>; 4],
     right_buttons: [Arc<AtomicBool>; 4],
 
+    sine_drift: Arc<AtomicBool>,
+
     quit: bool,
     sequence: u8,
     _cbreak_guard: CbreakGuard, // restores the terminal on drop
@@ -116,6 +122,7 @@ impl MockBackend {
             right_stick_y: Arc::new(AtomicF32::new(0.0)),
             left_buttons:  std::array::from_fn(|_| Arc::new(AtomicBool::new(false))),
             right_buttons: std::array::from_fn(|_| Arc::new(AtomicBool::new(false))),
+            sine_drift: Arc::new(AtomicBool::new(false)),
             quit: false,
             sequence: 0,
             _cbreak_guard: cbreak_guard,
@@ -133,6 +140,7 @@ impl MockBackend {
             right_stick_y: self.right_stick_y.clone(),
             left_buttons:  self.left_buttons.clone(),
             right_buttons: self.right_buttons.clone(),
+            sine_drift: self.sine_drift.clone(),
             voice_cycle: self.voice_cycle.clone(),
             tune_cycle:  self.tune_cycle.clone(),
         }
@@ -203,18 +211,20 @@ impl MockBackend {
         frame.joystick_x      = stick_x.clamp(-1.0, 1.0);
         frame.joystick_y      = stick_y.clamp(-1.0, 1.0);
 
-        frame.pos = [
-            sin(0.13, phase)       * 200.0,
-            sin(0.11, phase + 1.0) * 200.0,
-            sin(0.09, phase + 2.0) * 200.0,
-        ];
+        if self.sine_drift.load(Ordering::Relaxed) {
+            frame.pos = [
+                sin(0.13, phase)       * 200.0,
+                sin(0.11, phase + 1.0) * 200.0,
+                sin(0.09, phase + 2.0) * 200.0,
+            ];
 
-        frame.rot_quat = [
-            sin(0.19, phase),
-            sin(0.17, phase + 0.5),
-            sin(0.15, phase + 1.5),
-            0.0,
-        ];
+            frame.rot_quat = [
+                sin(0.19, phase),
+                sin(0.17, phase + 0.5),
+                sin(0.15, phase + 1.5),
+                0.0,
+            ];
+        }
 
         for (bit, pressed) in BUTTON_BITS.iter().zip(buttons.iter()) {
             if pressed.load(Ordering::Relaxed) {

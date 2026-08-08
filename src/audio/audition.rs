@@ -75,6 +75,12 @@ pub const GENERATOR_PARAMS: [&[&str]; 19] = [
 // actually uses (see draw_audition_params).
 pub const AUDITION_PARAM_SLOTS: usize = 12;
 
+// Every audition param shares this fixed range regardless of label/generator
+// -- also the range `AuditionCycler::randomise` draws from, see gui.rs's
+// draw_audition_params for the GUI-side rationale.
+pub const AUDITION_PARAM_LO: f32 = 0.0;
+pub const AUDITION_PARAM_HI: f32 = 10.0;
+
 fn build_generators () -> Vec<Box<dyn AudioUnit>> {
     vec![
         Box::new(saw()),
@@ -182,5 +188,27 @@ impl AuditionCycler {
         let current = self.selected.value() as i32;
         let next = (current + delta).rem_euclid(count);
         self.selected.set_value(next as f32);
+    }
+
+    // Picks a random generator and re-rolls every param slot -- slots the
+    // chosen generator doesn't use are rolled too (harmless, see the
+    // "stale value" note atop this file) rather than special-cased.
+    pub fn randomise (&self) {
+        let mut rng = rand::thread_rng();
+        self.selected.set_value(rand::Rng::gen_range(&mut rng, 0..GENERATOR_NAMES.len() as i32) as f32);
+
+        let mid    = (AUDITION_PARAM_LO + AUDITION_PARAM_HI) / 2.0;
+        let spread = (AUDITION_PARAM_HI - AUDITION_PARAM_LO) / 6.0;
+        for cell in self.params.iter() {
+            cell.set_value((mid + crate::tools::rand_normal(spread)).clamp(AUDITION_PARAM_LO, AUDITION_PARAM_HI));
+        }
+    }
+
+    // (column label, cell) pairs -- generator index plus every param slot,
+    // for snapshot.rs to dump/restore uniformly (parallel to ParamSpec::cells).
+    pub fn cells (&self) -> Vec<(String, &Shared)> {
+        let mut cells = vec![("selected".to_string(), &self.selected)];
+        cells.extend(self.params.iter().enumerate().map(|(i, cell)| (format!("param{i}"), cell)));
+        cells
     }
 }

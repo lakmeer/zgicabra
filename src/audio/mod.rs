@@ -160,7 +160,7 @@ pub mod snapshot;
 use nam::NamStage;
 use audition::AuditionVoice;
 pub use nam::{NamModelCycler, IrCycler};
-pub use audition::{AuditionCycler, AUDITION_PARAM_SLOTS};
+pub use audition::{AuditionCycler, AUDITION_PARAM_SLOTS, AUDITION_PARAM_LO, AUDITION_PARAM_HI};
 
 const GATE_ON:  f32 = 1.0;
 const GATE_OFF: f32 = -1.0;
@@ -191,13 +191,13 @@ struct SignalWeights {
     thump:        f32,
     velocity:     f32,
     acceleration: f32,
-    lfo:          [f32; 8],
+    lfo:          [f32; 4],
 }
 
 impl SignalWeights {
     const NONE: SignalWeights = SignalWeights {
         pitch: 0.0, width: 0.0, filter: 0.0, fuzz: 0.0, thump: 0.0, velocity: 0.0, acceleration: 0.0,
-        lfo: [0.0; 8],
+        lfo: [0.0; 4],
     };
 }
 
@@ -215,7 +215,7 @@ pub struct ParamSpec {
     weight_thump:        Shared,
     weight_velocity:     Shared,
     weight_acceleration: Shared,
-    weight_lfo:          [Shared; 8],
+    weight_lfo:          [Shared; 4],
 }
 
 impl ParamSpec {
@@ -238,7 +238,7 @@ impl ParamSpec {
     }
 
     // (column label, cell) pairs for every draggable numeric field, in display order.
-    pub fn cells (&self) -> [(&'static str, &Shared); 18] {
+    pub fn cells (&self) -> [(&'static str, &Shared); 14] {
         [
             ("default",      &self.default),
             ("lo",           &self.lo),
@@ -254,10 +254,6 @@ impl ParamSpec {
             ("lfo2", &self.weight_lfo[1]),
             ("lfo3", &self.weight_lfo[2]),
             ("lfo4", &self.weight_lfo[3]),
-            ("lfo5", &self.weight_lfo[4]),
-            ("lfo6", &self.weight_lfo[5]),
-            ("lfo7", &self.weight_lfo[6]),
-            ("lfo8", &self.weight_lfo[7]),
         ]
     }
 
@@ -332,7 +328,6 @@ pub struct VoiceParams {
     sub_level:        ParamSpec,
     bypass_sub_ratio: ParamSpec,
     bypass_sub_level: ParamSpec,
-    octave_shift:     ParamSpec,
     thump_decay_sec:  ParamSpec,
     thump_pitch_mult: ParamSpec,
     audition_a_level: ParamSpec,
@@ -342,18 +337,18 @@ pub struct VoiceParams {
     reverb_time:      ParamSpec,
     reverb_damping:   ParamSpec,
     reverb_level:     ParamSpec,
-    // 8 general-purpose LFOs: rate (Hz) and depth (0..1, scales the raw
+    // 4 general-purpose LFOs: rate (Hz) and depth (0..1, scales the raw
     // -1..1 sine) are themselves weight-matrix rows, and each LFO's live
-    // output becomes a `lfo1`..`lfo8` weight-matrix column every other
+    // output becomes a `lfo1`..`lfo4` weight-matrix column every other
     // param (including other LFOs, one tick delayed -- see
     // VoiceEngine::tick) can route into. Post-NAM params (filter_q,
     // filter_cutoff_hz, amp) don't see it -- see build_post_nam.
-    lfo_rate:  [ParamSpec; 8],
-    lfo_depth: [ParamSpec; 8],
+    lfo_rate:  [ParamSpec; 4],
+    lfo_depth: [ParamSpec; 4],
 }
 
-const LFO_RATE_NAMES:  [&str; 8] = ["lfo1_rate",  "lfo2_rate",  "lfo3_rate",  "lfo4_rate",  "lfo5_rate",  "lfo6_rate",  "lfo7_rate",  "lfo8_rate"];
-const LFO_DEPTH_NAMES: [&str; 8] = ["lfo1_depth", "lfo2_depth", "lfo3_depth", "lfo4_depth", "lfo5_depth", "lfo6_depth", "lfo7_depth", "lfo8_depth"];
+const LFO_RATE_NAMES:  [&str; 4] = ["lfo1_rate",  "lfo2_rate",  "lfo3_rate",  "lfo4_rate"];
+const LFO_DEPTH_NAMES: [&str; 4] = ["lfo1_depth", "lfo2_depth", "lfo3_depth", "lfo4_depth"];
 
 impl VoiceParams {
     // `filter_q` and `amp` are read live every ~2ms via
@@ -377,7 +372,6 @@ impl VoiceParams {
             sub_level:        ParamSpec::new("sub_level",        0.35,   (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
             bypass_sub_ratio: ParamSpec::new("bypass_sub_ratio", 0.5,    (0.25, 1.0),      Curve::Linear, SignalWeights::NONE),
             bypass_sub_level: ParamSpec::new("bypass_sub_level", 0.35,   (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
-            octave_shift:     ParamSpec::new("octave_shift",     1.0,    (0.25, 2.0),      Curve::Linear, SignalWeights::NONE),
             thump_decay_sec:  ParamSpec::new("thump_decay_sec",  0.18,   (0.02, 1.0),      Curve::Linear, SignalWeights::NONE),
             // range must start at exactly 0.0 -- weight=1.0 reproduces today's `thump * THUMP_PITCH_MULT`
             thump_pitch_mult: ParamSpec::new("thump_pitch_mult", 1.5,    (0.0, 1.5),       Curve::Linear, SignalWeights { thump: 1.0, ..SignalWeights::NONE }),
@@ -408,7 +402,7 @@ impl VoiceParams {
         let mut entries: Vec<&ParamSpec> = vec![
             &self.attack, &self.release, &self.amp, &self.filter_q, &self.filter_cutoff_hz,
             &self.sub_level,
-            &self.bypass_sub_ratio, &self.bypass_sub_level, &self.octave_shift,
+            &self.bypass_sub_ratio, &self.bypass_sub_level,
             &self.thump_decay_sec, &self.thump_pitch_mult,
             &self.audition_a_level, &self.audition_b_level, &self.audition_c_level,
             &self.reverb_room_size, &self.reverb_time, &self.reverb_damping, &self.reverb_level,
@@ -631,8 +625,8 @@ struct VoiceEngine {
     audition_b: AuditionVoice,
     audition_c: AuditionVoice,
     envelope: Box<dyn AudioUnit>,
-    lfos:     [An<Sine<f64>>; 8],
-    last_lfo: [f32; 8],
+    lfos:     [An<Sine<f64>>; 4],
+    last_lfo: [f32; 4],
 
     thump_last_trigger:    f32,
     thump_elapsed_samples: f32,
@@ -662,7 +656,7 @@ impl VoiceEngine {
                 param_factor(&params.release, &rest),
             )),
             lfos:     std::array::from_fn(|_| sine()),
-            last_lfo: [0.0; 8],
+            last_lfo: [0.0; 4],
             thump_last_trigger:    0.0,
             thump_elapsed_samples: 0.0,
             sample_rate:           DEFAULT_SR as f32,
@@ -698,7 +692,7 @@ impl VoiceEngine {
         };
 
         let params = self.params.clone();
-        for i in 0..8 {
+        for i in 0..4 {
             let rate  = param_factor(&params.lfo_rate[i], &signal);
             let depth = param_factor(&params.lfo_depth[i], &signal);
             self.last_lfo[i] = self.lfos[i].filter_mono(rate) * depth;
@@ -708,8 +702,7 @@ impl VoiceEngine {
         signal.lfo = self.last_lfo;
 
         let bend_mult    = 2f32.powf(signal.bend);
-        let octave_shift = param_factor(&params.octave_shift, &signal);
-        let base_freq    = self.freq.value() * bend_mult * self.tick_thump(&signal) * octave_shift;
+        let base_freq    = self.freq.value() * bend_mult * self.tick_thump(&signal);
 
         let mut freq_input: Frame<f32, U1> = Frame::default();
         freq_input[0] = base_freq;

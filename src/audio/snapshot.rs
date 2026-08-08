@@ -12,20 +12,26 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::VoiceParams;
+use super::AudioHandles;
 
 const SNAPSHOT_DIR: &str = "snapshots";
 
-pub fn save_snapshot (params: &VoiceParams) -> io::Result<PathBuf> {
+pub fn save_snapshot (audio: &AudioHandles) -> io::Result<PathBuf> {
     fs::create_dir_all(SNAPSHOT_DIR)?;
 
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let path = Path::new(SNAPSHOT_DIR).join(format!("{stamp}.snap"));
 
     let mut text = String::new();
-    for spec in params.entries() {
+    for spec in audio.voice_params.entries() {
         for (cell_name, cell) in spec.cells() {
             text.push_str(&format!("{}.{}={}\n", spec.name, cell_name, cell.value()));
+        }
+    }
+
+    for (row_name, cycler) in [("audition_a", &audio.audition_a), ("audition_b", &audio.audition_b), ("audition_c", &audio.audition_c)] {
+        for (cell_name, cell) in cycler.cells() {
+            text.push_str(&format!("{row_name}.{cell_name}={}\n", cell.value()));
         }
     }
 
@@ -33,16 +39,24 @@ pub fn save_snapshot (params: &VoiceParams) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-pub fn load_snapshot (path: &Path, params: &VoiceParams) -> io::Result<()> {
+pub fn load_snapshot (path: &Path, audio: &AudioHandles) -> io::Result<()> {
     let text = fs::read_to_string(path)?;
 
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else { continue };
-        let Some((param_name, cell_name)) = key.split_once('.') else { continue };
+        let Some((row_name, cell_name)) = key.split_once('.') else { continue };
         let Ok(value) = value.parse::<f32>() else { continue };
 
-        for spec in params.entries() {
-            if spec.name != param_name { continue; }
+        let cyclers = [("audition_a", &audio.audition_a), ("audition_b", &audio.audition_b), ("audition_c", &audio.audition_c)];
+        if let Some((_, cycler)) = cyclers.into_iter().find(|(name, _)| *name == row_name) {
+            for (name, cell) in cycler.cells() {
+                if name == cell_name { cell.set_value(value); }
+            }
+            continue;
+        }
+
+        for spec in audio.voice_params.entries() {
+            if spec.name != row_name { continue; }
             for (name, cell) in spec.cells() {
                 if name == cell_name { cell.set_value(value); }
             }

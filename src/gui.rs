@@ -28,11 +28,11 @@ use imgui::{Drag, TableFlags};
 use raw_window_handle::HasWindowHandle;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::EventLoop;
-use winit::window::WindowAttributes;
+use winit::window::{Fullscreen, WindowAttributes};
 
 use crate::hydra::MockControls;
-use crate::audio::{AudioHandles, AuditionCycler, AuditionNote, VoiceParams, snapshot, AUDITION_PARAM_SLOTS};
-use crate::tools::AtomicF32;
+use crate::audio::{AudioHandles, AuditionCycler, AuditionNote, VoiceParams, snapshot, AUDITION_PARAM_SLOTS, AUDITION_PARAM_LO, AUDITION_PARAM_HI};
+use crate::tools::{AtomicF32, rand_normal};
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
 
 // Local (GUI-thread-only) browser state for saved weight-matrix snapshots --
@@ -72,12 +72,33 @@ fn drag_speed (lo: f32, hi: f32) -> f32 {
     ((hi - lo).abs() / 200.0).max(0.0001)
 }
 
+fn randomise_weights (params: &VoiceParams) {
+    for spec in params.entries() {
+        // LFO depth rows are 0..1, not -1..1 -- a negative weight there
+        // would just flip the same saturation to the other rail.
+        let (mid, lo, hi) = if spec.name.starts_with("lfo") && spec.name.ends_with("_depth") {
+            (0.5, 0.0, 1.0)
+        } else {
+            (0.0, -1.0, 1.0)
+        };
+        for (_, cell) in spec.cells().into_iter().skip(3) {
+            cell.set_value((mid + rand_normal((hi - lo) / 6.0)).clamp(lo, hi));
+        }
+    }
+}
+
+fn randomise_audition (audio: &AudioHandles) {
+    audio.audition_a.randomise();
+    audio.audition_b.randomise();
+    audio.audition_c.randomise();
+}
+
 fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
     let entries = params.entries();
 
     let Some(_table) = ui.begin_table_with_flags(
         "voice_params_grid",
-        20,
+        16,
         TableFlags::BORDERS | TableFlags::ROW_BG | TableFlags::RESIZABLE,
     ) else { return };
 
@@ -96,10 +117,6 @@ fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
     ui.table_setup_column("lfo2");
     ui.table_setup_column("lfo3");
     ui.table_setup_column("lfo4");
-    ui.table_setup_column("lfo5");
-    ui.table_setup_column("lfo6");
-    ui.table_setup_column("lfo7");
-    ui.table_setup_column("lfo8");
     ui.table_setup_column("curve");
     ui.table_headers_row();
 
@@ -114,7 +131,7 @@ fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
         let speed = drag_speed(lo, hi);
 
         // cells() is [default, lo, hi, pitch, width, filter, fuzz, thump,
-        // velocity, acceleration, lfo1..lfo8] -- indices 0..2 are the base
+        // velocity, acceleration, lfo1..lfo4] -- indices 0..2 are the base
         // value/range, 3.. are the weight matrix, which gets the little
         // no-label reset-to-zero button next to it.
         for (i, (cell_name, cell)) in spec.cells().into_iter().enumerate() {
@@ -222,6 +239,9 @@ fn draw_mock_hydra (ui: &imgui::Ui, controls: &MockControls, bridge: &ZgicabraBr
     });
 
     ui.spacing();
+    if ui.button("Toggle Sine Drift") { MockControls::toggle(&controls.sine_drift); }
+
+    ui.spacing();
     ui.text("Tune ('-'/'=')");
     if ui.button("< Tune") { controls.bump_tune_cycle(-1); }
     ui.same_line();
@@ -260,8 +280,6 @@ fn draw_audition_voice (ui: &imgui::Ui, label: &str, cycler: &AuditionCycler) {
 // Every audition param shares this fixed 0..10 range regardless of label --
 // a wide auto-scaled range made it hard to land on a precise value by drag,
 // so this trades reach for precision (drag the whole width to cover 0..10).
-const AUDITION_PARAM_LO:    f32 = 0.0;
-const AUDITION_PARAM_HI:    f32 = 10.0;
 const AUDITION_PARAM_SPEED: f32 = 0.002;
 
 // Up to AUDITION_PARAM_SLOTS live-editable extra inputs per audition-voice
@@ -270,28 +288,29 @@ const AUDITION_PARAM_SPEED: f32 = 0.002;
 // audio/audition.rs). Labels come from the same GENERATOR_PARAMS table the
 // audio thread reads to know which slots a generator actually uses -- a
 // slot past that generator's arity just shows "--" instead of a slider.
+// One row per voice slot (A/B/C), one column per param slot.
 fn draw_audition_params (ui: &imgui::Ui, audio: &AudioHandles) {
     let Some(_table) = ui.begin_table_with_flags(
         "audition_params_grid",
-        4,
+        1 + AUDITION_PARAM_SLOTS,
         TableFlags::BORDERS | TableFlags::ROW_BG | TableFlags::RESIZABLE,
     ) else { return };
 
-    ui.table_setup_column("#");
-    ui.table_setup_column("A");
-    ui.table_setup_column("B");
-    ui.table_setup_column("C");
+    ui.table_setup_column("Voice");
+    for i in 0..AUDITION_PARAM_SLOTS {
+        ui.table_setup_column(format!("{}", i + 1));
+    }
     ui.table_headers_row();
 
     let slots: [(char, &AuditionCycler); 3] = [('A', &audio.audition_a), ('B', &audio.audition_b), ('C', &audio.audition_c)];
 
-    for i in 0..AUDITION_PARAM_SLOTS {
+    for (slot, cycler) in slots {
         ui.table_next_row();
 
         ui.table_next_column();
-        ui.text(format!("{}", i + 1));
+        ui.text(format!("{slot}"));
 
-        for (slot, cycler) in slots {
+        for i in 0..AUDITION_PARAM_SLOTS {
             ui.table_next_column();
 
             let Some(&label) = cycler.selected_params().get(i) else {
@@ -332,9 +351,9 @@ fn draw_audition_note (ui: &imgui::Ui, note: &AuditionNote, state: &mut Audition
 // Save/load buttons for the weight matrix (VoiceParams), plus a cycler over
 // every snapshot found on disk -- each save writes a new timestamped file
 // rather than overwriting, see audio::snapshot.
-fn draw_snapshot_browser (ui: &imgui::Ui, params: &VoiceParams, browser: &mut SnapshotBrowser) {
+fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut SnapshotBrowser) {
     if ui.button("Save Snapshot") {
-        if let Err(e) = snapshot::save_snapshot(params) {
+        if let Err(e) = snapshot::save_snapshot(audio) {
             eprintln!("║ 🟥 Failed to save snapshot: {e}");
         }
         browser.refresh();
@@ -358,7 +377,7 @@ fn draw_snapshot_browser (ui: &imgui::Ui, params: &VoiceParams, browser: &mut Sn
     if ui.button("Load Snapshot") {
         if let Some(name) = browser.names.get(browser.index) {
             let path = snapshot::snapshot_path(name);
-            if let Err(e) = snapshot::load_snapshot(&path, params) {
+            if let Err(e) = snapshot::load_snapshot(&path, audio) {
                 eprintln!("║ 🟥 Failed to load snapshot: {e}");
             }
         }
@@ -406,9 +425,10 @@ fn draw_signal_state (ui: &imgui::Ui, bridge: &ZgicabraBridge) {
 }
 
 fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge, audition_state: &mut AuditionState, snapshot_browser: &mut SnapshotBrowser) {
+    let screen_height = ui.io().display_size[1];
     ui.window("Voice Params")
         .position([10.0, 10.0], imgui::Condition::FirstUseEver)
-        .size([760.0, 620.0], imgui::Condition::FirstUseEver)
+        .size([970.0, screen_height - 20.0], imgui::Condition::FirstUseEver)
         .build(|| {
             match audio {
                 Some(audio) => {
@@ -425,7 +445,12 @@ fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<
                     draw_audition_params(ui, audio);
                     ui.spacing();
 
-                    draw_snapshot_browser(ui, &audio.voice_params, snapshot_browser);
+                    draw_snapshot_browser(ui, audio, snapshot_browser);
+                    ui.spacing();
+
+                    if ui.button("Randomise Weights") { randomise_weights(&audio.voice_params); }
+                    ui.same_line();
+                    if ui.button("Randomise Audition") { randomise_audition(audio); }
                     ui.spacing();
 
                     draw_voice_params(ui, &audio.voice_params);
@@ -434,9 +459,11 @@ fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<
             }
         });
 
+    let zgicabra_width = 420.0;
+    let screen_width = ui.io().display_size[0];
     ui.window("Zgicabra")
-        .position([780.0, 10.0], imgui::Condition::FirstUseEver)
-        .size([420.0, 560.0], imgui::Condition::FirstUseEver)
+        .position([screen_width - zgicabra_width - 10.0, 10.0], imgui::Condition::FirstUseEver)
+        .size([zgicabra_width, 560.0], imgui::Condition::FirstUseEver)
         .build(|| {
             ui.text("Mock Hydra");
             ui.separator();
@@ -492,7 +519,8 @@ pub fn run (audio: Option<AudioHandles>, mock_controls: Option<MockControls>, br
 
     let window_attributes = WindowAttributes::default()
         .with_title("zgicabra tuner")
-        .with_inner_size(winit::dpi::LogicalSize::new(1060.0, 620.0));
+        .with_inner_size(winit::dpi::LogicalSize::new(1060.0, 620.0))
+        .with_fullscreen(Some(Fullscreen::Borderless(None)));
 
     let template = ConfigTemplateBuilder::new();
     let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes));
@@ -535,7 +563,7 @@ pub fn run (audio: Option<AudioHandles>, mock_controls: Option<MockControls>, br
     winit_platform.attach_window(imgui_context.io_mut(), &window, imgui_winit_support::HiDpiMode::Rounded);
 
     imgui_context.fonts().add_font(&[imgui::FontSource::DefaultFontData { config: None }]);
-    imgui_context.io_mut().font_global_scale = (1.0 / winit_platform.hidpi_factor()) as f32;
+    imgui_context.io_mut().font_global_scale = (1.3 / winit_platform.hidpi_factor()) as f32;
 
     let mut renderer = imgui_glow_renderer::AutoRenderer::new(glow_context, &mut imgui_context)
         .expect("failed to create imgui renderer");
