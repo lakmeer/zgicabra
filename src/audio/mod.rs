@@ -141,6 +141,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use fundsp::prelude64::*;
@@ -155,11 +156,13 @@ mod audition;
 mod reese;
 mod fm;
 mod dsf;
+mod crusher;
 pub mod snapshot;
 
 use nam::NamStage;
 use audition::AuditionVoice;
-pub use nam::{NamModelCycler, IrCycler};
+use crusher::Crusher;
+pub use nam::NamModelCycler;
 pub use audition::{AuditionCycler, AUDITION_PARAM_SLOTS, AUDITION_PARAM_LO, AUDITION_PARAM_HI};
 
 const GATE_ON:  f32 = 1.0;
@@ -336,10 +339,19 @@ pub struct VoiceParams {
     audition_a_level: ParamSpec,
     audition_b_level: ParamSpec,
     audition_c_level: ParamSpec,
+    audition_d_level: ParamSpec,
     reverb_room_size: ParamSpec,
     reverb_time:      ParamSpec,
     reverb_damping:   ParamSpec,
     reverb_level:     ParamSpec,
+    comp_a_threshold_down: ParamSpec, comp_a_ratio_down: ParamSpec,
+    comp_a_threshold_up:   ParamSpec, comp_a_ratio_up:   ParamSpec,
+    comp_a_attack: ParamSpec, comp_a_release: ParamSpec,
+    comp_a_depth:  ParamSpec, comp_a_makeup_gain: ParamSpec, comp_a_mix: ParamSpec,
+    comp_b_threshold_down: ParamSpec, comp_b_ratio_down: ParamSpec,
+    comp_b_threshold_up:   ParamSpec, comp_b_ratio_up:   ParamSpec,
+    comp_b_attack: ParamSpec, comp_b_release: ParamSpec,
+    comp_b_depth:  ParamSpec, comp_b_makeup_gain: ParamSpec, comp_b_mix: ParamSpec,
     // 4 general-purpose LFOs: rate (Hz) and depth (0..1, scales the raw
     // -1..1 sine) are themselves weight-matrix rows, and each LFO's live
     // output becomes a `lfo1`..`lfo4` weight-matrix column every other
@@ -383,6 +395,7 @@ impl VoiceParams {
             audition_a_level: ParamSpec::new("audition_a_level", 0.3,    (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
             audition_b_level: ParamSpec::new("audition_b_level", 0.3,    (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
             audition_c_level: ParamSpec::new("audition_c_level", 0.3,    (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
+            audition_d_level: ParamSpec::new("audition_d_level", 0.3,    (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
             // Reverb: room_size/time/damping are baked into fundsp's FDN at
             // construction (not live audio-rate inputs) -- same
             // restart-to-apply caveat as attack/release above. Only level
@@ -391,6 +404,27 @@ impl VoiceParams {
             reverb_time:      ParamSpec::new("reverb_time",      0.6,    (0.1, 4.0),       Curve::Exp,    SignalWeights::NONE),
             reverb_damping:   ParamSpec::new("reverb_damping",   0.5,    (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
             reverb_level:     ParamSpec::new("reverb_level",     0.12,   (0.0, 1.0),       Curve::Linear, SignalWeights::NONE),
+            // Crusher (OTT-style up+down compressor): comp_a squashes the raw
+            // voice mix before filter1/NAM, comp_b is a gentler pass after
+            // filter2/nam2. See crusher.rs.
+            comp_a_threshold_down: ParamSpec::new("comp_a_threshold_down", -18.0, (-60.0, 0.0), Curve::Linear, SignalWeights::NONE),
+            comp_a_ratio_down:     ParamSpec::new("comp_a_ratio_down",       6.0, (1.0, 20.0),  Curve::Exp,    SignalWeights::NONE),
+            comp_a_threshold_up:   ParamSpec::new("comp_a_threshold_up",   -40.0, (-60.0, 0.0), Curve::Linear, SignalWeights::NONE),
+            comp_a_ratio_up:       ParamSpec::new("comp_a_ratio_up",         3.0, (1.0, 20.0),  Curve::Exp,    SignalWeights::NONE),
+            comp_a_attack:         ParamSpec::new("comp_a_attack",         0.005, (0.0005, 0.2), Curve::Exp,   SignalWeights::NONE),
+            comp_a_release:        ParamSpec::new("comp_a_release",        0.15, (0.01, 2.0),  Curve::Exp,    SignalWeights::NONE),
+            comp_a_depth:          ParamSpec::new("comp_a_depth",           0.7, (0.0, 1.0),   Curve::Linear, SignalWeights::NONE),
+            comp_a_makeup_gain:    ParamSpec::new("comp_a_makeup_gain",     3.0, (-24.0, 24.0),Curve::Linear, SignalWeights::NONE),
+            comp_a_mix:            ParamSpec::new("comp_a_mix",             1.0, (0.0, 1.0),   Curve::Linear, SignalWeights::NONE),
+            comp_b_threshold_down: ParamSpec::new("comp_b_threshold_down", -12.0, (-60.0, 0.0), Curve::Linear, SignalWeights::NONE),
+            comp_b_ratio_down:     ParamSpec::new("comp_b_ratio_down",       2.5, (1.0, 20.0),  Curve::Exp,    SignalWeights::NONE),
+            comp_b_threshold_up:   ParamSpec::new("comp_b_threshold_up",   -36.0, (-60.0, 0.0), Curve::Linear, SignalWeights::NONE),
+            comp_b_ratio_up:       ParamSpec::new("comp_b_ratio_up",         1.8, (1.0, 20.0),  Curve::Exp,    SignalWeights::NONE),
+            comp_b_attack:         ParamSpec::new("comp_b_attack",          0.01, (0.0005, 0.2), Curve::Exp,  SignalWeights::NONE),
+            comp_b_release:        ParamSpec::new("comp_b_release",         0.25, (0.01, 2.0),  Curve::Exp,   SignalWeights::NONE),
+            comp_b_depth:          ParamSpec::new("comp_b_depth",           0.4, (0.0, 1.0),   Curve::Linear, SignalWeights::NONE),
+            comp_b_makeup_gain:    ParamSpec::new("comp_b_makeup_gain",     0.0, (-24.0, 24.0),Curve::Linear, SignalWeights::NONE),
+            comp_b_mix:            ParamSpec::new("comp_b_mix",             1.0, (0.0, 1.0),   Curve::Linear, SignalWeights::NONE),
             // Rate in a musically-useful sub-audio range; depth defaults to
             // 0 (silent/inert) so a fresh run isn't wobbling everything --
             // same "off by default" convention as audition_*_level/Bypass.
@@ -406,8 +440,12 @@ impl VoiceParams {
             &self.sub_level,
             &self.bypass_sub_level,
             &self.thump_decay_sec, &self.thump_pitch_mult,
-            &self.audition_a_level, &self.audition_b_level, &self.audition_c_level,
+            &self.audition_a_level, &self.audition_b_level, &self.audition_c_level, &self.audition_d_level,
             &self.reverb_room_size, &self.reverb_time, &self.reverb_damping, &self.reverb_level,
+            &self.comp_a_threshold_down, &self.comp_a_ratio_down, &self.comp_a_threshold_up, &self.comp_a_ratio_up,
+            &self.comp_a_attack, &self.comp_a_release, &self.comp_a_depth, &self.comp_a_makeup_gain, &self.comp_a_mix,
+            &self.comp_b_threshold_down, &self.comp_b_ratio_down, &self.comp_b_threshold_up, &self.comp_b_ratio_up,
+            &self.comp_b_attack, &self.comp_b_release, &self.comp_b_depth, &self.comp_b_makeup_gain, &self.comp_b_mix,
         ];
         entries.extend(self.lfo_rate.iter());
         entries.extend(self.lfo_depth.iter());
@@ -443,14 +481,20 @@ impl AuditionNote {
 pub struct AudioHandles {
     pub voice_params:   Arc<VoiceParams>,
     pub nam_models:     NamModelCycler,
-    pub nam_irs:        IrCycler,
     // Dry/wet blend for the always-on, hardcoded-to-"lowgain" second NAM
-    // stage just before the reverb -- see AudioOutput::new.
+    // stage, now run after filter2 (see AudioOutput::new/build_stream).
     pub lowgain_blend:  Shared,
     pub audition_note:  AuditionNote,
     pub audition_a:     AuditionCycler,
     pub audition_b:     AuditionCycler,
     pub audition_c:     AuditionCycler,
+    pub audition_d:     AuditionCycler,
+    // Per-stage bypass toggles for tuning -- see build_stream.
+    pub comp_a_bypass:    Arc<AtomicBool>,
+    pub filter1_bypass:   Arc<AtomicBool>,
+    pub filter2_bypass:   Arc<AtomicBool>,
+    pub nam2_bypass:      Arc<AtomicBool>,
+    pub comp_b_bypass:    Arc<AtomicBool>,
 }
 
 pub struct AudioOutput {
@@ -466,15 +510,20 @@ pub struct AudioOutput {
     acceleration:      Shared,
     nam_selected:      Shared,
     nam_model_names:   Arc<Vec<String>>,
-    ir_selected:       Shared,
-    ir_names:          Arc<Vec<String>>,
     lowgain_blend:     Shared,
     audition_a_selected: Shared,
     audition_b_selected: Shared,
     audition_c_selected: Shared,
+    audition_d_selected: Shared,
     audition_a_params: [Shared; AUDITION_PARAM_SLOTS],
     audition_b_params: [Shared; AUDITION_PARAM_SLOTS],
     audition_c_params: [Shared; AUDITION_PARAM_SLOTS],
+    audition_d_params: [Shared; AUDITION_PARAM_SLOTS],
+    comp_a_bypass:    Arc<AtomicBool>,
+    filter1_bypass:   Arc<AtomicBool>,
+    filter2_bypass:   Arc<AtomicBool>,
+    nam2_bypass:      Arc<AtomicBool>,
+    comp_b_bypass:    Arc<AtomicBool>,
     voice_params:      Arc<VoiceParams>,
     stream:            cpal::Stream,
 }
@@ -486,12 +535,17 @@ impl AudioOutput {
         AudioHandles {
             voice_params:  self.voice_params.clone(),
             nam_models:    NamModelCycler::new(self.nam_selected.clone(), self.nam_model_names.clone()),
-            nam_irs:       IrCycler::new(self.ir_selected.clone(), self.ir_names.clone()),
             lowgain_blend: self.lowgain_blend.clone(),
             audition_note: AuditionNote { freq: self.freq.clone(), gate: self.gate.clone() },
             audition_a:    AuditionCycler::new(self.audition_a_selected.clone(), self.audition_a_params.clone()),
             audition_b:    AuditionCycler::new(self.audition_b_selected.clone(), self.audition_b_params.clone()),
             audition_c:    AuditionCycler::new(self.audition_c_selected.clone(), self.audition_c_params.clone()),
+            audition_d:    AuditionCycler::new(self.audition_d_selected.clone(), self.audition_d_params.clone()),
+            comp_a_bypass:  self.comp_a_bypass.clone(),
+            filter1_bypass: self.filter1_bypass.clone(),
+            filter2_bypass: self.filter2_bypass.clone(),
+            nam2_bypass:    self.nam2_bypass.clone(),
+            comp_b_bypass:  self.comp_b_bypass.clone(),
         }
     }
 
@@ -513,6 +567,7 @@ impl AudioOutput {
         let audition_a_selected = shared(0.0);
         let audition_b_selected = shared(0.0);
         let audition_c_selected = shared(0.0);
+        let audition_d_selected = shared(0.0);
         // Extra-input slots for whichever generator each audition slot has
         // selected -- see AuditionVoice/AuditionCycler (audition.rs). 0.5
         // is a neutral starting point for 0..1-range params (roughness,
@@ -521,17 +576,41 @@ impl AudioOutput {
         let audition_a_params: [Shared; AUDITION_PARAM_SLOTS] = std::array::from_fn(|_| shared(0.5));
         let audition_b_params: [Shared; AUDITION_PARAM_SLOTS] = std::array::from_fn(|_| shared(0.5));
         let audition_c_params: [Shared; AUDITION_PARAM_SLOTS] = std::array::from_fn(|_| shared(0.5));
+        let audition_d_params: [Shared; AUDITION_PARAM_SLOTS] = std::array::from_fn(|_| shared(0.5));
         let voice_params  = Arc::new(VoiceParams::new());
 
         let mut voice_engine = VoiceEngine::new(
             freq.clone(), gate.clone(), bend.clone(), width.clone(),
             filter.clone(), fuzz.clone(), thump_amt.clone(), thump_trigger.clone(),
             velocity.clone(), acceleration.clone(),
-            audition_a_selected.clone(), audition_b_selected.clone(), audition_c_selected.clone(),
-            audition_a_params.clone(), audition_b_params.clone(), audition_c_params.clone(),
+            audition_a_selected.clone(), audition_b_selected.clone(), audition_c_selected.clone(), audition_d_selected.clone(),
+            audition_a_params.clone(), audition_b_params.clone(), audition_c_params.clone(), audition_d_params.clone(),
             voice_params.clone(),
         );
-        let mut post_nam = build_post_nam(&filter, voice_params.clone());
+        let mut filter1 = build_filter1(&filter, voice_params.clone());
+        let mut filter2 = build_filter2(&filter, voice_params.clone());
+
+        let mut comp_a = Crusher::new(
+            voice_params.comp_a_threshold_down.clone(), voice_params.comp_a_ratio_down.clone(),
+            voice_params.comp_a_threshold_up.clone(),   voice_params.comp_a_ratio_up.clone(),
+            voice_params.comp_a_attack.clone(), voice_params.comp_a_release.clone(),
+            voice_params.comp_a_depth.clone(), voice_params.comp_a_makeup_gain.clone(), voice_params.comp_a_mix.clone(),
+        );
+        let mut comp_b = Crusher::new(
+            voice_params.comp_b_threshold_down.clone(), voice_params.comp_b_ratio_down.clone(),
+            voice_params.comp_b_threshold_up.clone(),   voice_params.comp_b_ratio_up.clone(),
+            voice_params.comp_b_attack.clone(), voice_params.comp_b_release.clone(),
+            voice_params.comp_b_depth.clone(), voice_params.comp_b_makeup_gain.clone(), voice_params.comp_b_mix.clone(),
+        );
+
+        // New stages default bypassed so a fresh build sounds like today
+        // until opted into; filter2/nam2 default active since both ran
+        // unconditionally before this refactor.
+        let comp_a_bypass  = Arc::new(AtomicBool::new(true));
+        let filter1_bypass = Arc::new(AtomicBool::new(true));
+        let filter2_bypass = Arc::new(AtomicBool::new(false));
+        let nam2_bypass    = Arc::new(AtomicBool::new(false));
+        let comp_b_bypass  = Arc::new(AtomicBool::new(true));
 
         // room_size/time/damping are baked into fundsp's FDN here, at
         // construction time -- see VoiceParams::new's reverb comment.
@@ -551,23 +630,16 @@ impl AudioOutput {
         let nam_selected = shared(default_nam_index as f32);
         println!("║ NAM models loaded: {}", nam_model_names.join(", "));
 
-        println!("║ Loading IR files... ");
-        let (ir_list, ir_name_list) = nam::load_irs()?;
-        let ir_names = Arc::new(ir_name_list);
-        let ir_selected = shared(0.0);
-        println!("║ IRs loaded: {}", ir_names.join(", "));
+        let nam = NamStage::new(nam_model_list, nam_selected.clone(), fuzz.clone());
 
-        let nam = NamStage::new(nam_model_list, nam_selected.clone(), fuzz.clone(), ir_list, ir_selected.clone());
-
-        // Second, always-on NAM stage hardcoded to "lowgain", run just before
-        // the reverb (see build_stream) -- separate Model instance/state from
-        // the cycled `nam` stage above (sharing one would interleave two
-        // different audio streams through the same WaveNet history). No cab
-        // IR here, so it gets a Bypass-only IR list.
+        // Second NAM stage hardcoded to "lowgain", now run after filter2
+        // (see build_stream) -- separate Model instance/state from the
+        // cycled `nam` stage above (sharing one would interleave two
+        // different audio streams through the same WaveNet history).
         let lowgain_blend = shared(0.5);
         let lowgain_slot = nam::load_nam_model("lowgain")?;
         let lowgain_selected = shared(1.0);
-        let nam2 = NamStage::new(vec![None, Some(lowgain_slot)], lowgain_selected, lowgain_blend.clone(), vec![None], shared(0.0));
+        let nam2 = NamStage::new(vec![None, Some(lowgain_slot)], lowgain_selected, lowgain_blend.clone());
 
         let host   = cpal::default_host();
         let device = host.default_output_device()
@@ -578,15 +650,18 @@ impl AudioOutput {
         let config: cpal::StreamConfig = supported.into();
 
         voice_engine.set_sample_rate(config.sample_rate as f64);
-        post_nam.set_sample_rate(config.sample_rate as f64);
+        filter1.set_sample_rate(config.sample_rate as f64);
+        filter2.set_sample_rate(config.sample_rate as f64);
+        comp_a.set_sample_rate(config.sample_rate as f64);
+        comp_b.set_sample_rate(config.sample_rate as f64);
         reverb.set_sample_rate(config.sample_rate as f64);
 
         let err_fn = |e| eprintln!("║ 🟥 Audio stream error: {e}");
 
         let build_result = match sample_format {
-            cpal::SampleFormat::F32 => build_stream::<f32>(&device, config, voice_engine, post_nam, nam, nam2, reverb, err_fn),
-            cpal::SampleFormat::I16 => build_stream::<i16>(&device, config, voice_engine, post_nam, nam, nam2, reverb, err_fn),
-            cpal::SampleFormat::U16 => build_stream::<u16>(&device, config, voice_engine, post_nam, nam, nam2, reverb, err_fn),
+            cpal::SampleFormat::F32 => build_stream::<f32>(&device, config, voice_engine, comp_a, filter1, nam, filter2, nam2, comp_b, reverb, comp_a_bypass.clone(), filter1_bypass.clone(), filter2_bypass.clone(), nam2_bypass.clone(), comp_b_bypass.clone(), err_fn),
+            cpal::SampleFormat::I16 => build_stream::<i16>(&device, config, voice_engine, comp_a, filter1, nam, filter2, nam2, comp_b, reverb, comp_a_bypass.clone(), filter1_bypass.clone(), filter2_bypass.clone(), nam2_bypass.clone(), comp_b_bypass.clone(), err_fn),
+            cpal::SampleFormat::U16 => build_stream::<u16>(&device, config, voice_engine, comp_a, filter1, nam, filter2, nam2, comp_b, reverb, comp_a_bypass.clone(), filter1_bypass.clone(), filter2_bypass.clone(), nam2_bypass.clone(), comp_b_bypass.clone(), err_fn),
             other => return Err(io::Error::new(io::ErrorKind::Other, format!("unsupported sample format: {other:?}"))),
         };
 
@@ -600,9 +675,10 @@ impl AudioOutput {
 
         Ok(AudioOutput {
             freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration,
-            nam_selected, nam_model_names, ir_selected, ir_names, lowgain_blend,
-            audition_a_selected, audition_b_selected, audition_c_selected,
-            audition_a_params, audition_b_params, audition_c_params,
+            nam_selected, nam_model_names, lowgain_blend,
+            audition_a_selected, audition_b_selected, audition_c_selected, audition_d_selected,
+            audition_a_params, audition_b_params, audition_c_params, audition_d_params,
+            comp_a_bypass, filter1_bypass, filter2_bypass, nam2_bypass, comp_b_bypass,
             voice_params, stream,
         })
     }
@@ -641,6 +717,7 @@ struct VoiceEngine {
     audition_a: AuditionVoice,
     audition_b: AuditionVoice,
     audition_c: AuditionVoice,
+    audition_d: AuditionVoice,
     envelope: Box<dyn AudioUnit>,
     lfos:     [An<Sine<f64>>; 4],
     last_lfo: [f32; 4],
@@ -655,8 +732,8 @@ impl VoiceEngine {
         freq: Shared, gate: Shared, bend: Shared, width: Shared,
         filter: Shared, fuzz: Shared, thump_amt: Shared, thump_trigger: Shared,
         velocity: Shared, acceleration: Shared,
-        audition_a_selected: Shared, audition_b_selected: Shared, audition_c_selected: Shared,
-        audition_a_params: [Shared; AUDITION_PARAM_SLOTS], audition_b_params: [Shared; AUDITION_PARAM_SLOTS], audition_c_params: [Shared; AUDITION_PARAM_SLOTS],
+        audition_a_selected: Shared, audition_b_selected: Shared, audition_c_selected: Shared, audition_d_selected: Shared,
+        audition_a_params: [Shared; AUDITION_PARAM_SLOTS], audition_b_params: [Shared; AUDITION_PARAM_SLOTS], audition_c_params: [Shared; AUDITION_PARAM_SLOTS], audition_d_params: [Shared; AUDITION_PARAM_SLOTS],
         params: Arc<VoiceParams>,
     ) -> VoiceEngine {
         let rest = SignalState::new();
@@ -668,6 +745,7 @@ impl VoiceEngine {
             audition_a: AuditionVoice::new(audition_a_selected, audition_a_params),
             audition_b: AuditionVoice::new(audition_b_selected, audition_b_params),
             audition_c: AuditionVoice::new(audition_c_selected, audition_c_params),
+            audition_d: AuditionVoice::new(audition_d_selected, audition_d_params),
             envelope: Box::new(adsr_live(
                 param_factor(&params.attack, &rest), 0.0, 1.0,
                 param_factor(&params.release, &rest),
@@ -687,6 +765,7 @@ impl VoiceEngine {
         self.audition_a.set_sample_rate(sr);
         self.audition_b.set_sample_rate(sr);
         self.audition_c.set_sample_rate(sr);
+        self.audition_d.set_sample_rate(sr);
         self.envelope.set_sample_rate(sr);
         for lfo in self.lfos.iter_mut() { lfo.set_sample_rate(sr); }
         self.sample_rate = sr as f32;
@@ -727,10 +806,12 @@ impl VoiceEngine {
         let audition_a_level = param_factor(&params.audition_a_level, &signal);
         let audition_b_level = param_factor(&params.audition_b_level, &signal);
         let audition_c_level = param_factor(&params.audition_c_level, &signal);
+        let audition_d_level = param_factor(&params.audition_d_level, &signal);
         let audition_sum =
             self.audition_a.tick(&freq_input)[0] * audition_a_level +
             self.audition_b.tick(&freq_input)[0] * audition_b_level +
-            self.audition_c.tick(&freq_input)[0] * audition_c_level;
+            self.audition_c.tick(&freq_input)[0] * audition_c_level +
+            self.audition_d.tick(&freq_input)[0] * audition_d_level;
 
         let sub_level = param_factor(&params.sub_level, &signal);
         let sub       = self.sub.filter_mono(base_freq * 0.5) * sub_level;
@@ -764,19 +845,35 @@ impl VoiceEngine {
     }
 }
 
-// FX after the NAM stage
-// see NamStage::process_buffer -- so this is just filter + amp)
-fn build_post_nam (filter: &Shared, params: Arc<VoiceParams>) -> Box<dyn AudioUnit> {
+// Pre-NAM steep filter: 4-pole Moog ladder lowpass. Tracks the same
+// filter_cutoff_hz/filter_q ParamSpecs as filter2 (build_filter2 below) --
+// only the filter type + bypass differ between the two stages.
+fn build_filter1 (filter: &Shared, params: Arc<VoiceParams>) -> Box<dyn AudioUnit> {
     let cutoff_params = params.clone();
     let cutoff_hz = var(filter) >> map(move |i: &Frame<f32, U1>| {
         let signal = SignalState { filter: i[0], ..SignalState::new() };
         param_factor(&cutoff_params.filter_cutoff_hz, &signal)
     });
 
-    // filter_q and amp have no live SignalWeights today, so their live
-    // value only tracks GUI edits to default/lo/hi/curve -- envelope()
-    // re-evaluates that at control rate (~2ms) instead of baking it in
-    // once here (which needed a process restart to pick up an edit).
+    let q_params = params.clone();
+    let q = envelope(move |_t: f64| param_factor(&q_params.filter_q, &SignalState::new()) as f64);
+
+    Box::new((pass() | cutoff_hz | q) >> moog())
+}
+
+// Post-NAM gentler filter (2-pole, lets more harmonics through than filter1)
+// plus the final amp stage -- this used to be the only post-NAM box.
+fn build_filter2 (filter: &Shared, params: Arc<VoiceParams>) -> Box<dyn AudioUnit> {
+    let cutoff_params = params.clone();
+    let cutoff_hz = var(filter) >> map(move |i: &Frame<f32, U1>| {
+        let signal = SignalState { filter: i[0], ..SignalState::new() };
+        param_factor(&cutoff_params.filter_cutoff_hz, &signal)
+    });
+
+    // filter_q has no live SignalWeights today, so its live value only
+    // tracks GUI edits to default/lo/hi/curve -- envelope() re-evaluates
+    // that at control rate (~2ms) instead of baking it in once here (which
+    // needed a process restart to pick up an edit).
     let q_params = params.clone();
     let q = envelope(move |_t: f64| param_factor(&q_params.filter_q, &SignalState::new()) as f64);
     let filtered = (pass() | cutoff_hz | q) >> lowpass();
@@ -792,10 +889,18 @@ fn build_stream<T> (
     device: &cpal::Device,
     config: cpal::StreamConfig,
     mut pre_nam: VoiceEngine,
-    mut post_nam: Box<dyn AudioUnit>,
+    mut comp_a: Crusher,
+    mut filter1: Box<dyn AudioUnit>,
     mut nam: NamStage,
+    mut filter2: Box<dyn AudioUnit>,
     mut nam2: NamStage,
+    mut comp_b: Crusher,
     mut reverb: Box<dyn AudioUnit>,
+    comp_a_bypass:  Arc<AtomicBool>,
+    filter1_bypass: Arc<AtomicBool>,
+    filter2_bypass: Arc<AtomicBool>,
+    nam2_bypass:    Arc<AtomicBool>,
+    comp_b_bypass:  Arc<AtomicBool>,
     err_fn: impl FnMut(cpal::Error) + Send + 'static,
 ) -> Result<cpal::Stream, cpal::Error>
 where
@@ -827,6 +932,15 @@ where
                     reverb_level_block[i] = reverb_level;
                 }
 
+                // Bypass checks are once-per-block (Relaxed atomic load),
+                // not per-sample -- plenty responsive for a tuning toggle.
+                if !comp_a_bypass.load(Ordering::Relaxed) {
+                    for s in block.iter_mut() { *s = comp_a.tick(&Frame::from([*s]))[0]; }
+                }
+                if !filter1_bypass.load(Ordering::Relaxed) {
+                    for s in block.iter_mut() { *s = filter1.filter_mono(*s); }
+                }
+
                 // AudioNode::process() must be driven in <=MAX_BUFFER_SIZE
                 // chunks -- see nam.rs.
                 for chunk in block.chunks_mut(MAX_BUFFER_SIZE) {
@@ -841,18 +955,29 @@ where
                     // transient peaks -- soft-clip instead of a hard wall so
                     // those peaks saturate instead of digitally clipping.
                     // bypass_block is added straight to the output below,
-                    // after the reverb -- it skips both NAM stages and the
-                    // reverb entirely, not just the first stage.
-                    *s = post_nam.filter_mono(s.tanh()).clamp(-1.0, 1.0);
+                    // after the reverb -- it skips both NAM stages, both
+                    // filters, both compressors, and the reverb entirely.
+                    *s = s.tanh();
                 }
 
-                // Second NAM stage: always-on, hardcoded to "lowgain", blended
-                // in right before the reverb (see AudioOutput::new). Same
-                // <=MAX_BUFFER_SIZE chunking requirement as the first stage.
-                for chunk in block.chunks_mut(MAX_BUFFER_SIZE) {
-                    nam_input.channel_f32_mut(0)[..chunk.len()].copy_from_slice(chunk);
-                    nam2.process(chunk.len(), &nam_input.buffer_ref(), &mut nam_output.buffer_mut());
-                    chunk.copy_from_slice(&nam_output.channel_f32_mut(0)[..chunk.len()]);
+                if !filter2_bypass.load(Ordering::Relaxed) {
+                    for s in block.iter_mut() { *s = filter2.filter_mono(*s); }
+                }
+                for s in block.iter_mut() { *s = s.clamp(-1.0, 1.0); }
+
+                // Second NAM stage: hardcoded to "lowgain", now run after
+                // filter2 (see AudioOutput::new). Same <=MAX_BUFFER_SIZE
+                // chunking requirement as the first stage.
+                if !nam2_bypass.load(Ordering::Relaxed) {
+                    for chunk in block.chunks_mut(MAX_BUFFER_SIZE) {
+                        nam_input.channel_f32_mut(0)[..chunk.len()].copy_from_slice(chunk);
+                        nam2.process(chunk.len(), &nam_input.buffer_ref(), &mut nam_output.buffer_mut());
+                        chunk.copy_from_slice(&nam_output.channel_f32_mut(0)[..chunk.len()]);
+                    }
+                }
+
+                if !comp_b_bypass.load(Ordering::Relaxed) {
+                    for s in block.iter_mut() { *s = comp_b.tick(&Frame::from([*s]))[0]; }
                 }
 
                 for (i, &mixed) in block.iter().enumerate() {

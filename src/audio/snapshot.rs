@@ -29,7 +29,7 @@ pub fn save_snapshot (audio: &AudioHandles) -> io::Result<PathBuf> {
         }
     }
 
-    for (row_name, cycler) in [("audition_a", &audio.audition_a), ("audition_b", &audio.audition_b), ("audition_c", &audio.audition_c)] {
+    for (row_name, cycler) in [("audition_a", &audio.audition_a), ("audition_b", &audio.audition_b), ("audition_c", &audio.audition_c), ("audition_d", &audio.audition_d)] {
         for (cell_name, cell) in cycler.cells() {
             text.push_str(&format!("{row_name}.{cell_name}={}\n", cell.value()));
         }
@@ -47,7 +47,7 @@ pub fn load_snapshot (path: &Path, audio: &AudioHandles) -> io::Result<()> {
         let Some((row_name, cell_name)) = key.split_once('.') else { continue };
         let Ok(value) = value.parse::<f32>() else { continue };
 
-        let cyclers = [("audition_a", &audio.audition_a), ("audition_b", &audio.audition_b), ("audition_c", &audio.audition_c)];
+        let cyclers = [("audition_a", &audio.audition_a), ("audition_b", &audio.audition_b), ("audition_c", &audio.audition_c), ("audition_d", &audio.audition_d)];
         if let Some((_, cycler)) = cyclers.into_iter().find(|(name, _)| *name == row_name) {
             for (name, cell) in cycler.cells() {
                 if name == cell_name { cell.set_value(value); }

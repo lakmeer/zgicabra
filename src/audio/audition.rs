@@ -157,7 +157,7 @@ impl AudioNode for AuditionVoice {
 // GUI-facing handle: cheap to clone (Arc'd atomic cells), drives which
 // generator an AuditionVoice is currently running and its live extra-input
 // params without touching the audio thread directly -- same shape as
-// NamModelCycler/IrCycler.
+// NamModelCycler.
 #[derive(Clone)]
 pub struct AuditionCycler {
     selected: Shared,

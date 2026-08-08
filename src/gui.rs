@@ -91,6 +91,7 @@ fn randomise_audition (audio: &AudioHandles) {
     audio.audition_a.randomise();
     audio.audition_b.randomise();
     audio.audition_c.randomise();
+    audio.audition_d.randomise();
 }
 
 fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
@@ -207,6 +208,45 @@ fn xy_pad (ui: &imgui::Ui, id: &str, size: f32, x: &Arc<AtomicF32>, y: &Arc<Atom
     draw_list.add_circle([px, py], 5.0, [0.95, 0.80, 0.30, 1.0]).filled(true).build();
 }
 
+// A rotary knob: click and drag vertically to change value within [lo, hi]
+// (drag up = increase). Vertical drag *delta*, not absolute mouse position,
+// drives the value -- same convention as most DAW/synth knobs, since an
+// absolute-angle knob (angle = mouse angle from center) makes fine
+// adjustment impossible. speed comes from the same drag_speed() the Drag
+// boxes use, so a knob and a drag box on the same range feel identical.
+fn knob (ui: &imgui::Ui, id: &str, label: &str, radius: f32, lo: f32, hi: f32, value: &mut f32) -> bool {
+    let origin = ui.cursor_screen_pos();
+    let center = [origin[0] + radius, origin[1] + radius];
+    ui.invisible_button(id, [radius * 2.0, radius * 2.0]);
+
+    let active  = ui.is_item_active();
+    let hovered = ui.is_item_hovered();
+    let mut changed = false;
+
+    if active {
+        let delta = ui.io().mouse_delta[1];
+        if delta != 0.0 {
+            let speed = drag_speed(lo, hi) * 5.0;
+            *value = (*value - delta * speed).clamp(lo, hi);
+            changed = true;
+        }
+    }
+
+    let draw_list = ui.get_window_draw_list();
+    let bg = if active { [0.30, 0.34, 0.42, 1.0] } else if hovered { [0.22, 0.25, 0.31, 1.0] } else { [0.15, 0.16, 0.20, 1.0] };
+    draw_list.add_circle(center, radius, bg).filled(true).build();
+    draw_list.add_circle(center, radius, [0.5, 0.5, 0.55, 1.0]).build();
+
+    // Sweep -135deg..+135deg (gap at the bottom), 0 = straight down.
+    let t = ((*value - lo) / (hi - lo)).clamp(0.0, 1.0);
+    let angle = -std::f32::consts::PI * 0.75 + t * std::f32::consts::PI * 1.5;
+    let tip = [center[0] + angle.sin() * radius * 0.85, center[1] - angle.cos() * radius * 0.85];
+    draw_list.add_line(center, tip, [0.95, 0.80, 0.30, 1.0]).thickness(2.0).build();
+
+    if !label.is_empty() { ui.text(label); }
+    changed
+}
+
 fn draw_wand_mock (ui: &imgui::Ui, label: &str, trigger: &Arc<AtomicBool>, stick_x: &Arc<AtomicF32>, stick_y: &Arc<AtomicF32>, buttons: &[Arc<AtomicBool>; 4]) {
     ui.text(label);
     xy_pad(ui, &format!("##{label}_stick"), 120.0, stick_x, stick_y);
@@ -259,21 +299,12 @@ fn draw_nam_model (ui: &imgui::Ui, models: &crate::audio::NamModelCycler) {
     if ui.button("Model >") { models.cycle(1); }
 }
 
-// IR cycler -- same idea as draw_nam_model, drives rs.rs's cab IR selection.
-fn draw_nam_ir (ui: &imgui::Ui, irs: &crate::audio::IrCycler) {
-    ui.text(format!("IR: {}", irs.selected_name()));
-    if ui.button("< IR") { irs.cycle(-1); }
-    ui.same_line();
-    if ui.button("IR >") { irs.cycle(1); }
-}
-
-// Dry/wet blend for the always-on second NAM stage (hardcoded to "lowgain",
-// just before the reverb -- see AudioOutput::new). Direct Shared editor,
-// same pattern as the audition param drags in draw_audition_params.
+// Dry/wet blend for the second NAM stage (hardcoded to "lowgain", now run
+// after filter2 -- see AudioOutput::new). Direct Shared editor, same pattern
+// as the audition param drags in draw_audition_params.
 fn draw_lowgain_blend (ui: &imgui::Ui, blend: &fundsp::shared::Shared) {
     let mut value = blend.value();
-    ui.set_next_item_width(120.0);
-    if Drag::new("Lowgain Blend").range(0.0, 1.0).speed(0.002).build(ui, &mut value) {
+    if knob(ui, "##lowgain_blend", "Lowgain Blend", 20.0, 0.0, 1.0, &mut value) {
         blend.set_value(value);
     }
 }
@@ -287,11 +318,6 @@ fn draw_audition_voice (ui: &imgui::Ui, label: &str, cycler: &AuditionCycler) {
     ui.same_line();
     if ui.button(format!("{label} >")) { cycler.cycle(1); }
 }
-
-// Every audition param shares this fixed 0..10 range regardless of label --
-// a wide auto-scaled range made it hard to land on a precise value by drag,
-// so this trades reach for precision (drag the whole width to cover 0..10).
-const AUDITION_PARAM_SPEED: f32 = 0.002;
 
 // Up to AUDITION_PARAM_SLOTS live-editable extra inputs per audition-voice
 // slot (A/B/C), wired straight through to whichever generator that slot
@@ -313,7 +339,7 @@ fn draw_audition_params (ui: &imgui::Ui, audio: &AudioHandles) {
     }
     ui.table_headers_row();
 
-    let slots: [(char, &AuditionCycler); 3] = [('A', &audio.audition_a), ('B', &audio.audition_b), ('C', &audio.audition_c)];
+    let slots: [(char, &AuditionCycler); 4] = [('A', &audio.audition_a), ('B', &audio.audition_b), ('C', &audio.audition_c), ('D', &audio.audition_d)];
 
     for (slot, cycler) in slots {
         ui.table_next_row();
@@ -332,11 +358,7 @@ fn draw_audition_params (ui: &imgui::Ui, audio: &AudioHandles) {
             ui.text_disabled(label);
             let cell = cycler.param(i);
             let mut value = cell.value();
-            if Drag::new(format!("##audition_{slot}_{i}"))
-                .speed(AUDITION_PARAM_SPEED)
-                .range(AUDITION_PARAM_LO, AUDITION_PARAM_HI)
-                .build(ui, &mut value)
-            {
+            if knob(ui, &format!("##audition_{slot}_{i}"), "", 14.0, AUDITION_PARAM_LO, AUDITION_PARAM_HI, &mut value) {
                 cell.set_value(value);
             }
         }
@@ -409,8 +431,7 @@ fn signal_override_row (ui: &imgui::Ui, label: &str, lo: f32, hi: f32, field: &S
 
     ui.disabled(!enabled, || {
         let mut value = field.value.load();
-        ui.set_next_item_width(120.0);
-        if Drag::new(format!("{label}##{label}_value")).speed(drag_speed(lo, hi)).build(ui, &mut value) {
+        if knob(ui, &format!("##{label}_value"), label, 18.0, lo, hi, &mut value) {
             field.value.store(value);
         }
     });
@@ -444,13 +465,24 @@ fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<
             match audio {
                 Some(audio) => {
                     draw_nam_model(ui, &audio.nam_models);
-                    draw_nam_ir(ui, &audio.nam_irs);
                     draw_lowgain_blend(ui, &audio.lowgain_blend);
+                    ui.spacing();
+
+                    toggle_checkbox(ui, "Bypass Comp A", &audio.comp_a_bypass);
+                    ui.same_line();
+                    toggle_checkbox(ui, "Bypass Filter 1 (Moog)", &audio.filter1_bypass);
+                    ui.same_line();
+                    toggle_checkbox(ui, "Bypass Filter 2", &audio.filter2_bypass);
+                    ui.same_line();
+                    toggle_checkbox(ui, "Bypass NAM 2 (lowgain)", &audio.nam2_bypass);
+                    ui.same_line();
+                    toggle_checkbox(ui, "Bypass Comp B", &audio.comp_b_bypass);
                     ui.spacing();
 
                     draw_audition_voice(ui, "A", &audio.audition_a);
                     draw_audition_voice(ui, "B", &audio.audition_b);
                     draw_audition_voice(ui, "C", &audio.audition_c);
+                    draw_audition_voice(ui, "D", &audio.audition_d);
                     draw_audition_note(ui, &audio.audition_note, audition_state);
                     ui.spacing();
 
