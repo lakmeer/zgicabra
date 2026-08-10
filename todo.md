@@ -2,21 +2,24 @@
 # TODO
 
 - Filter audibly snaps back to neutral then note released
-- Remove DSF generators from audition voices
-- NAM test suite
-  - load example wav and model
-  - take FFT of first 1 second
-  - run same sample through NAM AudioNode
-  - take FFT of first 1 second
-  - compare
-- Add tanh saturation to simple voices
-  - div/0 protection
-- Research more hamonically rich generators
-  - Serum patches?
-- Test input volume affect on nam model output
-- Experiment with waveshapers
-- OTT crusher
-- Vital port
-- Make main sub variable saw osc
-- Add crossover to NamStage inputs
+- Curve blends between lin and exp rather than toggle
 
+- Gens
+  - Basic
+    - sin/tri/saw/sq select
+    - tanh saturation
+      - range protection
+    - multivoice
+  - Vital
+  - SamplePlayer
+  - Experiment with waveshapers
+
+- FX
+  - Nam
+    - Test boost param (input volume affect on nam model output)
+    - Add crossover param
+  - OTT crusher 
+    - Current crusher doesnt appear to be multiband
+    - expose per-band thresholds as params
+    - scale all bands attack and release together as 'time' param
+    - single 'depth' param scales all ratios and thresholds

@@ -97,6 +97,16 @@ fn main() {
         let engine_quit = quit.clone();
         let engine_bridge = bridge.clone();
 
+        if args.test {
+            match audio.clone() {
+                Some(handles) => {
+                    let test_quit = quit.clone();
+                    std::thread::spawn(move || run_self_test(handles, test_quit));
+                },
+                None => eprintln!("║ 🟥 --test needs the audio backend (drop --osc)"),
+            }
+        }
+
         let engine_thread = std::thread::spawn(move || {
             run_engine_loop(args, hydra_state, output, engine_bridge, engine_quit);
         });
@@ -106,6 +116,51 @@ fn main() {
     } else {
         run_engine_loop(args, hydra_state, output, bridge, Arc::new(AtomicBool::new(false)));
     }
+}
+
+// Self-test seam (--gui --test): launches the real gui-mode code path, holds
+// a test note through the audition-note mechanism the GUI's "Hold Note"
+// button also uses, then taps ~0.1s of the raw cpal output buffer (see
+// AudioCapture in audio/mod.rs) and checks it's non-zero. Diagnoses "no
+// audio output" independent of the OS/device layer -- if this reports
+// non-zero, the engine is producing signal and the bug is downstream (cpal
+// device selection, OS routing, etc); if it reports all-zero, the bug is in
+// the graph itself (note/gate wiring, envelope, a stuck bypass level, etc).
+fn run_self_test (audio: audio::AudioHandles, quit: Arc<AtomicBool>) {
+    println!("║ [selftest] waiting for audio stream to settle...");
+    sleep(Duration::from_millis(300));
+
+    println!("║ [selftest] holding test note (A4, 440Hz)...");
+    audio.audition_note.hold(69); // A4 -- clearly audible on any speaker/headphone
+    sleep(Duration::from_millis(50)); // let the envelope attack
+
+    audio.capture.start();
+    println!("║ [selftest] capturing 0.1s of cpal output...");
+    while !audio.capture.is_full() {
+        sleep(Duration::from_millis(5));
+    }
+
+    let samples = audio.capture.samples();
+
+    let max_abs  = samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+    let nonzero  = samples.iter().any(|&s| s.abs() > 1e-6);
+
+    println!("║ [selftest] captured {} samples, max |sample| = {max_abs:.6}", samples.len());
+    if nonzero {
+        println!("║ [selftest] ✅ PASS: cpal output buffer has signal.");
+    } else {
+        println!("║ [selftest] 🟥 FAIL: cpal output buffer is silent (all zero).");
+    }
+
+    // Rules out "too short/too quiet to notice" -- if the capture above
+    // passed but nothing is audible for these 3 real seconds either, the
+    // break is downstream of this process entirely (OS/device routing).
+    println!("║ [selftest] 🔊 LISTEN NOW: holding an audible A4 tone for 3 seconds...");
+    sleep(Duration::from_secs(3));
+    audio.audition_note.release();
+
+    sleep(Duration::from_millis(200));
+    quit.store(true, Ordering::Relaxed);
 }
 
 // The hydra/zgicabra/audio loop that used to be all of main(). Runs on the

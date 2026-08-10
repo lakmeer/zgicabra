@@ -2,8 +2,8 @@
 //
 // GUI
 //
-// A winit + glow + Dear ImGui window for live-tuning VoiceParams (rs.rs) and
-// driving the mock Hydra backend's inputs without a keyboard.
+// A winit + glow + Dear ImGui window for live-tuning the ModMatrix (rs.rs)
+// and driving the mock Hydra backend's inputs without a keyboard.
 //
 // winit/AppKit requires window creation and the event loop to run on the
 // process's main thread on macOS, so this owns main() when --gui is passed;
@@ -31,13 +31,13 @@ use winit::event_loop::EventLoop;
 use winit::window::{Fullscreen, WindowAttributes};
 
 use crate::hydra::MockControls;
-use crate::audio::{AudioHandles, AuditionCycler, AuditionNote, VoiceParams, snapshot, AUDITION_PARAM_SLOTS, AUDITION_PARAM_LO, AUDITION_PARAM_HI};
+use crate::audio::{AudioHandles, GenCycler, FxCycler, AuditionNote, ModMatrix, snapshot};
 use crate::tools::{AtomicF32, rand_normal};
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
 
-// Local (GUI-thread-only) browser state for saved weight-matrix snapshots --
+// Local (GUI-thread-only) browser state for saved mod-matrix snapshots --
 // save/load are one-off file actions the GUI thread can just do directly on
-// the same VoiceParams cells the sliders already write to, no cross-thread
+// the same ModMatrix cells the sliders already write to, no cross-thread
 // cycler needed (contrast NamModelCycler, which the audio thread also reads
 // every block).
 struct SnapshotBrowser {
@@ -72,8 +72,8 @@ fn drag_speed (lo: f32, hi: f32) -> f32 {
     ((hi - lo).abs() / 200.0).max(0.0001)
 }
 
-fn randomise_weights (params: &VoiceParams) {
-    for spec in params.entries() {
+fn randomise_weights (matrix: &ModMatrix) {
+    for spec in matrix.entries() {
         // LFO depth rows are 0..1, not -1..1 -- a negative weight there
         // would just flip the same saturation to the other rail.
         let (mid, lo, hi) = if spec.name.starts_with("lfo") && spec.name.ends_with("_depth") {
@@ -87,18 +87,18 @@ fn randomise_weights (params: &VoiceParams) {
     }
 }
 
-fn randomise_audition (audio: &AudioHandles) {
-    audio.audition_a.randomise();
-    audio.audition_b.randomise();
-    audio.audition_c.randomise();
-    audio.audition_d.randomise();
+fn randomise_gens (audio: &AudioHandles) {
+    audio.gen_1.randomise();
+    audio.gen_2.randomise();
+    audio.gen_3.randomise();
+    audio.gen_4.randomise();
 }
 
-fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
-    let entries = params.entries();
+fn draw_mod_matrix (ui: &imgui::Ui, matrix: &ModMatrix) {
+    let entries = matrix.entries();
 
     let Some(_table) = ui.begin_table_with_flags(
-        "voice_params_grid",
+        "mod_matrix_grid",
         16,
         TableFlags::BORDERS | TableFlags::ROW_BG | TableFlags::RESIZABLE,
     ) else { return };
@@ -107,18 +107,18 @@ fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
     ui.table_setup_column("default");
     ui.table_setup_column("lo");
     ui.table_setup_column("hi");
+    ui.table_setup_column("curve");
     ui.table_setup_column("pitch");
     ui.table_setup_column("width");
     ui.table_setup_column("filter");
     ui.table_setup_column("fuzz");
     ui.table_setup_column("thump");
-    ui.table_setup_column("velocity");
-    ui.table_setup_column("acceleration");
-    ui.table_setup_column("lfo1");
-    ui.table_setup_column("lfo2");
-    ui.table_setup_column("lfo3");
-    ui.table_setup_column("lfo4");
-    ui.table_setup_column("curve");
+    ui.table_setup_column("vel");
+    ui.table_setup_column("acc");
+    ui.table_setup_column("lfo_1");
+    ui.table_setup_column("lfo_2");
+    ui.table_setup_column("lfo_3");
+    ui.table_setup_column("lfo_4");
     ui.table_headers_row();
 
     for spec in entries {
@@ -131,10 +131,10 @@ fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
         let hi = spec.cells()[2].1.value();
         let speed = drag_speed(lo, hi);
 
-        // cells() is [default, lo, hi, pitch, width, filter, fuzz, thump,
-        // velocity, acceleration, lfo1..lfo4] -- indices 0..2 are the base
-        // value/range, 3.. are the weight matrix, which gets the little
-        // no-label reset-to-zero button next to it.
+        // cells() is [default, lo, hi, curve, pitch, width, filter, fuzz,
+        // thump, vel, acc, lfo_1..lfo_4] -- indices 0..2 are the base
+        // value/range, 3.. are the mod matrix columns (curve + weights),
+        // which get the little no-label reset-to-zero button next to them.
         for (i, (cell_name, cell)) in spec.cells().into_iter().enumerate() {
             ui.table_next_column();
             let mut value = cell.value();
@@ -151,17 +151,6 @@ fn draw_voice_params (ui: &imgui::Ui, params: &VoiceParams) {
                 }
             }
         }
-
-        ui.table_next_column();
-
-        let curve_label = match spec.curve() {
-            crate::audio::Curve::Linear => "Lin",
-            crate::audio::Curve::Exp    => "Exp",
-        };
-
-        if ui.button(format!("{}##{}_curve", curve_label, spec.name)) {
-            spec.toggle_curve();
-        }
     }
 }
 
@@ -169,6 +158,15 @@ fn toggle_checkbox (ui: &imgui::Ui, label: &str, flag: &Arc<AtomicBool>) {
     let mut value = flag.load(Ordering::Relaxed);
     if ui.checkbox(label, &mut value) {
         flag.store(value, Ordering::Relaxed);
+    }
+}
+
+// Fixed-stage bypass: the checkbox just sets the stage's own FxNode `level`
+// to 0 or 1 -- no separate flag underneath (see AudioHandles).
+fn level_checkbox (ui: &imgui::Ui, label: &str, level: &fundsp::shared::Shared) {
+    let mut enabled = level.value() >= 1.0;
+    if ui.checkbox(label, &mut enabled) {
+        level.set_value(if enabled { 1.0 } else { 0.0 });
     }
 }
 
@@ -299,70 +297,31 @@ fn draw_nam_model (ui: &imgui::Ui, models: &crate::audio::NamModelCycler) {
     if ui.button("Model >") { models.cycle(1); }
 }
 
-// Dry/wet blend for the second NAM stage (hardcoded to "lowgain", now run
-// after filter2 -- see AudioOutput::new). Direct Shared editor, same pattern
-// as the audition param drags in draw_audition_params.
-fn draw_lowgain_blend (ui: &imgui::Ui, blend: &fundsp::shared::Shared) {
-    let mut value = blend.value();
-    if knob(ui, "##lowgain_blend", "Lowgain Blend", 20.0, 0.0, 1.0, &mut value) {
-        blend.set_value(value);
-    }
+// One row per gen slot (1-4): cycles which GenNode that slot is currently
+// running, plus its one extra int field (e.g. BasicOscGen's waveform pick).
+// Same idea as draw_nam_model. The slot's level/p1-p4 live in the mod
+// matrix as gen_N_lvl/gen_N_p1..p4 rows -- see draw_mod_matrix -- so there's
+// no separate param grid here anymore (the old per-slot 12-param grid this
+// replaced is gone now that every GenNode shares one fixed 4-param shape).
+fn draw_gen_slot (ui: &imgui::Ui, label: &str, cycler: &GenCycler) {
+    ui.text(format!("{label}: {} (extra {})", cycler.selected_name(), cycler.extra()));
+    if ui.button(format!("< {label}")) { cycler.cycle(-1); }
+    ui.same_line();
+    if ui.button(format!("{label} >")) { cycler.cycle(1); }
+    ui.same_line();
+    if ui.button(format!("{label} extra-")) { cycler.set_extra(cycler.extra() - 1); }
+    ui.same_line();
+    if ui.button(format!("{label} extra+")) { cycler.set_extra(cycler.extra() + 1); }
 }
 
-// One row per audition-voice slot (A/B/C): cycles which fundsp Generator
-// that slot's AuditionVoice is currently running. Same idea as
-// draw_nam_model, three independent instances mixed together in the graph.
-fn draw_audition_voice (ui: &imgui::Ui, label: &str, cycler: &AuditionCycler) {
+// One row per fx slot (1-4): cycles which FxNode that slot is currently
+// running. Same shape as draw_gen_slot minus the extra int field (no
+// current FxNode option uses one).
+fn draw_fx_slot (ui: &imgui::Ui, label: &str, cycler: &FxCycler) {
     ui.text(format!("{label}: {}", cycler.selected_name()));
     if ui.button(format!("< {label}")) { cycler.cycle(-1); }
     ui.same_line();
     if ui.button(format!("{label} >")) { cycler.cycle(1); }
-}
-
-// Up to AUDITION_PARAM_SLOTS live-editable extra inputs per audition-voice
-// slot (A/B/C), wired straight through to whichever generator that slot
-// currently has selected (see AuditionVoice/AuditionCycler in
-// audio/audition.rs). Labels come from the same GENERATOR_PARAMS table the
-// audio thread reads to know which slots a generator actually uses -- a
-// slot past that generator's arity just shows "--" instead of a slider.
-// One row per voice slot (A/B/C), one column per param slot.
-fn draw_audition_params (ui: &imgui::Ui, audio: &AudioHandles) {
-    let Some(_table) = ui.begin_table_with_flags(
-        "audition_params_grid",
-        1 + AUDITION_PARAM_SLOTS,
-        TableFlags::BORDERS | TableFlags::ROW_BG | TableFlags::RESIZABLE,
-    ) else { return };
-
-    ui.table_setup_column("Voice");
-    for i in 0..AUDITION_PARAM_SLOTS {
-        ui.table_setup_column(format!("{}", i + 1));
-    }
-    ui.table_headers_row();
-
-    let slots: [(char, &AuditionCycler); 4] = [('A', &audio.audition_a), ('B', &audio.audition_b), ('C', &audio.audition_c), ('D', &audio.audition_d)];
-
-    for (slot, cycler) in slots {
-        ui.table_next_row();
-
-        ui.table_next_column();
-        ui.text(format!("{slot}"));
-
-        for i in 0..AUDITION_PARAM_SLOTS {
-            ui.table_next_column();
-
-            let Some(&label) = cycler.selected_params().get(i) else {
-                ui.text_disabled("--");
-                continue;
-            };
-
-            ui.text_disabled(label);
-            let cell = cycler.param(i);
-            let mut value = cell.value();
-            if knob(ui, &format!("##audition_{slot}_{i}"), "", 14.0, AUDITION_PARAM_LO, AUDITION_PARAM_HI, &mut value) {
-                cell.set_value(value);
-            }
-        }
-    }
 }
 
 // "Hold Note" toggle: drives AudioOutput's freq/gate cells directly so
@@ -458,48 +417,50 @@ fn draw_signal_state (ui: &imgui::Ui, bridge: &ZgicabraBridge) {
 
 fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge, audition_state: &mut AuditionState, snapshot_browser: &mut SnapshotBrowser) {
     let screen_height = ui.io().display_size[1];
-    ui.window("Voice Params")
+    ui.window("Mod Matrix")
         .position([10.0, 10.0], imgui::Condition::FirstUseEver)
         .size([970.0, screen_height - 20.0], imgui::Condition::FirstUseEver)
         .build(|| {
             match audio {
                 Some(audio) => {
                     draw_nam_model(ui, &audio.nam_models);
-                    draw_lowgain_blend(ui, &audio.lowgain_blend);
                     ui.spacing();
 
-                    toggle_checkbox(ui, "Bypass Comp A", &audio.comp_a_bypass);
+                    level_checkbox(ui, "Bypass Compressor", &audio.compressor_level);
                     ui.same_line();
-                    toggle_checkbox(ui, "Bypass Filter 1 (Moog)", &audio.filter1_bypass);
+                    level_checkbox(ui, "Bypass Lowpass", &audio.lowpass_level);
                     ui.same_line();
-                    toggle_checkbox(ui, "Bypass Filter 2", &audio.filter2_bypass);
+                    level_checkbox(ui, "Bypass NAM", &audio.nam_level);
                     ui.same_line();
-                    toggle_checkbox(ui, "Bypass NAM 2 (lowgain)", &audio.nam2_bypass);
+                    level_checkbox(ui, "Bypass Crusher", &audio.crusher_level);
                     ui.same_line();
-                    toggle_checkbox(ui, "Bypass Comp B", &audio.comp_b_bypass);
+                    level_checkbox(ui, "Bypass Reverb", &audio.reverb_level);
                     ui.spacing();
 
-                    draw_audition_voice(ui, "A", &audio.audition_a);
-                    draw_audition_voice(ui, "B", &audio.audition_b);
-                    draw_audition_voice(ui, "C", &audio.audition_c);
-                    draw_audition_voice(ui, "D", &audio.audition_d);
+                    draw_gen_slot(ui, "gen_1", &audio.gen_1);
+                    draw_gen_slot(ui, "gen_2", &audio.gen_2);
+                    draw_gen_slot(ui, "gen_3", &audio.gen_3);
+                    draw_gen_slot(ui, "gen_4", &audio.gen_4);
                     draw_audition_note(ui, &audio.audition_note, audition_state);
                     ui.spacing();
 
-                    draw_audition_params(ui, audio);
+                    draw_fx_slot(ui, "fx_1", &audio.fx_1);
+                    draw_fx_slot(ui, "fx_2", &audio.fx_2);
+                    draw_fx_slot(ui, "fx_3", &audio.fx_3);
+                    draw_fx_slot(ui, "fx_4", &audio.fx_4);
                     ui.spacing();
 
                     draw_snapshot_browser(ui, audio, snapshot_browser);
                     ui.spacing();
 
-                    if ui.button("Randomise Weights") { randomise_weights(&audio.voice_params); }
+                    if ui.button("Randomise Weights") { randomise_weights(&audio.mod_matrix); }
                     ui.same_line();
-                    if ui.button("Randomise Audition") { randomise_audition(audio); }
+                    if ui.button("Randomise Gens") { randomise_gens(audio); }
                     ui.spacing();
 
-                    draw_voice_params(ui, &audio.voice_params);
+                    draw_mod_matrix(ui, &audio.mod_matrix);
                 },
-                None => ui.text("Voice params only available with the --audio backend."),
+                None => ui.text("Mod matrix only available with the --audio backend."),
             }
         });
 
@@ -613,6 +574,7 @@ pub fn run (audio: Option<AudioHandles>, mock_controls: Option<MockControls>, br
         .expect("failed to create imgui renderer");
 
     let mut last_frame = Instant::now();
+    let quit_watch = quit.clone();
 
     #[allow(deprecated)]
     event_loop.run(move |event, window_target| {
@@ -623,6 +585,13 @@ pub fn run (audio: Option<AudioHandles>, mock_controls: Option<MockControls>, br
                 last_frame = now;
             }
             Event::AboutToWait => {
+                // Lets an external thread (e.g. main.rs's --test self-test)
+                // request a close the same way the OS window-close button
+                // does, instead of only ever setting `quit` on the way out.
+                if quit_watch.load(Ordering::Relaxed) {
+                    window_target.exit();
+                    return;
+                }
                 winit_platform.prepare_frame(imgui_context.io_mut(), &window).unwrap();
                 window.request_redraw();
             }

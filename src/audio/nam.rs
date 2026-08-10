@@ -1,9 +1,12 @@
 
 //
-// NAM amp model stage, as a self-contained fundsp AudioNode (1 in, 1 out).
-// Plays the role of the fuzz/distortion stage: `fuzz` is the dry/wet blend
-// against the selected model's output, rather than a separate waveshaper
-// after this stage.
+// NAM amp model stage, as an FxNode (7 in, 2 out). The node's model
+// selector (an ordinary discovered-model index -- "lowgain" is just another
+// *.nam file in NAM_DIR now, not a hardcoded second instance) picks which
+// model runs. p1 = amp_blend, the dry/wet blend against the selected
+// model's output (this is the old standalone `fuzz` knob, renamed). p2 =
+// amp_boost, a simple pre-model input gain for driving a model harder
+// without touching upstream levels.
 //
 
 use std::fs;
@@ -122,24 +125,6 @@ pub fn default_model_index (names: &[String]) -> usize {
     names.iter().position(|n| n == DEFAULT_NAM_MODEL).unwrap_or(0)
 }
 
-// Loads a single named .nam model from NAM_DIR (e.g. for a hardcoded, always-on
-// second NamStage) -- same output_gain normalization as load_nam_models, but no
-// peer group to calibrate input level against, so input_gain is left neutral.
-pub fn load_nam_model (name: &str) -> io::Result<NamModelSlot> {
-    let path_str = format!("{NAM_DIR}/{name}.nam");
-
-    let nam_model = NamModel::from_file(&path_str)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to load NAM model '{path_str}': {e}")))?;
-    let model = Model::from_nam(&nam_model)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to build NAM model '{path_str}': {e}")))?;
-
-    let output_gain = nam_model.loudness()
-        .map(|loudness| db_amp(TARGET_LOUDNESS_DB - loudness))
-        .unwrap_or(1.0);
-
-    Ok(NamModelSlot { model: Arc::new(Mutex::new(model)), input_gain: 1.0, output_gain })
-}
-
 // `Model` (nam-rs) isn't Clone, but AudioNode requires `Self: Clone` as a
 // structural bound (fundsp's generic combinator plumbing needs it, even
 // though nothing here actually clones a live NamStage). Arc<Mutex<_>> gets
@@ -158,46 +143,69 @@ pub struct NamModelSlot {
     output_gain: f32,
 }
 
-#[derive(Clone)]
+// Scratch/chunk cap for NamStage::process_block. nam-rs's own process_buffer
+// already internally chunks at its `MAX_BLOCK` (see wavenet.rs), so this
+// only exists as a fixed-size scratch buffer bound -- cpal callback sizes
+// are always far below it in practice.
+pub(crate) const NAM_BLOCK_CAP: usize = 4096;
+
 pub struct NamStage {
-    models:      Vec<Option<NamModelSlot>>,
-    selected:    Shared,
-    fuzz:        Shared,
-    dry_scratch: [f32; MAX_BUFFER_SIZE],
+    models:    Vec<Option<NamModelSlot>>,
+    // Model selector -- the FxNode's one extra int field.
+    selected:  Shared,
     // One-pole DC blocker state, carried across calls (see DC_BLOCKER_R).
-    dc_prev_x:   f32,
-    dc_prev_y:   f32,
+    dc_prev_x: f32,
+    dc_prev_y: f32,
+    // Pre-model dry copy of the current block, for the dry/wet blend at the
+    // end of process_block -- sized once at construction, never reallocated
+    // on the audio thread.
+    dry_scratch: Vec<f32>,
 }
 
 impl NamStage {
-    pub fn new (models: Vec<Option<NamModelSlot>>, selected: Shared, fuzz: Shared) -> NamStage {
-        NamStage {
-            models, selected, fuzz,
-            dry_scratch: [0.0; MAX_BUFFER_SIZE],
-            dc_prev_x:   0.0,
-            dc_prev_y:   0.0,
-        }
+    pub fn new (models: Vec<Option<NamModelSlot>>, selected: Shared) -> NamStage {
+        NamStage { models, selected, dc_prev_x: 0.0, dc_prev_y: 0.0, dry_scratch: vec![0.0; NAM_BLOCK_CAP] }
     }
 
-    // Always runs the selected model, even at fuzz=0, so its internal state
-    // (WaveNet dilation history) stays warm -- otherwise every fuzz sweep
-    // from 0 restarts the model cold and its first receptive_field() samples
-    // are a startup transient (see nam_rs::Model::receptive_field docs)
-    // mixed straight into the output. The dry/wet blend below already
-    // reduces to 100% dry at fuzz=0, so behavior at the output is unchanged.
-    fn process_buffer (&mut self, block: &mut [f32]) {
+    // No-op: the model runs at its own fixed training rate (NAM_SAMPLE_RATE
+    // in mod.rs, which pick_output_config already pins the device to) and
+    // the DC blocker's R is a fixed constant, not derived from sample rate.
+    // Exists only so AuditionNode::set_sample_rate's uniform per-field loop
+    // doesn't need a special case for this one field.
+    pub fn set_sample_rate (&mut self, _sr: f64) {}
+
+    // Runs the selected model over a whole block in place, batched instead
+    // of one sample at a time. nam-rs's process_buffer is a block kernel
+    // (see wavenet.rs: "keeping each weight matrix hot across the whole
+    // chunk"); calling it with a length-1 slice every sample (the previous
+    // shape of this code) defeats that entirely and was the primary source
+    // of audible stutter -- an earlier version of this engine already
+    // learned this lesson (see git history) before a refactor lost it.
+    //
+    // Always runs the selected model, even at blend=0, so its internal
+    // state (WaveNet dilation history) stays warm -- otherwise every blend
+    // sweep from 0 restarts the model cold and its first receptive_field()
+    // samples are a startup transient (see nam_rs::Model::receptive_field
+    // docs) mixed straight into the output. The dry/wet blend below already
+    // reduces to 100% dry at blend=0, so behavior at the output is
+    // unchanged.
+    //
+    // level/blend/boost are read once for the whole block by the caller
+    // (see AuditionNode::run_nam in mod.rs) rather than per sample -- these
+    // are slow knob-rate values, not audio-rate signals, so this costs no
+    // audible resolution.
+    pub(crate) fn process_block (&mut self, block: &mut [f32], level: f32, blend: f32, boost: f32) {
         let Some(slot) = self.models.get(self.selected.value() as usize).and_then(Option::as_ref) else {
-            return; // Bypass (or an out-of-range index): leave `block` untouched.
+            return; // Bypass (or an out-of-range index): leave `block` untouched (dry).
         };
         let model = slot.model.clone();
         let (input_gain, output_gain) = (slot.input_gain, slot.output_gain);
 
-        let fuzz = self.fuzz.value().clamp(0.0, 1.0);
-
         self.dry_scratch[..block.len()].copy_from_slice(block);
 
-        if input_gain != 1.0 {
-            for s in block.iter_mut() { *s *= input_gain; }
+        let pre = boost * input_gain;
+        if pre != 1.0 {
+            for s in block.iter_mut() { *s *= pre; }
         }
 
         model.lock().unwrap().process_buffer(block);
@@ -208,7 +216,9 @@ impl NamStage {
         }
 
         for (i, wet) in block.iter_mut().enumerate() {
-            *wet = self.dry_scratch[i] * (1.0 - fuzz) + *wet * fuzz;
+            let dry = self.dry_scratch[i];
+            let modeled = dry * (1.0 - blend) + *wet * blend;
+            *wet = dry * (1.0 - level) + modeled * level;
         }
     }
 
@@ -221,28 +231,5 @@ impl NamStage {
             self.dc_prev_y = y;
             *s = y;
         }
-    }
-}
-
-// `process()` must be driven in <=MAX_BUFFER_SIZE chunks (see build_stream in
-// mod.rs) -- `BufferVec`'s scratch buffers are sized for one block, not the
-// whole stream.
-impl AudioNode for NamStage {
-    const ID: u64 = 0x7A_12;
-    type Inputs = U1;
-    type Outputs = U1;
-
-    fn tick (&mut self, input: &Frame<f32, U1>) -> Frame<f32, U1> {
-        let mut buf = [input[0]];
-        self.process_buffer(&mut buf);
-        let mut output: Frame<f32, U1> = Frame::default();
-        output[0] = buf[0];
-        output
-    }
-
-    fn process (&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let out = output.channel_f32_mut(0);
-        out[..size].copy_from_slice(&input.channel_f32(0)[..size]);
-        self.process_buffer(&mut out[..size]);
     }
 }

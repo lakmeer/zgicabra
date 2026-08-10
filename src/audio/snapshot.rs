@@ -1,10 +1,9 @@
 
 //
-// Weight-matrix (VoiceParams) snapshotting: dumps every ParamSpec cell to a
-// small text file under snapshots/, one new timestamped file per save (never
-// overwrites), and reloads one back into a live VoiceParams. No serde
-// anywhere in this project -- it's a flat name.cell=value list, plain enough
-// not to need one.
+// Mod matrix snapshotting: dumps every ParamSpec cell to a small text file
+// under snapshots/, one new timestamped file per save (never overwrites),
+// and reloads one back into a live ModMatrix. No serde anywhere in this
+// project -- it's a flat name.cell=value list, plain enough not to need one.
 //
 
 use std::fs;
@@ -23,13 +22,19 @@ pub fn save_snapshot (audio: &AudioHandles) -> io::Result<PathBuf> {
     let path = Path::new(SNAPSHOT_DIR).join(format!("{stamp}.snap"));
 
     let mut text = String::new();
-    for spec in audio.voice_params.entries() {
+    for spec in audio.mod_matrix.entries() {
         for (cell_name, cell) in spec.cells() {
             text.push_str(&format!("{}.{}={}\n", spec.name, cell_name, cell.value()));
         }
     }
 
-    for (row_name, cycler) in [("audition_a", &audio.audition_a), ("audition_b", &audio.audition_b), ("audition_c", &audio.audition_c), ("audition_d", &audio.audition_d)] {
+    for (row_name, cycler) in [("gen_1", &audio.gen_1), ("gen_2", &audio.gen_2), ("gen_3", &audio.gen_3), ("gen_4", &audio.gen_4)] {
+        for (cell_name, cell) in cycler.cells() {
+            text.push_str(&format!("{row_name}.{cell_name}={}\n", cell.value()));
+        }
+    }
+
+    for (row_name, cycler) in [("fx_1", &audio.fx_1), ("fx_2", &audio.fx_2), ("fx_3", &audio.fx_3), ("fx_4", &audio.fx_4)] {
         for (cell_name, cell) in cycler.cells() {
             text.push_str(&format!("{row_name}.{cell_name}={}\n", cell.value()));
         }
@@ -47,15 +52,23 @@ pub fn load_snapshot (path: &Path, audio: &AudioHandles) -> io::Result<()> {
         let Some((row_name, cell_name)) = key.split_once('.') else { continue };
         let Ok(value) = value.parse::<f32>() else { continue };
 
-        let cyclers = [("audition_a", &audio.audition_a), ("audition_b", &audio.audition_b), ("audition_c", &audio.audition_c), ("audition_d", &audio.audition_d)];
-        if let Some((_, cycler)) = cyclers.into_iter().find(|(name, _)| *name == row_name) {
+        let gen_cyclers = [("gen_1", &audio.gen_1), ("gen_2", &audio.gen_2), ("gen_3", &audio.gen_3), ("gen_4", &audio.gen_4)];
+        if let Some((_, cycler)) = gen_cyclers.into_iter().find(|(name, _)| *name == row_name) {
             for (name, cell) in cycler.cells() {
                 if name == cell_name { cell.set_value(value); }
             }
             continue;
         }
 
-        for spec in audio.voice_params.entries() {
+        let fx_cyclers = [("fx_1", &audio.fx_1), ("fx_2", &audio.fx_2), ("fx_3", &audio.fx_3), ("fx_4", &audio.fx_4)];
+        if let Some((_, cycler)) = fx_cyclers.into_iter().find(|(name, _)| *name == row_name) {
+            for (name, cell) in cycler.cells() {
+                if name == cell_name { cell.set_value(value); }
+            }
+            continue;
+        }
+
+        for spec in audio.mod_matrix.entries() {
             if spec.name != row_name { continue; }
             for (name, cell) in spec.cells() {
                 if name == cell_name { cell.set_value(value); }

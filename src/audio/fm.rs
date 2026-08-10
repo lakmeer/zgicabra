@@ -1,95 +1,87 @@
 
 //
-// 3-operator FM voice, as a self-contained fundsp AudioNode (13 in, 1 out).
+// 3-operator FM generator, as a GenNode (6 in, 2 out). Classic 2-operator-
+// modulating-1 FM stack: op_c modulates op_b modulates op_a. Each operator
+// gets its own vibrato LFO (sine, additive in Hz, before it's used as a
+// modulator for the next operator down the chain) driven by one shared
+// depth knob, for movement instead of a static tone.
 //
-// Inputs: [0] base_freq, [1] ratio_a, [2] ratio_b, [3] ratio_c, [4] index_b,
-// [5] index_c, [6] detune_cents_max, [7] lfo_rate_a_hz, [8] lfo_depth_a_hz,
-// [9] lfo_rate_b_hz, [10] lfo_depth_b_hz, [11] lfo_rate_c_hz, [12]
-// lfo_depth_c_hz -- all live-modulated by the caller via param_factor. Each
-// operator gets its own vibrato LFO (sine, additive in Hz on that
-// operator's own frequency, before it's used as a modulator for the next
-// operator down the chain) for per-operator wobble/movement instead of a
-// static tone. This node just does the per-voice detune + 3-op FM + vibrato
-// math, no knowledge of VoiceParams/SignalState.
+// p1 = ratio_b (op_b's frequency ratio against the base), p2 = index_b
+// (op_b's modulation depth on op_a), p3 = detune (0..1, rescaled to cents),
+// p4 = vibrato depth (0..1, rescaled to Hz, shared rate/depth across all
+// three operators). ratio_a/ratio_c/index_c are fixed constants -- this is
+// a real reduction from the original 12-knob custom-voice version, trading
+// character range for fitting the 4-param GenNode contract.
 //
 
 use fundsp::prelude64::*;
 
+use super::gen_node::GenNode;
+
+const DETUNE_CENTS_MAX: f32 = 50.0;
+const VIBRATO_HZ_MAX:   f32 = 8.0;
+const VIBRATO_RATE_HZ:  f32 = 5.0;
+
+const RATIO_A: f32 = 1.0;
+const RATIO_C: f32 = 2.0;
+const INDEX_C: f32 = 1.0;
+
 #[derive(Clone)]
-pub struct FmVoice {
-    op_a:  An<Sine<f64>>,
-    op_b:  An<Sine<f64>>,
-    op_c:  An<Sine<f64>>,
-    lfo_a: An<Sine<f64>>,
-    lfo_b: An<Sine<f64>>,
-    lfo_c: An<Sine<f64>>,
-    frac:  f32,
+pub struct FmGen {
+    op_a: An<Sine<f64>>,
+    op_b: An<Sine<f64>>,
+    op_c: An<Sine<f64>>,
+    lfo:  An<Sine<f64>>,
 }
 
-impl FmVoice {
-    pub fn new (frac: f32) -> FmVoice {
-        FmVoice {
-            op_a: sine(), op_b: sine(), op_c: sine(),
-            lfo_a: sine(), lfo_b: sine(), lfo_c: sine(),
-            frac,
-        }
+impl FmGen {
+    pub fn new () -> FmGen {
+        FmGen { op_a: sine(), op_b: sine(), op_c: sine(), lfo: sine() }
     }
 }
 
-impl AudioNode for FmVoice {
+impl AudioNode for FmGen {
     const ID: u64 = 0x7A_10;
-    type Inputs = U13;
-    type Outputs = U1;
+    type Inputs = U6;
+    type Outputs = U2;
 
-    fn tick (&mut self, input: &Frame<f32, U13>) -> Frame<f32, U1> {
-        let base_freq         = input[0];
-        let ratio_a            = input[1];
-        let ratio_b            = input[2];
-        let ratio_c            = input[3];
-        let index_b            = input[4];
-        let index_c            = input[5];
-        let detune_cents_max   = input[6];
-        let lfo_rate_a_hz      = input[7];
-        let lfo_depth_a_hz     = input[8];
-        let lfo_rate_b_hz      = input[9];
-        let lfo_depth_b_hz     = input[10];
-        let lfo_rate_c_hz      = input[11];
-        let lfo_depth_c_hz     = input[12];
+    fn tick (&mut self, input: &Frame<f32, U6>) -> Frame<f32, U2> {
+        let freq  = input[0];
+        let level = input[1];
+        let ratio_b = 1.0 + input[2] * 4.0; // 1..5
+        let index_b = input[3] * 4.0;       // 0..4
+        let p3      = input[4];
+        let p4      = input[5];
 
-        let detune     = 2f32.powf(self.frac * detune_cents_max / 1200.0);
-        let voice_freq = base_freq * detune;
+        let detune     = 2f32.powf(p3 * DETUNE_CENTS_MAX / 1200.0);
+        let voice_freq = freq * detune;
 
-        let wobble_a = self.lfo_a.filter_mono(lfo_rate_a_hz) * lfo_depth_a_hz;
-        let wobble_b = self.lfo_b.filter_mono(lfo_rate_b_hz) * lfo_depth_b_hz;
-        let wobble_c = self.lfo_c.filter_mono(lfo_rate_c_hz) * lfo_depth_c_hz;
+        let wobble = self.lfo.filter_mono(VIBRATO_RATE_HZ) * (p4 * VIBRATO_HZ_MAX);
 
-        // index_x * freq_x scales FM modulation depth, not pitch -- keep it
-        // on the unwobbled base frequency so vibrato only ever moves each
-        // operator's own pitch, not the modulation index it's feeding down
-        // the chain (that coupling is what read as tremolo/amplitude wobble
-        // instead of pitch wobble).
-        let freq_c_base = voice_freq * ratio_c;
-        let freq_c = freq_c_base + wobble_c;
-        let out_c  = self.op_c.filter_mono(freq_c);
+        let freq_c_base = voice_freq * RATIO_C;
+        let freq_c      = freq_c_base + wobble;
+        let out_c       = self.op_c.filter_mono(freq_c);
 
         let freq_b_base = voice_freq * ratio_b;
-        let freq_b = freq_b_base + wobble_b;
-        let out_b  = self.op_b.filter_mono(freq_b + out_c * (index_c * freq_c_base));
+        let freq_b      = freq_b_base + wobble;
+        let out_b       = self.op_b.filter_mono(freq_b + out_c * (INDEX_C * freq_c_base));
 
-        let freq_a = voice_freq * ratio_a + wobble_a;
+        let freq_a = voice_freq * RATIO_A + wobble;
         let out_a  = self.op_a.filter_mono(freq_a + out_b * (index_b * freq_b_base));
 
-        let mut output: Frame<f32, U1> = Frame::default();
-        output[0] = out_a;
-        output
+        let mono = out_a * level;
+        Frame::from([mono, mono])
     }
 
     fn set_sample_rate (&mut self, sample_rate: f64) {
         self.op_a.set_sample_rate(sample_rate);
         self.op_b.set_sample_rate(sample_rate);
         self.op_c.set_sample_rate(sample_rate);
-        self.lfo_a.set_sample_rate(sample_rate);
-        self.lfo_b.set_sample_rate(sample_rate);
-        self.lfo_c.set_sample_rate(sample_rate);
+        self.lfo.set_sample_rate(sample_rate);
     }
+}
+
+impl GenNode for FmGen {
+    fn name (&self) -> &'static str { "FM" }
+    fn param_names (&self) -> [&'static str; 4] { ["ratio", "index", "detune", "vibrato"] }
 }
