@@ -23,33 +23,18 @@ pub trait FxNode: AudioNode<Inputs = U7, Outputs = U2> {
     fn param_names(&self) -> [&'static str; 4];
 }
 
-#[derive(Clone)]
-pub struct BypassFx;
-
-impl AudioNode for BypassFx {
-    const ID: u64 = 0x7A_40;
-    type Inputs = U7;
-    type Outputs = U2;
-
-    fn tick (&mut self, input: &Frame<f32, U7>) -> Frame<f32, U2> {
-        Frame::from([input[0], input[1]])
-    }
-}
-
-impl FxNode for BypassFx {
-    fn name (&self) -> &'static str { "Bypass" }
-    fn param_names (&self) -> [&'static str; 4] { ["", "", "", ""] }
-}
-
 pub const FX_NAMES: [&str; 2] = ["Bypass", "Moog Filter"];
 pub const FX_PARAMS: [[&str; 4]; 2] = [
     ["", "", "", ""],
     ["cutoff", "resonance", "", ""],
 ];
 
+// One entry per FX_NAMES minus the leading "Bypass" -- FxSlot::tick already
+// special-cases index 0 as bypass without touching this vec (see below), so
+// index 1 (the first real effect) must land on units[0], same convention
+// GenNode's build_gens() uses.
 fn build_fx () -> Vec<Box<dyn AudioUnit>> {
     vec![
-        Box::new(An(BypassFx)),
         Box::new(An(MoogFilterFx::new())),
     ]
 }

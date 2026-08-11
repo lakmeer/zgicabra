@@ -245,6 +245,92 @@ fn knob (ui: &imgui::Ui, id: &str, label: &str, radius: f32, lo: f32, hi: f32, v
     changed
 }
 
+// Reads/writes a ModMatrix row's base ("default") value through a knob,
+// ranged to that row's own lo/hi -- the Engine panel's per-module controls
+// are just this against whichever row names that module owns.
+fn draw_param_knob (ui: &imgui::Ui, matrix: &ModMatrix, row: &str, label: &str, radius: f32) {
+    let spec = matrix.get(row);
+    let cells = spec.cells();
+    let (lo, hi) = (cells[1].1.value(), cells[2].1.value());
+    let mut value = cells[0].1.value();
+    if knob(ui, &format!("##{row}"), label, radius, lo, hi, &mut value) {
+        cells[0].1.set_value(value);
+    }
+}
+
+const KNOB_RADIUS: f32 = 8.0;
+// Simple cards (fixed knob set, no type-cycle row) vs. Gen/Fx cards, which
+// need extra height for the type-cycle row and extra width for up to 5
+// knobs in a row (level + FM's 4 params, the widest case -- see GEN_PARAMS).
+const CARD_SIZE:        [f32; 2] = [140.0, 66.0];
+const CARD_SIZE_CYCLER: [f32; 2] = [140.0, 90.0];
+
+// Bordered box with a title and an optional top-right bypass checkbox --
+// the Engine panel's one repeated "module card" shape.
+fn draw_module_card (ui: &imgui::Ui, title: &str, bypass: Option<&fundsp::shared::Shared>, size: [f32; 2], body: impl FnOnce(&imgui::Ui)) {
+    ui.child_window(format!("##card_{title}")).size(size).border(true).build(|| {
+        ui.text(title);
+        if let Some(level) = bypass {
+            ui.same_line_with_pos(size[0] - 28.0);
+            level_checkbox(ui, "##bypass", level);
+        }
+        ui.separator();
+        body(ui);
+    });
+}
+
+// One row of knobs laid out side by side -- knob() ends with a text label,
+// which (like any imgui item) advances the cursor to a new line, so knobs
+// placed side by side need to be wrapped in their own group() with
+// same_line() between groups, not called bare in sequence (that would
+// stack them vertically against the previous knob's label instead).
+fn draw_knob_row (ui: &imgui::Ui, matrix: &ModMatrix, knobs: &[(String, &str)]) {
+    for (i, (row, label)) in knobs.iter().enumerate() {
+        if i > 0 { ui.same_line(); }
+        ui.group(|| draw_param_knob(ui, matrix, row, label, KNOB_RADIUS));
+    }
+}
+
+// Gen/Fx slots share the same card shape: the existing type-cycle row,
+// then one knob row for level + whichever params the currently-selected
+// type actually uses (selected_params() leaves unused slots as "").
+fn draw_gen_card (ui: &imgui::Ui, matrix: &ModMatrix, label: &str, cycler: &GenCycler) {
+    draw_module_card(ui, label, None, CARD_SIZE_CYCLER, |ui| {
+        draw_gen_slot(ui, label, cycler);
+        let mut knobs = vec![(format!("{label}_lvl"), "level")];
+        for (i, param) in cycler.selected_params().into_iter().enumerate() {
+            if !param.is_empty() {
+                knobs.push((format!("{label}_p{}", i + 1), param));
+            }
+        }
+        draw_knob_row(ui, matrix, &knobs);
+    });
+}
+
+fn draw_fx_card (ui: &imgui::Ui, matrix: &ModMatrix, label: &str, cycler: &FxCycler) {
+    draw_module_card(ui, label, None, CARD_SIZE_CYCLER, |ui| {
+        draw_fx_slot(ui, label, cycler);
+        let mut knobs = vec![(format!("{label}_lvl"), "level")];
+        for (i, param) in cycler.selected_params().into_iter().enumerate() {
+            if !param.is_empty() {
+                knobs.push((format!("{label}_p{}", i + 1), param));
+            }
+        }
+        draw_knob_row(ui, matrix, &knobs);
+    });
+}
+
+fn draw_lfo_card (ui: &imgui::Ui, matrix: &ModMatrix, n: usize) {
+    draw_module_card(ui, &format!("LFO {n}"), None, CARD_SIZE, |ui| {
+        draw_knob_row(ui, matrix, &[(format!("lfo_{n}_rate"), "rate"), (format!("lfo_{n}_depth"), "depth")]);
+    });
+}
+
+fn randomise_all (audio: &AudioHandles) {
+    randomise_weights(&audio.mod_matrix);
+    randomise_gens(audio);
+}
+
 fn draw_wand_mock (ui: &imgui::Ui, label: &str, trigger: &Arc<AtomicBool>, stick_x: &Arc<AtomicF32>, stick_y: &Arc<AtomicF32>, buttons: &[Arc<AtomicBool>; 4]) {
     ui.text(label);
     xy_pad(ui, &format!("##{label}_stick"), 120.0, stick_x, stick_y);
@@ -263,27 +349,6 @@ fn draw_wand_rotation (ui: &imgui::Ui, label: &str, rot: &[Arc<AtomicF32>; 4]) {
         "{label} rot: [{:.3} {:.3} {:.3} {:.3}]",
         rot[0].load(), rot[1].load(), rot[2].load(), rot[3].load(),
     ));
-}
-
-fn draw_mock_hydra (ui: &imgui::Ui, controls: &MockControls, bridge: &ZgicabraBridge) {
-    ui.group(|| {
-        draw_wand_mock(ui, "Left", &controls.left_trigger, &controls.left_stick_x, &controls.left_stick_y, &controls.left_buttons);
-        draw_wand_rotation(ui, "Left", &bridge.left_rot);
-    });
-    ui.same_line();
-    ui.group(|| {
-        draw_wand_mock(ui, "Right", &controls.right_trigger, &controls.right_stick_x, &controls.right_stick_y, &controls.right_buttons);
-        draw_wand_rotation(ui, "Right", &bridge.right_rot);
-    });
-
-    ui.spacing();
-    if ui.button("Toggle Sine Drift") { MockControls::toggle(&controls.sine_drift); }
-
-    ui.spacing();
-    ui.text("Tune ('-'/'=')");
-    if ui.button("< Tune") { controls.bump_tune_cycle(-1); }
-    ui.same_line();
-    if ui.button("Tune >") { controls.bump_tune_cycle(1); }
 }
 
 // NAM model cycler -- deliberately independent of the hydra/zgicabra
@@ -396,92 +461,189 @@ fn signal_override_row (ui: &imgui::Ui, label: &str, lo: f32, hi: f32, field: &S
     });
 }
 
+// Compact knob grid (4 per row) for the 8 signal overrides -- the Hydra
+// panel's answer to the layout mockup's central F/T/P/Z/W knob column,
+// packed tighter than a tall single-column list since it now shares a row
+// with the two wand pads (see draw_hydra_panel).
 fn draw_signal_state (ui: &imgui::Ui, bridge: &ZgicabraBridge) {
-    ui.text("Check \"override\" to drive a value directly; uncheck to hand it back to whatever computes it live.");
-    ui.spacing();
+    let rows: [(&str, f32, f32, &SignalOverride); 8] = [
+        ("bend",         -2.0, 2.0,    &bridge.bend),
+        ("filter",        0.0, 1.0,    &bridge.filter),
+        ("fuzz",          0.0, 1.0,    &bridge.fuzz),
+        ("width",        -1.0, 1.0,    &bridge.width),
+        ("thump",         0.0, 1.0,    &bridge.thump),
+        ("velocity",      0.0, 10.0,   &bridge.velocity),
+        ("acceleration",  0.0, 100.0,  &bridge.acceleration),
+        ("jerk",          0.0, 1000.0, &bridge.jerk),
+    ];
+    for (i, (label, lo, hi, field)) in rows.into_iter().enumerate() {
+        if i % 4 != 0 { ui.same_line(); }
+        ui.group(|| signal_override_row(ui, label, lo, hi, field));
+    }
+}
 
-    signal_override_row(ui, "bend",         -2.0, 2.0,   &bridge.bend);
-    signal_override_row(ui, "filter",        0.0, 1.0,   &bridge.filter);
-    signal_override_row(ui, "fuzz",          0.0, 1.0,   &bridge.fuzz);
-    signal_override_row(ui, "width",        -1.0, 1.0,   &bridge.width);
-    signal_override_row(ui, "thump",         0.0, 1.0,   &bridge.thump);
-    signal_override_row(ui, "velocity",      0.0, 10.0,  &bridge.velocity);
-    signal_override_row(ui, "acceleration",  0.0, 100.0, &bridge.acceleration);
-    signal_override_row(ui, "jerk",          0.0, 1000.0,&bridge.jerk);
+// Engine panel: one card per module, grouped into rows the same way the
+// layout mockup does (utility row, LFOs, Gens, Compressor solo, FXs,
+// Amp/Crusher/Reverb solo). Every card reads/writes the same ModMatrix
+// rows the Matrix panel's table edits -- a card's knob is just that row's
+// "default" cell, see draw_param_knob.
+fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, audition_state: &mut AuditionState) {
+    let matrix = &audio.mod_matrix;
 
-    ui.spacing();
-    if ui.button("Toggle Thump") { bridge.thump.toggle(); }
+    draw_nam_model(ui, &audio.nam_models);
     ui.same_line();
-    if ui.button("Toggle Fuzz") { bridge.fuzz.toggle(); }
+    level_checkbox(ui, "Bypass Lowpass", &audio.lowpass_level);
+    ui.same_line();
+    draw_audition_note(ui, &audio.audition_note, audition_state);
+    ui.separator();
+
+    draw_module_card(ui, "Main Sub", None, CARD_SIZE, |ui| {
+        draw_knob_row(ui, matrix, &[("main_sub_wave".into(), "wave"), ("main_sub_lvl".into(), "level")]);
+    });
+    ui.same_line();
+    draw_module_card(ui, "Dry Sub", None, CARD_SIZE, |ui| {
+        draw_knob_row(ui, matrix, &[("dry_sub_lvl".into(), "level")]);
+    });
+    ui.same_line();
+    draw_module_card(ui, "Thump", None, CARD_SIZE, |ui| {
+        draw_knob_row(ui, matrix, &[("thump_peak".into(), "peak"), ("thump_decay".into(), "decay")]);
+    });
+
+    for n in 1..=4 {
+        draw_lfo_card(ui, matrix, n);
+        if n < 4 { ui.same_line(); }
+    }
+
+    draw_gen_card(ui, matrix, "gen_1", &audio.gen_1);
+    ui.same_line();
+    draw_gen_card(ui, matrix, "gen_2", &audio.gen_2);
+    ui.same_line();
+    draw_gen_card(ui, matrix, "gen_3", &audio.gen_3);
+    ui.same_line();
+    draw_gen_card(ui, matrix, "gen_4", &audio.gen_4);
+
+    draw_module_card(ui, "Compressor", Some(&audio.compressor_level), CARD_SIZE, |ui| {
+        draw_knob_row(ui, matrix, &[
+            ("comp_thresh".into(), "thresh"),
+            ("comp_attack".into(), "attack"),
+            ("comp_depth".into(), "depth"),
+        ]);
+    });
+
+    draw_fx_card(ui, matrix, "fx_1", &audio.fx_1);
+    ui.same_line();
+    draw_fx_card(ui, matrix, "fx_2", &audio.fx_2);
+    ui.same_line();
+    draw_fx_card(ui, matrix, "fx_3", &audio.fx_3);
+    ui.same_line();
+    draw_fx_card(ui, matrix, "fx_4", &audio.fx_4);
+
+    draw_module_card(ui, "Amp", Some(&audio.nam_level), CARD_SIZE, |ui| {
+        draw_knob_row(ui, matrix, &[("amp_blend".into(), "blend"), ("amp_boost".into(), "boost")]);
+    });
+    ui.same_line();
+    draw_module_card(ui, "Crusher", Some(&audio.crusher_level), CARD_SIZE, |ui| {
+        draw_knob_row(ui, matrix, &[
+            ("crush_thresh".into(), "thresh"),
+            ("crush_attack".into(), "attack"),
+            ("crush_depth".into(), "depth"),
+            ("crush_boost".into(), "boost"),
+        ]);
+    });
+    ui.same_line();
+    draw_module_card(ui, "Reverb", Some(&audio.reverb_level), CARD_SIZE, |ui| {
+        draw_knob_row(ui, matrix, &[
+            ("reverb_size".into(), "size"),
+            ("reverb_decay".into(), "decay"),
+            ("reverb_damp".into(), "damp"),
+            ("reverb_wet".into(), "wet"),
+        ]);
+    });
+}
+
+// Hydra: the physical/mock wand controller. Left wand | signal-override
+// knob grid | right wand, side by side (mirroring the layout mockup's two
+// octagon wand pads flanking a center knob column), with the sine-drift/
+// tune/thump/fuzz toggles as one bottom row instead of scattered separately.
+fn draw_hydra_panel (ui: &imgui::Ui, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge) {
+    ui.text("Hydra");
+    ui.same_line_with_pos(ui.window_size()[0] - 90.0);
+    ui.disabled(true, || {
+        let mut mock = mock_controls.is_some();
+        ui.checkbox("mock", &mut mock);
+    });
+    ui.separator();
+
+    match mock_controls {
+        Some(controls) => {
+            ui.group(|| {
+                draw_wand_mock(ui, "Left", &controls.left_trigger, &controls.left_stick_x, &controls.left_stick_y, &controls.left_buttons);
+                draw_wand_rotation(ui, "Left", &bridge.left_rot);
+            });
+            ui.same_line();
+            ui.group(|| draw_signal_state(ui, bridge));
+            ui.same_line();
+            ui.group(|| {
+                draw_wand_mock(ui, "Right", &controls.right_trigger, &controls.right_stick_x, &controls.right_stick_y, &controls.right_buttons);
+                draw_wand_rotation(ui, "Right", &bridge.right_rot);
+            });
+        },
+        None => {
+            ui.text("Real Hydra hardware connected -- no mock wand controls.");
+            draw_signal_state(ui, bridge);
+        },
+    }
+
+    ui.spacing();
+    if let Some(controls) = mock_controls {
+        if ui.button("Sine Drift") { MockControls::toggle(&controls.sine_drift); }
+        ui.same_line();
+        if ui.button("< Tune") { controls.bump_tune_cycle(-1); }
+        ui.same_line();
+        if ui.button("Tune >") { controls.bump_tune_cycle(1); }
+        ui.same_line();
+    }
+    if ui.button("Thump") { bridge.thump.toggle(); }
+    ui.same_line();
+    if ui.button("Fuzz") { bridge.fuzz.toggle(); }
+}
+
+fn draw_matrix_panel (ui: &imgui::Ui, audio: &AudioHandles, snapshot_browser: &mut SnapshotBrowser) {
+    if ui.button("RND") { randomise_all(audio); }
+    ui.same_line();
+    draw_snapshot_browser(ui, audio, snapshot_browser);
+    ui.separator();
+    draw_mod_matrix(ui, &audio.mod_matrix);
 }
 
 fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge, audition_state: &mut AuditionState, snapshot_browser: &mut SnapshotBrowser) {
-    let screen_height = ui.io().display_size[1];
-    ui.window("Mod Matrix")
+    let [screen_width, screen_height] = ui.io().display_size;
+    let left_w = screen_width * 0.44;
+    let engine_h = screen_height * 0.63;
+
+    ui.window("Engine")
         .position([10.0, 10.0], imgui::Condition::FirstUseEver)
-        .size([970.0, screen_height - 20.0], imgui::Condition::FirstUseEver)
+        .size([left_w, engine_h], imgui::Condition::FirstUseEver)
         .build(|| {
             match audio {
-                Some(audio) => {
-                    draw_nam_model(ui, &audio.nam_models);
-                    ui.spacing();
-
-                    level_checkbox(ui, "Bypass Compressor", &audio.compressor_level);
-                    ui.same_line();
-                    level_checkbox(ui, "Bypass Lowpass", &audio.lowpass_level);
-                    ui.same_line();
-                    level_checkbox(ui, "Bypass NAM", &audio.nam_level);
-                    ui.same_line();
-                    level_checkbox(ui, "Bypass Crusher", &audio.crusher_level);
-                    ui.same_line();
-                    level_checkbox(ui, "Bypass Reverb", &audio.reverb_level);
-                    ui.spacing();
-
-                    draw_gen_slot(ui, "gen_1", &audio.gen_1);
-                    draw_gen_slot(ui, "gen_2", &audio.gen_2);
-                    draw_gen_slot(ui, "gen_3", &audio.gen_3);
-                    draw_gen_slot(ui, "gen_4", &audio.gen_4);
-                    draw_audition_note(ui, &audio.audition_note, audition_state);
-                    ui.spacing();
-
-                    draw_fx_slot(ui, "fx_1", &audio.fx_1);
-                    draw_fx_slot(ui, "fx_2", &audio.fx_2);
-                    draw_fx_slot(ui, "fx_3", &audio.fx_3);
-                    draw_fx_slot(ui, "fx_4", &audio.fx_4);
-                    ui.spacing();
-
-                    draw_snapshot_browser(ui, audio, snapshot_browser);
-                    ui.spacing();
-
-                    if ui.button("Randomise Weights") { randomise_weights(&audio.mod_matrix); }
-                    ui.same_line();
-                    if ui.button("Randomise Gens") { randomise_gens(audio); }
-                    ui.spacing();
-
-                    draw_mod_matrix(ui, &audio.mod_matrix);
-                },
-                None => ui.text("Mod matrix only available with the --audio backend."),
+                Some(audio) => draw_engine_panel(ui, audio, audition_state),
+                None => ui.text("Engine controls only available with the --audio backend."),
             }
         });
 
-    let zgicabra_width = 420.0;
-    let screen_width = ui.io().display_size[0];
-    ui.window("Zgicabra")
-        .position([screen_width - zgicabra_width - 10.0, 10.0], imgui::Condition::FirstUseEver)
-        .size([zgicabra_width, 560.0], imgui::Condition::FirstUseEver)
-        .build(|| {
-            ui.text("Mock Hydra");
-            ui.separator();
-            match mock_controls {
-                Some(controls) => draw_mock_hydra(ui, controls, bridge),
-                None => ui.text("Mock hydra backend not active\n(real Hydra hardware connected)."),
-            }
+    ui.window("Hydra")
+        .position([10.0, engine_h + 20.0], imgui::Condition::FirstUseEver)
+        .size([left_w, screen_height - engine_h - 30.0], imgui::Condition::FirstUseEver)
+        .build(|| draw_hydra_panel(ui, mock_controls, bridge));
 
-            ui.spacing();
-            ui.spacing();
-            ui.text("Signal State");
-            ui.separator();
-            draw_signal_state(ui, bridge);
+    ui.window("Matrix")
+        .position([left_w + 20.0, 10.0], imgui::Condition::FirstUseEver)
+        .size([screen_width - left_w - 30.0, screen_height - 20.0], imgui::Condition::FirstUseEver)
+        .build(|| {
+            match audio {
+                Some(audio) => draw_matrix_panel(ui, audio, snapshot_browser),
+                None => ui.text("Mod matrix only available with the --audio backend."),
+            }
         });
 }
 

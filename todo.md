@@ -2,7 +2,11 @@
 # TODO
 
 - Filter audibly snaps back to neutral then note released
-- Curve blends between lin and exp rather than toggle
+- Remove def.lo.hi from matrix
+- Can't hear FX chain
+- Check curve blending
+- Compressor feedback?
+- Performance audit
 
 - Gens
   - Basic
