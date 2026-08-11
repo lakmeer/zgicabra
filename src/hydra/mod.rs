@@ -19,6 +19,8 @@ use std::time::{Instant,Duration};
 
 use libc::{c_float, c_int, c_uint, c_uchar, c_ushort};
 
+use crate::zgicabra::DeltaEvent;
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod sdk;
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
@@ -157,6 +159,11 @@ trait Backend: Send {
     fn take_voice_cycle (&mut self) -> i8 { 0 }
     fn take_tune_cycle (&mut self) -> i8 { 0 }
     fn mock_controls (&self) -> Option<MockControls> { None }
+
+    // Note On/Off DeltaEvents accumulated since the last call (mock backend
+    // only -- see mock::MockBackend::take_midi_notes). Real backends have no
+    // MIDI listener, so they always return empty.
+    fn take_midi_notes (&mut self) -> Vec<DeltaEvent> { Vec::new() }
 }
 
 
@@ -248,6 +255,12 @@ pub fn take_tune_cycle (state: &mut HydraState) -> i8 {
 // keyboard-driven input to hand out.
 pub fn mock_controls (state: &HydraState) -> Option<MockControls> {
     state.backend.as_ref().and_then(|backend| backend.mock_controls())
+}
+
+// Note On/Off DeltaEvents accumulated since the last call (mock backend
+// only -- see mock::MockBackend::take_midi_notes). Empty on real backends.
+pub fn take_midi_notes (state: &mut HydraState) -> Vec<DeltaEvent> {
+    state.backend.as_mut().map_or(Vec::new(), |backend| backend.take_midi_notes())
 }
 
 // True if the user has asked to quit. On real backends this is any keypress

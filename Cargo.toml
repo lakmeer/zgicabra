@@ -27,6 +27,7 @@ glutin-winit = "0.5"
 glow = "0.14"
 raw-window-handle = "0.6"
 image = { version = "0.25", default-features = false, features = ["png"] }
+midir = "0.11.0"
 
 # Native USB HID backend for the Hydra on macOS (see src/hydra/hid.rs) -- the
 # vendored Sixense SDK is Linux-only and dead anyway, so this never needs to

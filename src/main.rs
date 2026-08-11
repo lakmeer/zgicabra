@@ -19,7 +19,7 @@ use osc::OscOutput;
 use audio::AudioOutput;
 use output::DeltaConsumer;
 
-use hydra::HydraState;
+use hydra::{HydraState, MockControls};
 use zgicabra::{Zgicabra, DeltaEvent, ZgicabraBridge};
 
 pub const HISTORY_WINDOW: usize = 100;
@@ -96,6 +96,7 @@ fn main() {
         let quit = Arc::new(AtomicBool::new(false));
         let engine_quit = quit.clone();
         let engine_bridge = bridge.clone();
+        let engine_mock_controls = mock_controls.clone();
 
         if args.test {
             match audio.clone() {
@@ -108,13 +109,13 @@ fn main() {
         }
 
         let engine_thread = std::thread::spawn(move || {
-            run_engine_loop(args, hydra_state, output, engine_bridge, engine_quit);
+            run_engine_loop(args, hydra_state, output, engine_bridge, engine_quit, engine_mock_controls);
         });
 
         gui::run(audio, mock_controls, bridge, quit);
         engine_thread.join().expect("engine thread panicked");
     } else {
-        run_engine_loop(args, hydra_state, output, bridge, Arc::new(AtomicBool::new(false)));
+        run_engine_loop(args, hydra_state, output, bridge, Arc::new(AtomicBool::new(false)), mock_controls);
     }
 }
 
@@ -168,7 +169,7 @@ fn run_self_test (audio: audio::AudioHandles, quit: Arc<AtomicBool>) {
 // gui::run() then needs the main thread for itself (see main() above).
 // `quit` is polled every frame in addition to hydra::should_quit() so
 // closing the gui window (which sets it) stops this loop too.
-fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: Box<dyn DeltaConsumer + Send>, bridge: ZgicabraBridge, quit: Arc<AtomicBool>) {
+fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: Box<dyn DeltaConsumer + Send>, bridge: ZgicabraBridge, quit: Arc<AtomicBool>, mock_controls: Option<MockControls>) {
     let no_ui = args.no_ui || args.gui;
 
     let mut zgicabra                       = Zgicabra::new();
@@ -193,6 +194,18 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
         let voice_cycle = hydra::take_voice_cycle(&mut hydra_state);
         let tune_cycle  = hydra::take_tune_cycle(&mut hydra_state);
         zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state, voice_cycle, tune_cycle, &mut delta_events);
+        delta_events.extend(hydra::take_midi_notes(&mut hydra_state));
+
+        if let Some(mc) = &mock_controls {
+            if mc.midi_connected {
+                bridge.filter.set(mc.midi_filter.load());
+                bridge.width.set(mc.midi_width.load());
+                bridge.fuzz.set(mc.midi_fuzz.load());
+                bridge.thump.set(mc.midi_thump.load());
+                bridge.bend.set(mc.midi_bend.load());
+            }
+        }
+
         bridge.sync(&mut zgicabra);
 
         // Draw UI

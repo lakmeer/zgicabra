@@ -314,6 +314,13 @@ impl SignalOverride {
         self.value.store(next);
         self.enabled.store(true, Ordering::Relaxed);
     }
+
+    // Take over the field and set it to an explicit value, in one call (e.g.
+    // a MIDI CC/pitch-bend level -- see hydra::mock's MIDI listener).
+    pub fn set (&self, v: f32) {
+        self.value.store(v);
+        self.enabled.store(true, Ordering::Relaxed);
+    }
 }
 
 #[derive(Clone)]

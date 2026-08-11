@@ -24,16 +24,91 @@
 //
 
 use std::f32::consts::PI;
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc,Mutex};
 use std::sync::atomic::{AtomicBool, AtomicI8, Ordering};
 
 use termion::AsyncReader;
 use termion::event::Key;
 use termion::input::{Keys,TermRead};
 
+use midir::{MidiInput,MidiInputConnection,Ignore};
+
 use crate::tools::{sin, AtomicF32};
+use crate::zgicabra::DeltaEvent;
 
 use super::{Backend,ControllerFrame,LEFT_HAND,RIGHT_HAND,BUTTON_1,BUTTON_2,BUTTON_3,BUTTON_4};
+
+// Optional MIDI controller support: on boot, take the first available MIDI
+// input port (if any) and feed its CC/pitch-bend messages straight into
+// atomics that main.rs's engine loop pushes onto ZgicabraBridge's existing
+// SignalOverride mechanism each tick (see MockControls::midi_* below and
+// SignalOverride::set in zgicabra.rs) -- same override path the gui already
+// uses to drive signal state, just fed from MIDI instead of imgui widgets.
+// No controller present -> quietly skip, same as the rest of mock.rs's
+// "works fine with nothing plugged in" ethos.
+const CC_FILTER: u8 = 1;
+const CC_WIDTH:  u8 = 2;
+const CC_FUZZ:   u8 = 3;
+const CC_THUMP:  u8 = 4;
+
+// Connects to the first available MIDI input port, if any, and stores
+// incoming CC 1-4 / pitch-bend values straight into the given atomics, and
+// pushes Note On/Off as DeltaEvents onto `notes` (drained each tick by
+// hydra::take_midi_notes -- discrete events, so unlike the CC/bend atomics
+// above they go through the normal DeltaEvent pipeline rather than the
+// SignalOverride mechanism). Monophonic, last-note-priority, same as a
+// single wand trigger: a second Note On while one is already held emits
+// NoteChange rather than a second NoteStart; Note Off only ends the note if
+// it matches the currently-held one. Returns None (without panicking) if no
+// MIDI backend/port is available -- the caller just proceeds without MIDI
+// input, same as running with no Hydra hardware attached.
+fn connect_midi (filter: Arc<AtomicF32>, width: Arc<AtomicF32>, fuzz: Arc<AtomicF32>, thump: Arc<AtomicF32>, bend: Arc<AtomicF32>, notes: Arc<Mutex<VecDeque<DeltaEvent>>>) -> Option<MidiInputConnection<()>> {
+    let mut midi_in = MidiInput::new("zgicabra").ok()?;
+    midi_in.ignore(Ignore::None);
+
+    let ports = midi_in.ports();
+    let port = ports.first()?;
+    let name = midi_in.port_name(port).unwrap_or_default();
+
+    println!("Hydra::start - MIDI controller found: {name}");
+
+    let mut held_note: Option<u8> = None;
+
+    midi_in.connect(port, "zgicabra-midi-in", move |_stamp, message, _| {
+        match message {
+            [status, cc, value] if status & 0xF0 == 0xB0 => {
+                let level = *value as f32 / 127.0;
+                match *cc {
+                    CC_FILTER => filter.store(level),
+                    CC_WIDTH  => width.store(level),
+                    CC_FUZZ   => fuzz.store(level),
+                    CC_THUMP  => thump.store(level),
+                    _ => {},
+                }
+            },
+            [status, lsb, msb] if status & 0xF0 == 0xE0 => {
+                let raw = ((*msb as u16) << 7) | *lsb as u16;
+                bend.store((raw as f32 - 8192.0) / 8192.0);
+            },
+            [status, note, velocity] if status & 0xF0 == 0x90 && *velocity > 0 => {
+                let event = match held_note {
+                    Some(prev) => DeltaEvent::NoteChange(prev, *note),
+                    None       => DeltaEvent::NoteStart(*note),
+                };
+                held_note = Some(*note);
+                notes.lock().unwrap().push_back(event);
+            },
+            [status, note, _] if status & 0xF0 == 0x80 || (status & 0xF0 == 0x90) => {
+                if held_note == Some(*note) {
+                    held_note = None;
+                    notes.lock().unwrap().push_back(DeltaEvent::NoteEnd(*note));
+                }
+            },
+            _ => {},
+        }
+    }, ()).ok()
+}
 
 const BUTTON_BITS: [u32; 4] = [BUTTON_1, BUTTON_2, BUTTON_3, BUTTON_4];
 
@@ -62,6 +137,18 @@ pub struct MockControls {
 
     voice_cycle: Arc<AtomicI8>,
     tune_cycle:  Arc<AtomicI8>,
+
+    // Latest CC 1-4 / pitch-bend values from the MIDI listener (see
+    // connect_midi), read fresh each tick -- unlike voice/tune_cycle these
+    // aren't drain-on-read, they're a live "current value" the engine loop
+    // pushes onto ZgicabraBridge's SignalOverride each frame. Stay at 0.0
+    // untouched if `midi_connected` is false.
+    pub midi_filter: Arc<AtomicF32>,
+    pub midi_width:  Arc<AtomicF32>,
+    pub midi_fuzz:   Arc<AtomicF32>,
+    pub midi_thump:  Arc<AtomicF32>,
+    pub midi_bend:   Arc<AtomicF32>,
+    pub midi_connected: bool,
 }
 
 impl MockControls {
@@ -102,6 +189,15 @@ pub struct MockBackend {
     quit: bool,
     sequence: u8,
     _cbreak_guard: CbreakGuard, // restores the terminal on drop
+
+    midi_filter: Arc<AtomicF32>,
+    midi_width:  Arc<AtomicF32>,
+    midi_fuzz:   Arc<AtomicF32>,
+    midi_thump:  Arc<AtomicF32>,
+    midi_bend:   Arc<AtomicF32>,
+    midi_connected: bool,
+    midi_notes: Arc<Mutex<VecDeque<DeltaEvent>>>,
+    _midi_connection: Option<MidiInputConnection<()>>, // held to keep the callback alive; disconnects on drop
 }
 
 impl MockBackend {
@@ -109,6 +205,20 @@ impl MockBackend {
         let cbreak_guard = CbreakGuard::enable();
 
         println!("Hydra::start - mock backend active. 'z'/'.' toggle triggers, 'a'/'s' cycle voice, '-'/'=' tune, arrows steer left stick, 'q' quits.");
+
+        let midi_filter = Arc::new(AtomicF32::new(0.0));
+        let midi_width  = Arc::new(AtomicF32::new(0.0));
+        let midi_fuzz   = Arc::new(AtomicF32::new(0.0));
+        let midi_thump  = Arc::new(AtomicF32::new(0.0));
+        let midi_bend   = Arc::new(AtomicF32::new(0.0));
+
+        let midi_notes: Arc<Mutex<VecDeque<DeltaEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
+
+        let midi_connection = connect_midi(midi_filter.clone(), midi_width.clone(), midi_fuzz.clone(), midi_thump.clone(), midi_bend.clone(), midi_notes.clone());
+        let midi_connected = midi_connection.is_some();
+        if !midi_connected {
+            println!("Hydra::start - no MIDI controller found, proceeding without MIDI input.");
+        }
 
         MockBackend {
             keys: termion::async_stdin().keys(),
@@ -126,7 +236,21 @@ impl MockBackend {
             quit: false,
             sequence: 0,
             _cbreak_guard: cbreak_guard,
+            midi_filter,
+            midi_width,
+            midi_fuzz,
+            midi_thump,
+            midi_bend,
+            midi_connected,
+            midi_notes,
+            _midi_connection: midi_connection,
         }
+    }
+
+    // Note On/Off DeltaEvents accumulated since the last call; drains the
+    // queue. See connect_midi's doc comment for the monophonic mapping.
+    pub fn take_midi_notes (&mut self) -> Vec<DeltaEvent> {
+        self.midi_notes.lock().unwrap().drain(..).collect()
     }
 
     // Shared handle onto this backend's inputs for a UI thread to drive directly.
@@ -143,6 +267,12 @@ impl MockBackend {
             sine_drift: self.sine_drift.clone(),
             voice_cycle: self.voice_cycle.clone(),
             tune_cycle:  self.tune_cycle.clone(),
+            midi_filter: self.midi_filter.clone(),
+            midi_width:  self.midi_width.clone(),
+            midi_fuzz:   self.midi_fuzz.clone(),
+            midi_thump:  self.midi_thump.clone(),
+            midi_bend:   self.midi_bend.clone(),
+            midi_connected: self.midi_connected,
         }
     }
 
@@ -255,5 +385,9 @@ impl Backend for MockBackend {
 
     fn mock_controls (&self) -> Option<MockControls> {
         Some(self.controls())
+    }
+
+    fn take_midi_notes (&mut self) -> Vec<DeltaEvent> {
+        MockBackend::take_midi_notes(self)
     }
 }
