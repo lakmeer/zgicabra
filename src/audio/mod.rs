@@ -151,6 +151,7 @@ use crate::zgicabra::{DeltaEvent, SignalState};
 
 mod nam;
 mod stutter;
+mod wavetable_gen;
 mod gen_node;
 mod fx_node;
 mod reese;
@@ -580,8 +581,10 @@ impl AudioOutput {
         let acceleration  = shared(0.0);
 
         // Default to Bypass (index 0) on all four gen slots and all four fx
-        // slots -- a fresh run isn't a wall of noise.
-        let gen_1_selected = shared(0.0); let gen_1_extra = shared(0.0);
+        // slots -- a fresh run isn't a wall of noise. Gen 1 defaults to
+        // Wavetable (index 5 in GEN_NAMES) instead, so a fresh run has an
+        // audible test voice for the new oscillator.
+        let gen_1_selected = shared(5.0); let gen_1_extra = shared(0.0);
         let gen_2_selected = shared(0.0); let gen_2_extra = shared(0.0);
         let gen_3_selected = shared(0.0); let gen_3_extra = shared(0.0);
         let gen_4_selected = shared(0.0); let gen_4_extra = shared(0.0);

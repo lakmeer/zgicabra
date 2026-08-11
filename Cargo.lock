@@ -3204,6 +3204,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "nam-rs",
+ "num-complex",
  "rand",
  "rand_distr",
  "raw-window-handle",

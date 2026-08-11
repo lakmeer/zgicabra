@@ -4,3 +4,5 @@ hid_test/target/
 snapshots/
 .DS_Store
 panel.html*
+vital_test
+*.vital

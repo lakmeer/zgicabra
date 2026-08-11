@@ -22,6 +22,7 @@ use crate::tools::linexp;
 use super::reese::ReeseGen;
 use super::fm::FmGen;
 use super::stutter::StutterGen;
+use super::wavetable_gen::WavetableGen;
 
 pub trait GenNode: AudioNode<Inputs = U6, Outputs = U2> {
     fn name(&self) -> &'static str;
@@ -107,13 +108,14 @@ impl GenNode for BasicOscGen {
 // codebase, e.g. LFO_RATE_NAMES) rather than round-tripping through a
 // throwaway instance, since GenCycler (the cheap GUI-thread handle) needs
 // these without holding the actual boxed units.
-pub const GEN_NAMES: [&str; 5] = ["Bypass", "Basic Osc", "Reese", "FM", "Stutter"];
-pub const GEN_PARAMS: [[&str; 4]; 5] = [
+pub const GEN_NAMES: [&str; 6] = ["Bypass", "Basic Osc", "Reese", "FM", "Stutter", "Wavetable"];
+pub const GEN_PARAMS: [[&str; 4]; 6] = [
     ["", "", "", ""],
     ["wave_param", "", "", ""],
     ["detune", "", "", ""],
     ["ratio", "index", "detune", "vibrato"],
     ["", "", "", ""],
+    ["bass_drive", "filter", "space", "warp"],
 ];
 
 fn build_gens (extra: Shared) -> Vec<Box<dyn AudioUnit>> {
@@ -122,6 +124,7 @@ fn build_gens (extra: Shared) -> Vec<Box<dyn AudioUnit>> {
         Box::new(An(ReeseGen::new())),
         Box::new(An(FmGen::new())),
         Box::new(An(StutterGen::new())),
+        Box::new(An(WavetableGen::new())),
     ]
 }
 

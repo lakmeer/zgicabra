@@ -15,6 +15,7 @@ termion = "2.0.1"
 textplots = "0.8.7"
 rosc = "~0.10"
 fundsp = "0.23.0"
+num-complex = { version = "0.4.6", default-features = false, features = ["libm"] }
 cpal = "0.18.1"
 nam-rs = "0.4.0"
 imgui = { version = "0.12", features = ["tables-api"] }

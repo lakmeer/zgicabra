@@ -24,7 +24,7 @@ use glutin::display::GetGlDisplay;
 use glutin::prelude::*;
 use glutin::surface::{SurfaceAttributesBuilder, WindowSurface};
 use glutin_winit::DisplayBuilder;
-use imgui::{Drag, TableFlags};
+use imgui::{Drag, TableColumnFlags, TableColumnSetup, TableFlags, StyleColor, ImColor32};
 use raw_window_handle::HasWindowHandle;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::EventLoop;
@@ -99,26 +99,38 @@ fn draw_mod_matrix (ui: &imgui::Ui, matrix: &ModMatrix) {
 
     let Some(_table) = ui.begin_table_with_flags(
         "mod_matrix_grid",
-        16,
+        15,
         TableFlags::BORDERS | TableFlags::ROW_BG | TableFlags::RESIZABLE,
     ) else { return };
 
-    ui.table_setup_column("param");
-    ui.table_setup_column("default");
-    ui.table_setup_column("lo");
-    ui.table_setup_column("hi");
-    ui.table_setup_column("curve");
-    ui.table_setup_column("pitch");
-    ui.table_setup_column("width");
-    ui.table_setup_column("filter");
-    ui.table_setup_column("fuzz");
-    ui.table_setup_column("thump");
-    ui.table_setup_column("vel");
-    ui.table_setup_column("acc");
-    ui.table_setup_column("lfo_1");
-    ui.table_setup_column("lfo_2");
-    ui.table_setup_column("lfo_3");
-    ui.table_setup_column("lfo_4");
+    // Param column wide enough for the longest row name ("main_sub_wave");
+    // knob columns clamped to just the knob's own diameter plus a hair of
+    // padding, since a knob (unlike a Drag box) has no text to grow into.
+    let knob_col = |name| TableColumnSetup {
+        flags: TableColumnFlags::WIDTH_FIXED,
+        init_width_or_weight: KNOB_RADIUS * 2.0 + 6.0,
+        ..TableColumnSetup::new(name)
+    };
+
+    ui.table_setup_column_with(TableColumnSetup {
+        flags: TableColumnFlags::WIDTH_FIXED,
+        init_width_or_weight: 100.0,
+        ..TableColumnSetup::new("param")
+    });
+    ui.table_setup_column_with(knob_col("lo"));
+    ui.table_setup_column_with(knob_col("hi"));
+    ui.table_setup_column_with(knob_col("curve"));
+    ui.table_setup_column_with(knob_col("pitch"));
+    ui.table_setup_column_with(knob_col("width"));
+    ui.table_setup_column_with(knob_col("filter"));
+    ui.table_setup_column_with(knob_col("fuzz"));
+    ui.table_setup_column_with(knob_col("thump"));
+    ui.table_setup_column_with(knob_col("vel"));
+    ui.table_setup_column_with(knob_col("acc"));
+    ui.table_setup_column_with(knob_col("lfo_1"));
+    ui.table_setup_column_with(knob_col("lfo_2"));
+    ui.table_setup_column_with(knob_col("lfo_3"));
+    ui.table_setup_column_with(knob_col("lfo_4"));
     ui.table_headers_row();
 
     for spec in entries {
@@ -129,26 +141,34 @@ fn draw_mod_matrix (ui: &imgui::Ui, matrix: &ModMatrix) {
 
         let lo = spec.cells()[1].1.value();
         let hi = spec.cells()[2].1.value();
-        let speed = drag_speed(lo, hi);
+
+        // LFO depth rows are 0..1, not -1..1 -- see randomise_weights.
+        let weight_range = if spec.name.starts_with("lfo") && spec.name.ends_with("_depth") {
+            (0.0, 1.0)
+        } else {
+            (-1.0, 1.0)
+        };
 
         // cells() is [default, lo, hi, curve, pitch, width, filter, fuzz,
-        // thump, vel, acc, lfo_1..lfo_4] -- indices 0..2 are the base
-        // value/range, 3.. are the mod matrix columns (curve + weights),
-        // which get the little no-label reset-to-zero button next to them.
+        // thump, vel, acc, lfo_1..lfo_4] -- index 0 (default) is shown
+        // elsewhere (the module cards' own knobs), so skip it here. 1..2
+        // are lo/hi (knob swept over the row's own lo/hi), 3 is curve
+        // (0..1), 4.. are the mod matrix weight columns.
         for (i, (cell_name, cell)) in spec.cells().into_iter().enumerate() {
+            if i == 0 { continue; }
+
             ui.table_next_column();
             let mut value = cell.value();
             let id = format!("##{}_{}", spec.name, cell_name);
 
-            if Drag::new(id).speed(speed).build(ui, &mut value) {
-                cell.set_value(value);
-            }
+            let (klo, khi) = match i {
+                1..=2 => (lo, hi),
+                3     => (0.0, 1.0),
+                _     => weight_range,
+            };
 
-            if i >= 3 {
-                ui.same_line();
-                if ui.button_with_size(format!("##{}_{}_reset", spec.name, cell_name), [14.0, 0.0]) {
-                    cell.set_value(0.0);
-                }
+            if knob(ui, &id, "", KNOB_RADIUS, klo, khi, &mut value) {
+                cell.set_value(value);
             }
         }
     }
@@ -369,14 +389,17 @@ fn draw_nam_model (ui: &imgui::Ui, models: &crate::audio::NamModelCycler) {
 // no separate param grid here anymore (the old per-slot 12-param grid this
 // replaced is gone now that every GenNode shares one fixed 4-param shape).
 fn draw_gen_slot (ui: &imgui::Ui, label: &str, cycler: &GenCycler) {
-    ui.text(format!("{label}: {} (extra {})", cycler.selected_name(), cycler.extra()));
-    if ui.button(format!("< {label}")) { cycler.cycle(-1); }
+    if ui.button(format!("<")) { cycler.cycle(-1); }
     ui.same_line();
-    if ui.button(format!("{label} >")) { cycler.cycle(1); }
+    ui.text(format!("{}", cycler.selected_name())); //, cycler.extra()));
     ui.same_line();
-    if ui.button(format!("{label} extra-")) { cycler.set_extra(cycler.extra() - 1); }
+    if ui.button(format!(">")) { cycler.cycle(1); }
+
+    if ui.button(format!("X-")) { cycler.set_extra(cycler.extra() - 1); }
     ui.same_line();
-    if ui.button(format!("{label} extra+")) { cycler.set_extra(cycler.extra() + 1); }
+    ui.text(format!("{}", cycler.extra()));
+    ui.same_line();
+    if ui.button(format!("X+")) { cycler.set_extra(cycler.extra() + 1); }
 }
 
 // One row per fx slot (1-4): cycles which FxNode that slot is currently
@@ -618,7 +641,7 @@ fn draw_matrix_panel (ui: &imgui::Ui, audio: &AudioHandles, snapshot_browser: &m
 
 fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge, audition_state: &mut AuditionState, snapshot_browser: &mut SnapshotBrowser) {
     let [screen_width, screen_height] = ui.io().display_size;
-    let left_w = screen_width * 0.44;
+    let left_w = screen_width * 0.57;
     let engine_h = screen_height * 0.63;
 
     ui.window("Engine")
