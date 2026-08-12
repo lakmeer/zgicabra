@@ -1,3 +1,4 @@
 target/
 libs/
 hid_test/target/
+gui.sh

@@ -19,7 +19,7 @@
 use fundsp::prelude64::*;
 
 use crate::zgicabra::SignalState;
-use super::wavetable_gen::WavetableGen;
+use super::growl::WavetableGen;
 
 pub trait Voice: AudioNode<Inputs = U2, Outputs = U2> {
     const INDEX: usize;

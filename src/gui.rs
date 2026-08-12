@@ -488,6 +488,7 @@ fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<
     let engine_h = screen_height * 0.63;
 
     ui.window("Engine")
+        .flags(imgui::WindowFlags::NO_MOVE)
         .position([10.0, 10.0], imgui::Condition::FirstUseEver)
         .size([screen_width - 20.0, engine_h], imgui::Condition::FirstUseEver)
         .build(|| {
@@ -498,6 +499,7 @@ fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<
         });
 
     ui.window("Hydra")
+        .flags(imgui::WindowFlags::NO_MOVE)
         .position([10.0, engine_h + 20.0], imgui::Condition::FirstUseEver)
         .size([screen_width - 20.0, screen_height - engine_h - 30.0], imgui::Condition::FirstUseEver)
         .build(|| draw_hydra_panel(ui, mock_controls, bridge));
@@ -541,9 +543,9 @@ pub fn run (audio: Option<AudioHandles>, mock_controls: Option<MockControls>, br
     let event_loop = EventLoop::new().expect("failed to create winit event loop");
 
     let window_attributes = WindowAttributes::default()
-        .with_title("zgicabra tuner")
-        .with_inner_size(winit::dpi::LogicalSize::new(1060.0, 620.0))
-        .with_fullscreen(Some(Fullscreen::Borderless(None)));
+        .with_title("zgicabra")
+        .with_position(winit::dpi::LogicalPosition::new(0.0, 0.0))
+        .with_inner_size(winit::dpi::LogicalSize::new(720.0, 920.0));
 
     let template = ConfigTemplateBuilder::new();
     let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes));

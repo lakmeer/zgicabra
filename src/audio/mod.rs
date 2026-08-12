@@ -14,7 +14,7 @@ use crate::zgicabra::{DeltaEvent, SignalState};
 
 mod nam;
 mod stutter;
-mod wavetable_gen;
+mod growl;
 mod gen_node;
 mod fx_node;
 mod reese;
