@@ -1,87 +1,65 @@
 
 //
-// Mod matrix snapshotting: dumps every ParamSpec cell to a small text file
-// under snapshots/, one new timestamped file per save (never overwrites),
-// and reloads one back into a live ModMatrix. No serde anywhere in this
-// project -- it's a flat name.cell=value list, plain enough not to need one.
+// Voice param snapshotting: dumps one voice's live params to a small text
+// file under snapshots/, named "{voice_name}_{index}.snap" with a monotonic
+// per-voice index (never overwrites), and reloads one back. No serde
+// anywhere in this project -- it's a flat name=value list, plain enough not
+// to need one.
 //
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use super::AudioHandles;
 
 const SNAPSHOT_DIR: &str = "snapshots";
 
-pub fn save_snapshot (audio: &AudioHandles) -> io::Result<PathBuf> {
+// Next free index for this voice -- scans snapshots/ for existing
+// "{voice_name}_NNNN.snap" files and returns max+1 (0 if none yet).
+fn next_index (voice_name: &str) -> io::Result<u32> {
+    fs::create_dir_all(SNAPSHOT_DIR)?;
+    let prefix = format!("{voice_name}_");
+
+    let max = fs::read_dir(SNAPSHOT_DIR)?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.path().file_stem().and_then(|s| s.to_str()).map(String::from))
+        .filter_map(|stem| stem.strip_prefix(&prefix).and_then(|n| n.parse::<u32>().ok()))
+        .max();
+
+    Ok(max.map_or(0, |m| m + 1))
+}
+
+pub fn save_snapshot (voice_name: &str, fields: &[(&'static str, f32)]) -> io::Result<PathBuf> {
     fs::create_dir_all(SNAPSHOT_DIR)?;
 
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let path = Path::new(SNAPSHOT_DIR).join(format!("{stamp}.snap"));
+    let index = next_index(voice_name)?;
+    let path = Path::new(SNAPSHOT_DIR).join(format!("{voice_name}_{index:04}.snap"));
 
     let mut text = String::new();
-    for spec in audio.mod_matrix.entries() {
-        for (cell_name, cell) in spec.cells() {
-            text.push_str(&format!("{}.{}={}\n", spec.name, cell_name, cell.value()));
-        }
-    }
-
-    for (row_name, cycler) in [("gen_1", &audio.gen_1), ("gen_2", &audio.gen_2), ("gen_3", &audio.gen_3), ("gen_4", &audio.gen_4)] {
-        for (cell_name, cell) in cycler.cells() {
-            text.push_str(&format!("{row_name}.{cell_name}={}\n", cell.value()));
-        }
-    }
-
-    for (row_name, cycler) in [("fx_1", &audio.fx_1), ("fx_2", &audio.fx_2), ("fx_3", &audio.fx_3), ("fx_4", &audio.fx_4)] {
-        for (cell_name, cell) in cycler.cells() {
-            text.push_str(&format!("{row_name}.{cell_name}={}\n", cell.value()));
-        }
+    for (name, value) in fields {
+        text.push_str(&format!("{name}={value}\n"));
     }
 
     fs::write(&path, text)?;
     Ok(path)
 }
 
-pub fn load_snapshot (path: &Path, audio: &AudioHandles) -> io::Result<()> {
+// Returns (voice_name, [(param_name, value)]) -- voice_name is parsed back
+// out of the filename ("{voice_name}_{index}"), not stored in the file body.
+pub fn load_snapshot (path: &Path) -> io::Result<(String, Vec<(String, f32)>)> {
     let text = fs::read_to_string(path)?;
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let voice_name = stem.rsplit_once('_').map_or(stem, |(name, _)| name).to_string();
 
-    for line in text.lines() {
-        let Some((key, value)) = line.split_once('=') else { continue };
-        let Some((row_name, cell_name)) = key.split_once('.') else { continue };
-        let Ok(value) = value.parse::<f32>() else { continue };
+    let fields = text.lines()
+        .filter_map(|line| line.split_once('='))
+        .filter_map(|(key, value)| value.parse::<f32>().ok().map(|v| (key.to_string(), v)))
+        .collect();
 
-        let gen_cyclers = [("gen_1", &audio.gen_1), ("gen_2", &audio.gen_2), ("gen_3", &audio.gen_3), ("gen_4", &audio.gen_4)];
-        if let Some((_, cycler)) = gen_cyclers.into_iter().find(|(name, _)| *name == row_name) {
-            for (name, cell) in cycler.cells() {
-                if name == cell_name { cell.set_value(value); }
-            }
-            continue;
-        }
-
-        let fx_cyclers = [("fx_1", &audio.fx_1), ("fx_2", &audio.fx_2), ("fx_3", &audio.fx_3), ("fx_4", &audio.fx_4)];
-        if let Some((_, cycler)) = fx_cyclers.into_iter().find(|(name, _)| *name == row_name) {
-            for (name, cell) in cycler.cells() {
-                if name == cell_name { cell.set_value(value); }
-            }
-            continue;
-        }
-
-        for spec in audio.mod_matrix.entries() {
-            if spec.name != row_name { continue; }
-            for (name, cell) in spec.cells() {
-                if name == cell_name { cell.set_value(value); }
-            }
-        }
-    }
-
-    Ok(())
+    Ok((voice_name, fields))
 }
 
-// Discovers every *.snap file in SNAPSHOT_DIR (sorted -- timestamped names
-// sort oldest-first, same stable-cycle-order convention as
-// nam::load_nam_models).
+// Discovers every *.snap file in SNAPSHOT_DIR (sorted -- zero-padded index
+// suffixes sort correctly as long as a single voice stays under 10000 saves).
 pub fn list_snapshots () -> io::Result<Vec<String>> {
     fs::create_dir_all(SNAPSHOT_DIR)?;
 
@@ -97,4 +75,37 @@ pub fn list_snapshots () -> io::Result<Vec<String>> {
 
 pub fn snapshot_path (name: &str) -> PathBuf {
     Path::new(SNAPSHOT_DIR).join(format!("{name}.snap"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Save/load round-trip plus the monotonic-index naming -- the only
+    // branching logic in this file (index scanning, filename parsing).
+    // Uses a "__test_voice" prefix so it can't collide with real growl_*/
+    // basic_* snapshots saved by the GUI.
+    #[test]
+    fn save_load_round_trip_and_monotonic_index () {
+        let voice = "__test_voice";
+        for path in fs::read_dir(SNAPSHOT_DIR).unwrap() {
+            let path = path.unwrap().path();
+            if path.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.starts_with(voice)) {
+                let _ = fs::remove_file(path);
+            }
+        }
+
+        let path0 = save_snapshot(voice, &[("a", 1.0), ("b", 2.5)]).unwrap();
+        assert_eq!(path0.file_stem().unwrap().to_str().unwrap(), "__test_voice_0000");
+
+        let path1 = save_snapshot(voice, &[("a", 3.0), ("b", 4.5)]).unwrap();
+        assert_eq!(path1.file_stem().unwrap().to_str().unwrap(), "__test_voice_0001");
+
+        let (loaded_voice, fields) = load_snapshot(&path1).unwrap();
+        assert_eq!(loaded_voice, voice);
+        assert_eq!(fields, vec![("a".to_string(), 3.0), ("b".to_string(), 4.5)]);
+
+        let _ = fs::remove_file(path0);
+        let _ = fs::remove_file(path1);
+    }
 }

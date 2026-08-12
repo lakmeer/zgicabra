@@ -27,7 +27,7 @@ impl ReverbFx {
 }
 
 impl Clone for ReverbFx {
-    fn clone (&self) -> ReverbFx { panic!("ReverbFx is not meant to be cloned -- built once in AuditionNode::new") }
+    fn clone (&self) -> ReverbFx { panic!("ReverbFx is not meant to be cloned -- built once in Engine::new") }
 }
 
 impl AudioNode for ReverbFx {

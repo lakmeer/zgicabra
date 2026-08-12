@@ -86,7 +86,7 @@ impl AudioNode for LowpassFx {
         let x     = (input[0] + input[1]) * 0.5;
         let level = input[2];
         // p1 carries the live `filter` hardware signal (0..1), fed in by
-        // AuditionNode -- see mod.rs.
+        // Engine -- see mod.rs.
         let cutoff_hz = linexp(0.0, 1.0, CUTOFF_LO, CUTOFF_HI, input[3]);
 
         let wet  = self.filter.tick(&Frame::from([x, cutoff_hz, FIXED_RESONANCE]))[0];

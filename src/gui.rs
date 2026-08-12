@@ -2,8 +2,9 @@
 //
 // GUI
 //
-// A winit + glow + Dear ImGui window for live-tuning the ModMatrix (rs.rs)
-// and driving the mock Hydra backend's inputs without a keyboard.
+// A winit + glow + Dear ImGui window for live-tuning the audio engine's
+// globals and the currently-selected Voice's params, and driving the mock
+// Hydra backend's inputs without a keyboard.
 //
 // winit/AppKit requires window creation and the event loop to run on the
 // process's main thread on macOS, so this owns main() when --gui is passed;
@@ -18,28 +19,29 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use fundsp::shared::Shared;
 use glutin::config::ConfigTemplateBuilder;
 use glutin::context::{ContextAttributesBuilder, NotCurrentGlContext};
 use glutin::display::GetGlDisplay;
 use glutin::prelude::*;
 use glutin::surface::{SurfaceAttributesBuilder, WindowSurface};
 use glutin_winit::DisplayBuilder;
-use imgui::{Drag, TableColumnFlags, TableColumnSetup, TableFlags, StyleColor, ImColor32};
+use imgui::Drag;
 use raw_window_handle::HasWindowHandle;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::window::{Fullscreen, WindowAttributes};
 
 use crate::hydra::MockControls;
-use crate::audio::{AudioHandles, GenCycler, FxCycler, AuditionNote, ModMatrix, snapshot};
-use crate::tools::{AtomicF32, rand_normal};
+use crate::audio::{AudioHandles, AuditionNote, GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, snapshot};
+use crate::tools::AtomicF32;
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
 
-// Local (GUI-thread-only) browser state for saved mod-matrix snapshots --
+const VOICE_NAMES: [&str; 2] = ["Growl", "Basic"];
+
+// Local (GUI-thread-only) browser state for saved voice-param snapshots --
 // save/load are one-off file actions the GUI thread can just do directly on
-// the same ModMatrix cells the sliders already write to, no cross-thread
-// cycler needed (contrast NamModelCycler, which the audio thread also reads
-// every block).
+// the same Shared cells the knobs already write to.
 struct SnapshotBrowser {
     names: Vec<String>,
     index: usize,
@@ -72,108 +74,6 @@ fn drag_speed (lo: f32, hi: f32) -> f32 {
     ((hi - lo).abs() / 200.0).max(0.0001)
 }
 
-fn randomise_weights (matrix: &ModMatrix) {
-    for spec in matrix.entries() {
-        // LFO depth rows are 0..1, not -1..1 -- a negative weight there
-        // would just flip the same saturation to the other rail.
-        let (mid, lo, hi) = if spec.name.starts_with("lfo") && spec.name.ends_with("_depth") {
-            (0.5, 0.0, 1.0)
-        } else {
-            (0.0, -1.0, 1.0)
-        };
-        for (_, cell) in spec.cells().into_iter().skip(3) {
-            cell.set_value((mid + rand_normal((hi - lo) / 6.0)).clamp(lo, hi));
-        }
-    }
-}
-
-fn randomise_gens (audio: &AudioHandles) {
-    audio.gen_1.randomise();
-    audio.gen_2.randomise();
-    audio.gen_3.randomise();
-    audio.gen_4.randomise();
-}
-
-fn draw_mod_matrix (ui: &imgui::Ui, matrix: &ModMatrix) {
-    let entries = matrix.entries();
-
-    let Some(_table) = ui.begin_table_with_flags(
-        "mod_matrix_grid",
-        15,
-        TableFlags::BORDERS | TableFlags::ROW_BG | TableFlags::RESIZABLE,
-    ) else { return };
-
-    // Param column wide enough for the longest row name ("main_sub_wave");
-    // knob columns clamped to just the knob's own diameter plus a hair of
-    // padding, since a knob (unlike a Drag box) has no text to grow into.
-    let knob_col = |name| TableColumnSetup {
-        flags: TableColumnFlags::WIDTH_FIXED,
-        init_width_or_weight: KNOB_RADIUS * 2.0 + 6.0,
-        ..TableColumnSetup::new(name)
-    };
-
-    ui.table_setup_column_with(TableColumnSetup {
-        flags: TableColumnFlags::WIDTH_FIXED,
-        init_width_or_weight: 100.0,
-        ..TableColumnSetup::new("param")
-    });
-    ui.table_setup_column_with(knob_col("lo"));
-    ui.table_setup_column_with(knob_col("hi"));
-    ui.table_setup_column_with(knob_col("curve"));
-    ui.table_setup_column_with(knob_col("pitch"));
-    ui.table_setup_column_with(knob_col("width"));
-    ui.table_setup_column_with(knob_col("filter"));
-    ui.table_setup_column_with(knob_col("fuzz"));
-    ui.table_setup_column_with(knob_col("thump"));
-    ui.table_setup_column_with(knob_col("vel"));
-    ui.table_setup_column_with(knob_col("acc"));
-    ui.table_setup_column_with(knob_col("lfo_1"));
-    ui.table_setup_column_with(knob_col("lfo_2"));
-    ui.table_setup_column_with(knob_col("lfo_3"));
-    ui.table_setup_column_with(knob_col("lfo_4"));
-    ui.table_headers_row();
-
-    for spec in entries {
-        ui.table_next_row();
-
-        ui.table_next_column();
-        ui.text(spec.name);
-
-        let lo = spec.cells()[1].1.value();
-        let hi = spec.cells()[2].1.value();
-
-        // LFO depth rows are 0..1, not -1..1 -- see randomise_weights.
-        let weight_range = if spec.name.starts_with("lfo") && spec.name.ends_with("_depth") {
-            (0.0, 1.0)
-        } else {
-            (-1.0, 1.0)
-        };
-
-        // cells() is [default, lo, hi, curve, pitch, width, filter, fuzz,
-        // thump, vel, acc, lfo_1..lfo_4] -- index 0 (default) is shown
-        // elsewhere (the module cards' own knobs), so skip it here. 1..2
-        // are lo/hi (knob swept over the row's own lo/hi), 3 is curve
-        // (0..1), 4.. are the mod matrix weight columns.
-        for (i, (cell_name, cell)) in spec.cells().into_iter().enumerate() {
-            if i == 0 { continue; }
-
-            ui.table_next_column();
-            let mut value = cell.value();
-            let id = format!("##{}_{}", spec.name, cell_name);
-
-            let (klo, khi) = match i {
-                1..=2 => (lo, hi),
-                3     => (0.0, 1.0),
-                _     => weight_range,
-            };
-
-            if knob(ui, &id, "", KNOB_RADIUS, klo, khi, &mut value) {
-                cell.set_value(value);
-            }
-        }
-    }
-}
-
 fn toggle_checkbox (ui: &imgui::Ui, label: &str, flag: &Arc<AtomicBool>) {
     let mut value = flag.load(Ordering::Relaxed);
     if ui.checkbox(label, &mut value) {
@@ -181,9 +81,10 @@ fn toggle_checkbox (ui: &imgui::Ui, label: &str, flag: &Arc<AtomicBool>) {
     }
 }
 
-// Fixed-stage bypass: the checkbox just sets the stage's own FxNode `level`
-// to 0 or 1 -- no separate flag underneath (see AudioHandles).
-fn level_checkbox (ui: &imgui::Ui, label: &str, level: &fundsp::shared::Shared) {
+// Bound to a bare Shared: checked when value >= 1.0. Used both for plain
+// enabled/disabled flags and for the *_bypass cells (in which case "checked"
+// reads as "bypass is on" -- the label passed in says which).
+fn level_checkbox (ui: &imgui::Ui, label: &str, level: &Shared) {
     let mut enabled = level.value() >= 1.0;
     if ui.checkbox(label, &mut enabled) {
         level.set_value(if enabled { 1.0 } else { 0.0 });
@@ -265,29 +166,25 @@ fn knob (ui: &imgui::Ui, id: &str, label: &str, radius: f32, lo: f32, hi: f32, v
     changed
 }
 
-// Reads/writes a ModMatrix row's base ("default") value through a knob,
-// ranged to that row's own lo/hi -- the Engine panel's per-module controls
-// are just this against whichever row names that module owns.
-fn draw_param_knob (ui: &imgui::Ui, matrix: &ModMatrix, row: &str, label: &str, radius: f32) {
-    let spec = matrix.get(row);
-    let cells = spec.cells();
-    let (lo, hi) = (cells[1].1.value(), cells[2].1.value());
-    let mut value = cells[0].1.value();
-    if knob(ui, &format!("##{row}"), label, radius, lo, hi, &mut value) {
-        cells[0].1.set_value(value);
+// Reads/writes a bare Shared through a knob, ranged to (lo, hi) -- every
+// global/voice param control is just this against whichever Shared cell it
+// owns, now that there's no ModMatrix row to pull lo/hi from.
+fn draw_shared_knob (ui: &imgui::Ui, id: &str, label: &str, lo: f32, hi: f32, cell: &Shared) {
+    let mut value = cell.value();
+    if knob(ui, id, label, KNOB_RADIUS, lo, hi, &mut value) {
+        cell.set_value(value);
     }
 }
 
 const KNOB_RADIUS: f32 = 8.0;
-// Simple cards (fixed knob set, no type-cycle row) vs. Gen/Fx cards, which
-// need extra height for the type-cycle row and extra width for up to 5
-// knobs in a row (level + FM's 4 params, the widest case -- see GEN_PARAMS).
-const CARD_SIZE:        [f32; 2] = [140.0, 66.0];
-const CARD_SIZE_CYCLER: [f32; 2] = [140.0, 90.0];
+// Simple cards (fixed knob set) vs. the voice card, which needs extra width
+// for the voice selector row plus up to 4 param knobs.
+const CARD_SIZE:       [f32; 2] = [140.0, 66.0];
+const VOICE_CARD_SIZE: [f32; 2] = [300.0, 110.0];
 
 // Bordered box with a title and an optional top-right bypass checkbox --
 // the Engine panel's one repeated "module card" shape.
-fn draw_module_card (ui: &imgui::Ui, title: &str, bypass: Option<&fundsp::shared::Shared>, size: [f32; 2], body: impl FnOnce(&imgui::Ui)) {
+fn draw_module_card (ui: &imgui::Ui, title: &str, bypass: Option<&Shared>, size: [f32; 2], body: impl FnOnce(&imgui::Ui)) {
     ui.child_window(format!("##card_{title}")).size(size).border(true).build(|| {
         ui.text(title);
         if let Some(level) = bypass {
@@ -304,118 +201,16 @@ fn draw_module_card (ui: &imgui::Ui, title: &str, bypass: Option<&fundsp::shared
 // placed side by side need to be wrapped in their own group() with
 // same_line() between groups, not called bare in sequence (that would
 // stack them vertically against the previous knob's label instead).
-fn draw_knob_row (ui: &imgui::Ui, matrix: &ModMatrix, knobs: &[(String, &str)]) {
-    for (i, (row, label)) in knobs.iter().enumerate() {
+fn draw_knob_row (ui: &imgui::Ui, knobs: &[(&str, &str, f32, f32, &Shared)]) {
+    for (i, (id, label, lo, hi, cell)) in knobs.iter().enumerate() {
         if i > 0 { ui.same_line(); }
-        ui.group(|| draw_param_knob(ui, matrix, row, label, KNOB_RADIUS));
+        ui.group(|| draw_shared_knob(ui, &format!("##{id}"), label, *lo, *hi, cell));
     }
-}
-
-// Gen/Fx slots share the same card shape: the existing type-cycle row,
-// then one knob row for level + whichever params the currently-selected
-// type actually uses (selected_params() leaves unused slots as "").
-fn draw_gen_card (ui: &imgui::Ui, matrix: &ModMatrix, label: &str, cycler: &GenCycler) {
-    draw_module_card(ui, label, None, CARD_SIZE_CYCLER, |ui| {
-        draw_gen_slot(ui, label, cycler);
-        let mut knobs = vec![(format!("{label}_lvl"), "level")];
-        for (i, param) in cycler.selected_params().into_iter().enumerate() {
-            if !param.is_empty() {
-                knobs.push((format!("{label}_p{}", i + 1), param));
-            }
-        }
-        draw_knob_row(ui, matrix, &knobs);
-    });
-}
-
-fn draw_fx_card (ui: &imgui::Ui, matrix: &ModMatrix, label: &str, cycler: &FxCycler) {
-    draw_module_card(ui, label, None, CARD_SIZE_CYCLER, |ui| {
-        draw_fx_slot(ui, label, cycler);
-        let mut knobs = vec![(format!("{label}_lvl"), "level")];
-        for (i, param) in cycler.selected_params().into_iter().enumerate() {
-            if !param.is_empty() {
-                knobs.push((format!("{label}_p{}", i + 1), param));
-            }
-        }
-        draw_knob_row(ui, matrix, &knobs);
-    });
-}
-
-fn draw_lfo_card (ui: &imgui::Ui, matrix: &ModMatrix, n: usize) {
-    draw_module_card(ui, &format!("LFO {n}"), None, CARD_SIZE, |ui| {
-        draw_knob_row(ui, matrix, &[(format!("lfo_{n}_rate"), "rate"), (format!("lfo_{n}_depth"), "depth")]);
-    });
-}
-
-fn randomise_all (audio: &AudioHandles) {
-    randomise_weights(&audio.mod_matrix);
-    randomise_gens(audio);
-}
-
-fn draw_wand_mock (ui: &imgui::Ui, label: &str, trigger: &Arc<AtomicBool>, stick_x: &Arc<AtomicF32>, stick_y: &Arc<AtomicF32>, buttons: &[Arc<AtomicBool>; 4]) {
-    ui.text(label);
-    xy_pad(ui, &format!("##{label}_stick"), 120.0, stick_x, stick_y);
-
-    toggle_checkbox(ui, &format!("Trigger##{label}"), trigger);
-
-    ui.text("Buttons");
-    for (i, button) in buttons.iter().enumerate() {
-        if i > 0 { ui.same_line(); }
-        toggle_checkbox(ui, &format!("{}##{label}_btn", i + 1), button);
-    }
-}
-
-fn draw_wand_rotation (ui: &imgui::Ui, label: &str, rot: &[Arc<AtomicF32>; 4]) {
-    ui.text(format!(
-        "{label} rot: [{:.3} {:.3} {:.3} {:.3}]",
-        rot[0].load(), rot[1].load(), rot[2].load(), rot[3].load(),
-    ));
-}
-
-// NAM model cycler -- deliberately independent of the hydra/zgicabra
-// VoiceChange path (rs.rs no longer reacts to it, see NamModelCycler's
-// doc comment); these buttons drive rs.rs's model selection directly, so
-// they work the same whether the mock or real hydra backend is active.
-fn draw_nam_model (ui: &imgui::Ui, models: &crate::audio::NamModelCycler) {
-    ui.text(format!("Model: {}", models.selected_name()));
-    if ui.button("< Model") { models.cycle(-1); }
-    ui.same_line();
-    if ui.button("Model >") { models.cycle(1); }
-}
-
-// One row per gen slot (1-4): cycles which GenNode that slot is currently
-// running, plus its one extra int field (e.g. BasicOscGen's waveform pick).
-// Same idea as draw_nam_model. The slot's level/p1-p4 live in the mod
-// matrix as gen_N_lvl/gen_N_p1..p4 rows -- see draw_mod_matrix -- so there's
-// no separate param grid here anymore (the old per-slot 12-param grid this
-// replaced is gone now that every GenNode shares one fixed 4-param shape).
-fn draw_gen_slot (ui: &imgui::Ui, label: &str, cycler: &GenCycler) {
-    if ui.button(format!("<")) { cycler.cycle(-1); }
-    ui.same_line();
-    ui.text(format!("{}", cycler.selected_name())); //, cycler.extra()));
-    ui.same_line();
-    if ui.button(format!(">")) { cycler.cycle(1); }
-
-    if ui.button(format!("X-")) { cycler.set_extra(cycler.extra() - 1); }
-    ui.same_line();
-    ui.text(format!("{}", cycler.extra()));
-    ui.same_line();
-    if ui.button(format!("X+")) { cycler.set_extra(cycler.extra() + 1); }
-}
-
-// One row per fx slot (1-4): cycles which FxNode that slot is currently
-// running. Same shape as draw_gen_slot minus the extra int field (no
-// current FxNode option uses one).
-fn draw_fx_slot (ui: &imgui::Ui, label: &str, cycler: &FxCycler) {
-    ui.text(format!("{label}: {}", cycler.selected_name()));
-    if ui.button(format!("< {label}")) { cycler.cycle(-1); }
-    ui.same_line();
-    if ui.button(format!("{label} >")) { cycler.cycle(1); }
 }
 
 // "Hold Note" toggle: drives AudioOutput's freq/gate cells directly so
-// weights/generators can be auditioned by ear without touching the wand
-// controller. Click to trigger and hold the gate open; click again to
-// release.
+// voices can be auditioned by ear without touching the wand controller.
+// Click to trigger and hold the gate open; click again to release.
 fn draw_audition_note (ui: &imgui::Ui, note: &AuditionNote, state: &mut AuditionState) {
     ui.set_next_item_width(80.0);
     Drag::new("Note##audition_pitch").range(0.0, 127.0).speed(0.2).build(ui, &mut state.pitch);
@@ -428,12 +223,65 @@ fn draw_audition_note (ui: &imgui::Ui, note: &AuditionNote, state: &mut Audition
     }
 }
 
-// Save/load buttons for the weight matrix (VoiceParams), plus a cycler over
-// every snapshot found on disk -- each save writes a new timestamped file
-// rather than overwriting, see audio::snapshot.
+// Voice selector: cycles voice_selected between VOICE_NAMES by index, same
+// "< label >" idiom the old gen/fx slot cyclers used.
+fn draw_voice_selector (ui: &imgui::Ui, selected: &Shared) {
+    let index = selected.value() as i32;
+    let name = VOICE_NAMES.get(index as usize).copied().unwrap_or("?");
+    ui.text(format!("Voice: {name}"));
+    if ui.button("< Voice") {
+        selected.set_value((index - 1).rem_euclid(VOICE_NAMES.len() as i32) as f32);
+    }
+    ui.same_line();
+    if ui.button("Voice >") {
+        selected.set_value((index + 1).rem_euclid(VOICE_NAMES.len() as i32) as f32);
+    }
+}
+
+// Growl's 4 macro knobs -- see wavetable_gen.rs for what each does.
+fn draw_voice_growl (ui: &imgui::Ui, growl: &GrowlHandle) {
+    draw_knob_row(ui, &[
+        ("growl_bass_drive", "bass drive", 0.0, 1.0, &growl.bass_drive),
+        ("growl_filter",     "filter",     0.0, 1.0, &growl.filter),
+        ("growl_space",      "space",      0.0, 1.0, &growl.space),
+        ("growl_warp",       "warp",       0.0, 1.0, &growl.warp),
+    ]);
+}
+
+// Basic's 4 oscillator mix levels.
+fn draw_voice_basic (ui: &imgui::Ui, basic: &BasicHandle) {
+    draw_knob_row(ui, &[
+        ("basic_sin",    "sin",    0.0, 1.0, &basic.sin_level),
+        ("basic_tri",    "tri",    0.0, 1.0, &basic.tri_level),
+        ("basic_square", "square", 0.0, 1.0, &basic.square_level),
+        ("basic_saw",    "saw",    0.0, 1.0, &basic.saw_level),
+    ]);
+}
+
+fn draw_voice_card (ui: &imgui::Ui, audio: &AudioHandles) {
+    draw_module_card(ui, "Voice", None, VOICE_CARD_SIZE, |ui| {
+        draw_voice_selector(ui, &audio.voice_selected);
+        ui.separator();
+        match audio.voice_selected.value() as i32 {
+            0 => draw_voice_growl(ui, &audio.growl),
+            1 => draw_voice_basic(ui, &audio.basic),
+            _ => {},
+        }
+    });
+}
+
+// Save/load buttons for the currently-selected voice's live params, plus a
+// cycler over every snapshot found on disk -- each save writes a new
+// "{voice_name}_{index}.snap" file rather than overwriting, see
+// audio::snapshot.
 fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut SnapshotBrowser) {
     if ui.button("Save Snapshot") {
-        if let Err(e) = snapshot::save_snapshot(audio) {
+        let result = match audio.voice_selected.value() as i32 {
+            0 => snapshot::save_snapshot(GrowlParams::voice_name(), &audio.growl.params().fields()),
+            1 => snapshot::save_snapshot(BasicParams::voice_name(), &audio.basic.params().fields()),
+            _ => Ok(std::path::PathBuf::new()),
+        };
+        if let Err(e) = result {
             eprintln!("║ 🟥 Failed to save snapshot: {e}");
         }
         browser.refresh();
@@ -457,8 +305,17 @@ fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut Sn
     if ui.button("Load Snapshot") {
         if let Some(name) = browser.names.get(browser.index) {
             let path = snapshot::snapshot_path(name);
-            if let Err(e) = snapshot::load_snapshot(&path, audio) {
-                eprintln!("║ 🟥 Failed to load snapshot: {e}");
+            match snapshot::load_snapshot(&path) {
+                Ok((voice_name, fields)) => {
+                    if voice_name == GrowlParams::voice_name() {
+                        audio.growl.load(&GrowlParams::from_fields(&fields));
+                    } else if voice_name == BasicParams::voice_name() {
+                        audio.basic.load(&BasicParams::from_fields(&fields));
+                    } else {
+                        eprintln!("║ 🟥 Snapshot '{name}' is for an unknown voice '{voice_name}'");
+                    }
+                },
+                Err(e) => eprintln!("║ 🟥 Failed to load snapshot: {e}"),
             }
         }
     }
@@ -505,83 +362,78 @@ fn draw_signal_state (ui: &imgui::Ui, bridge: &ZgicabraBridge) {
     }
 }
 
-// Engine panel: one card per module, grouped into rows the same way the
-// layout mockup does (utility row, LFOs, Gens, Compressor solo, FXs,
-// Amp/Crusher/Reverb solo). Every card reads/writes the same ModMatrix
-// rows the Matrix panel's table edits -- a card's knob is just that row's
-// "default" cell, see draw_param_knob.
-fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, audition_state: &mut AuditionState) {
-    let matrix = &audio.mod_matrix;
-
-    draw_nam_model(ui, &audio.nam_models);
-    ui.same_line();
-    level_checkbox(ui, "Bypass Lowpass", &audio.lowpass_level);
-    ui.same_line();
+// Engine panel: globals first (main sub, dry sub, amp, reverb, limiter,
+// voice selector), then the currently-selected voice's own param card.
+fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, audition_state: &mut AuditionState, snapshot_browser: &mut SnapshotBrowser) {
     draw_audition_note(ui, &audio.audition_note, audition_state);
     ui.separator();
 
     draw_module_card(ui, "Main Sub", None, CARD_SIZE, |ui| {
-        draw_knob_row(ui, matrix, &[("main_sub_wave".into(), "wave"), ("main_sub_lvl".into(), "level")]);
+        draw_knob_row(ui, &[
+            ("main_sub_wave", "wave",  0.0, 1.0, &audio.main_sub_wave),
+            ("main_sub_lvl",  "level", 0.0, 1.0, &audio.main_sub_lvl),
+        ]);
     });
     ui.same_line();
     draw_module_card(ui, "Dry Sub", None, CARD_SIZE, |ui| {
-        draw_knob_row(ui, matrix, &[("dry_sub_lvl".into(), "level")]);
+        draw_knob_row(ui, &[("dry_sub_lvl", "level", 0.0, 1.0, &audio.dry_sub_lvl)]);
     });
     ui.same_line();
     draw_module_card(ui, "Thump", None, CARD_SIZE, |ui| {
-        draw_knob_row(ui, matrix, &[("thump_peak".into(), "peak"), ("thump_decay".into(), "decay")]);
+        draw_knob_row(ui, &[
+            ("thump_peak",  "peak",  0.0,  1.5, &audio.thump_peak),
+            ("thump_decay", "decay", 0.02, 1.0, &audio.thump_decay),
+        ]);
     });
 
-    for n in 1..=4 {
-        draw_lfo_card(ui, matrix, n);
-        if n < 4 { ui.same_line(); }
+    draw_module_card(ui, "Amp", Some(&audio.amp_bypass), CARD_SIZE, |ui| {
+        draw_knob_row(ui, &[
+            ("amp_blend",     "blend", 0.0, 1.0,    &audio.amp_blend),
+            ("amp_boost",     "boost", 1.0, 4.0,    &audio.amp_boost),
+            ("amp_crossover", "xover", 0.0, 2000.0, &audio.amp_crossover),
+        ]);
+    });
+    ui.same_line();
+    // reverb_decay/damp/size are baked into the reverb tail at engine
+    // construction time -- editing them here only takes effect on the next
+    // process restart, same documented caveat this project has always had.
+    draw_module_card(ui, "Reverb", Some(&audio.reverb_bypass), CARD_SIZE, |ui| {
+        draw_knob_row(ui, &[
+            ("reverb_size",  "size",  10.0, 30.0, &audio.reverb_size),
+            ("reverb_decay", "decay", 0.1,  4.0,  &audio.reverb_decay),
+            ("reverb_damp",  "damp",  0.0,  1.0,  &audio.reverb_damp),
+            ("reverb_dry",   "dry",   0.0,  1.0,  &audio.reverb_dry),
+        ]);
+    });
+    ui.same_line();
+    draw_module_card(ui, "Limiter", Some(&audio.limiter_bypass), CARD_SIZE, |ui| {
+        draw_knob_row(ui, &[("limiter_thresh", "thresh", -60.0, 0.0, &audio.limiter_thresh)]);
+    });
+
+    ui.separator();
+    draw_voice_card(ui, audio);
+    ui.separator();
+    draw_snapshot_browser(ui, audio, snapshot_browser);
+}
+
+fn draw_wand_mock (ui: &imgui::Ui, label: &str, trigger: &Arc<AtomicBool>, stick_x: &Arc<AtomicF32>, stick_y: &Arc<AtomicF32>, buttons: &[Arc<AtomicBool>; 4]) {
+    ui.text(label);
+    xy_pad(ui, &format!("##{label}_stick"), 120.0, stick_x, stick_y);
+
+    toggle_checkbox(ui, &format!("Trigger##{label}"), trigger);
+
+    ui.text("Buttons");
+    for (i, button) in buttons.iter().enumerate() {
+        if i > 0 { ui.same_line(); }
+        toggle_checkbox(ui, &format!("{}##{label}_btn", i + 1), button);
     }
+}
 
-    draw_gen_card(ui, matrix, "gen_1", &audio.gen_1);
-    ui.same_line();
-    draw_gen_card(ui, matrix, "gen_2", &audio.gen_2);
-    ui.same_line();
-    draw_gen_card(ui, matrix, "gen_3", &audio.gen_3);
-    ui.same_line();
-    draw_gen_card(ui, matrix, "gen_4", &audio.gen_4);
-
-    draw_module_card(ui, "Compressor", Some(&audio.compressor_level), CARD_SIZE, |ui| {
-        draw_knob_row(ui, matrix, &[
-            ("comp_thresh".into(), "thresh"),
-            ("comp_attack".into(), "attack"),
-            ("comp_depth".into(), "depth"),
-        ]);
-    });
-
-    draw_fx_card(ui, matrix, "fx_1", &audio.fx_1);
-    ui.same_line();
-    draw_fx_card(ui, matrix, "fx_2", &audio.fx_2);
-    ui.same_line();
-    draw_fx_card(ui, matrix, "fx_3", &audio.fx_3);
-    ui.same_line();
-    draw_fx_card(ui, matrix, "fx_4", &audio.fx_4);
-
-    draw_module_card(ui, "Amp", Some(&audio.nam_level), CARD_SIZE, |ui| {
-        draw_knob_row(ui, matrix, &[("amp_blend".into(), "blend"), ("amp_boost".into(), "boost")]);
-    });
-    ui.same_line();
-    draw_module_card(ui, "Crusher", Some(&audio.crusher_level), CARD_SIZE, |ui| {
-        draw_knob_row(ui, matrix, &[
-            ("crush_thresh".into(), "thresh"),
-            ("crush_attack".into(), "attack"),
-            ("crush_depth".into(), "depth"),
-            ("crush_boost".into(), "boost"),
-        ]);
-    });
-    ui.same_line();
-    draw_module_card(ui, "Reverb", Some(&audio.reverb_level), CARD_SIZE, |ui| {
-        draw_knob_row(ui, matrix, &[
-            ("reverb_size".into(), "size"),
-            ("reverb_decay".into(), "decay"),
-            ("reverb_damp".into(), "damp"),
-            ("reverb_wet".into(), "wet"),
-        ]);
-    });
+fn draw_wand_rotation (ui: &imgui::Ui, label: &str, rot: &[Arc<AtomicF32>; 4]) {
+    ui.text(format!(
+        "{label} rot: [{:.3} {:.3} {:.3} {:.3}]",
+        rot[0].load(), rot[1].load(), rot[2].load(), rot[3].load(),
+    ));
 }
 
 // Hydra: the physical/mock wand controller. Left wand | signal-override
@@ -631,43 +483,24 @@ fn draw_hydra_panel (ui: &imgui::Ui, mock_controls: Option<&MockControls>, bridg
     if ui.button("Fuzz") { bridge.fuzz.toggle(); }
 }
 
-fn draw_matrix_panel (ui: &imgui::Ui, audio: &AudioHandles, snapshot_browser: &mut SnapshotBrowser) {
-    if ui.button("RND") { randomise_all(audio); }
-    ui.same_line();
-    draw_snapshot_browser(ui, audio, snapshot_browser);
-    ui.separator();
-    draw_mod_matrix(ui, &audio.mod_matrix);
-}
-
 fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge, audition_state: &mut AuditionState, snapshot_browser: &mut SnapshotBrowser) {
     let [screen_width, screen_height] = ui.io().display_size;
-    let left_w = screen_width * 0.57;
     let engine_h = screen_height * 0.63;
 
     ui.window("Engine")
         .position([10.0, 10.0], imgui::Condition::FirstUseEver)
-        .size([left_w, engine_h], imgui::Condition::FirstUseEver)
+        .size([screen_width - 20.0, engine_h], imgui::Condition::FirstUseEver)
         .build(|| {
             match audio {
-                Some(audio) => draw_engine_panel(ui, audio, audition_state),
+                Some(audio) => draw_engine_panel(ui, audio, audition_state, snapshot_browser),
                 None => ui.text("Engine controls only available with the --audio backend."),
             }
         });
 
     ui.window("Hydra")
         .position([10.0, engine_h + 20.0], imgui::Condition::FirstUseEver)
-        .size([left_w, screen_height - engine_h - 30.0], imgui::Condition::FirstUseEver)
+        .size([screen_width - 20.0, screen_height - engine_h - 30.0], imgui::Condition::FirstUseEver)
         .build(|| draw_hydra_panel(ui, mock_controls, bridge));
-
-    ui.window("Matrix")
-        .position([left_w + 20.0, 10.0], imgui::Condition::FirstUseEver)
-        .size([screen_width - left_w - 30.0, screen_height - 20.0], imgui::Condition::FirstUseEver)
-        .build(|| {
-            match audio {
-                Some(audio) => draw_matrix_panel(ui, audio, snapshot_browser),
-                None => ui.text("Mod matrix only available with the --audio backend."),
-            }
-        });
 }
 
 // Dumps the current framebuffer to a PNG, bypassing the OS screenshot

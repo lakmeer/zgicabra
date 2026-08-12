@@ -27,6 +27,12 @@ const TARGET_LOUDNESS_DB: f32 = -18.0;
 // the reference plugin's DC blocker. R = exp(-2*pi*fc/fs).
 const DC_BLOCKER_R: f32 = 0.9993;
 
+// Crossover split runs at the same fixed rate the model itself is pinned to
+// (see Engine::set_sample_rate's NamStage no-op and pick_output_config in
+// mod.rs) -- not read from set_sample_rate since, like the DC blocker, this
+// stage never actually sees a different rate in practice.
+const CROSSOVER_SAMPLE_RATE: f32 = super::NAM_SAMPLE_RATE as f32;
+
 // A handle for cycling through the discovered NAM models (index 0 is always
 // "Bypass" -- no model, dry passthrough) and reading the current selection's
 // name. Independent of Zgicabra's Voice enum: something else (currently
@@ -125,6 +131,27 @@ pub fn default_model_index (names: &[String]) -> usize {
     names.iter().position(|n| n == DEFAULT_NAM_MODEL).unwrap_or(0)
 }
 
+// Loads exactly one named model by itself (nam/{name}.nam), no Bypass slot
+// and no relative input-gain calibration against other models (there are
+// none in play) -- just this model's own loudness-metadata output
+// normalization. Used for the fixed "amp" stage (see mod.rs), which needs
+// two fully independent instances (one per channel, each with its own
+// WaveNet dilation state) rather than one shared/cycled slot.
+pub fn load_named_model (name: &str) -> io::Result<NamModelSlot> {
+    let path_str = format!("{NAM_DIR}/{name}.nam");
+
+    let nam_model = NamModel::from_file(&path_str)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to load NAM model '{path_str}': {e}")))?;
+    let model = Model::from_nam(&nam_model)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to build NAM model '{path_str}': {e}")))?;
+
+    let output_gain = nam_model.loudness()
+        .map(|loudness| db_amp(TARGET_LOUDNESS_DB - loudness))
+        .unwrap_or(1.0);
+
+    Ok(NamModelSlot { model: Arc::new(Mutex::new(model)), input_gain: 1.0, output_gain })
+}
+
 // `Model` (nam-rs) isn't Clone, but AudioNode requires `Self: Clone` as a
 // structural bound (fundsp's generic combinator plumbing needs it, even
 // though nothing here actually clones a live NamStage). Arc<Mutex<_>> gets
@@ -156,21 +183,30 @@ pub struct NamStage {
     // One-pole DC blocker state, carried across calls (see DC_BLOCKER_R).
     dc_prev_x: f32,
     dc_prev_y: f32,
-    // Pre-model dry copy of the current block, for the dry/wet blend at the
-    // end of process_block -- sized once at construction, never reallocated
-    // on the audio thread.
+    // Pre-model dry copy of the current block (the high band once crossover
+    // has split it off), for the dry/wet blend at the end of process_block --
+    // sized once at construction, never reallocated on the audio thread.
     dry_scratch: Vec<f32>,
+    // Crossover low-band state (one-pole lowpass, carried across calls) and
+    // its scratch -- the low band never touches the model, just gets added
+    // back after. Sized once, never reallocated on the audio thread.
+    xover_lp:     f32,
+    low_scratch:  Vec<f32>,
 }
 
 impl NamStage {
     pub fn new (models: Vec<Option<NamModelSlot>>, selected: Shared) -> NamStage {
-        NamStage { models, selected, dc_prev_x: 0.0, dc_prev_y: 0.0, dry_scratch: vec![0.0; NAM_BLOCK_CAP] }
+        NamStage {
+            models, selected, dc_prev_x: 0.0, dc_prev_y: 0.0,
+            dry_scratch: vec![0.0; NAM_BLOCK_CAP],
+            xover_lp: 0.0, low_scratch: vec![0.0; NAM_BLOCK_CAP],
+        }
     }
 
     // No-op: the model runs at its own fixed training rate (NAM_SAMPLE_RATE
     // in mod.rs, which pick_output_config already pins the device to) and
     // the DC blocker's R is a fixed constant, not derived from sample rate.
-    // Exists only so AuditionNode::set_sample_rate's uniform per-field loop
+    // Exists only so Engine::set_sample_rate's uniform per-field loop
     // doesn't need a special case for this one field.
     pub fn set_sample_rate (&mut self, _sr: f64) {}
 
@@ -190,16 +226,30 @@ impl NamStage {
     // reduces to 100% dry at blend=0, so behavior at the output is
     // unchanged.
     //
-    // level/blend/boost are read once for the whole block by the caller
-    // (see AuditionNode::run_nam in mod.rs) rather than per sample -- these
-    // are slow knob-rate values, not audio-rate signals, so this costs no
-    // audible resolution.
-    pub(crate) fn process_block (&mut self, block: &mut [f32], level: f32, blend: f32, boost: f32) {
+    // level/blend/boost/crossover_hz are read once for the whole block by
+    // the caller (see Engine::run_nam in mod.rs) rather than per sample --
+    // these are slow knob-rate values, not audio-rate signals, so this
+    // costs no audible resolution.
+    //
+    // crossover_hz splits the block into a low band that stays dry (never
+    // touches the model, always summed back in full below, not subject to
+    // level/blend/bypass) and a high band that goes through the usual
+    // model/blend/level pipeline -- default 0Hz makes the lowpass a no-op
+    // (see xover_alpha), so the high band is the full signal and behavior
+    // is unchanged from before this split existed.
+    pub(crate) fn process_block (&mut self, block: &mut [f32], level: f32, blend: f32, boost: f32, crossover_hz: f32) {
         let Some(slot) = self.models.get(self.selected.value() as usize).and_then(Option::as_ref) else {
             return; // Bypass (or an out-of-range index): leave `block` untouched (dry).
         };
         let model = slot.model.clone();
         let (input_gain, output_gain) = (slot.input_gain, slot.output_gain);
+
+        let alpha = Self::xover_alpha(crossover_hz);
+        for (i, s) in block.iter_mut().enumerate() {
+            self.xover_lp += alpha * (*s - self.xover_lp);
+            self.low_scratch[i] = self.xover_lp;
+            *s -= self.xover_lp; // high band only, from here on
+        }
 
         self.dry_scratch[..block.len()].copy_from_slice(block);
 
@@ -218,8 +268,18 @@ impl NamStage {
         for (i, wet) in block.iter_mut().enumerate() {
             let dry = self.dry_scratch[i];
             let modeled = dry * (1.0 - blend) + *wet * blend;
-            *wet = dry * (1.0 - level) + modeled * level;
+            *wet = dry * (1.0 - level) + modeled * level + self.low_scratch[i];
         }
+    }
+
+    // One-pole (6dB/oct) lowpass coefficient for the crossover split -- a
+    // "gentle" slope, not a steep multi-order crossover, since this is just
+    // keeping sub-bass out of the model rather than a precise 2-way split.
+    // 0Hz collapses to alpha=0: the lowpass state never moves off its
+    // initial 0.0, so the "low band" stays silent and the high band is the
+    // untouched full signal -- the inaudible/no-op default the caller wants.
+    fn xover_alpha (fc: f32) -> f32 {
+        1.0 - (-2.0 * std::f32::consts::PI * fc / CROSSOVER_SAMPLE_RATE).exp()
     }
 
     // ~5Hz one-pole highpass to strip WaveNet DC bias (see DC_BLOCKER_R).
