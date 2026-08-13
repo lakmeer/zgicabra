@@ -48,13 +48,31 @@ use super::{Backend,ControllerFrame,LEFT_HAND,RIGHT_HAND,BUTTON_1,BUTTON_2,BUTTO
 // uses to drive signal state, just fed from MIDI instead of imgui widgets.
 // No controller present -> quietly skip, same as the rest of mock.rs's
 // "works fine with nothing plugged in" ethos.
-const CC_FILTER: u8 = 1;
-const CC_WIDTH:  u8 = 2;
-const CC_FUZZ:   u8 = 3;
-const CC_THUMP:  u8 = 4;
+const CC_FILTER:    u8 = 1;
+const CC_WIDTH:     u8 = 2;
+const CC_FUZZ:      u8 = 3;
+const CC_THUMP:     u8 = 4;
+const CC_ROT_LEFT:  u8 = 7;
+const CC_ROT_RIGHT: u8 = 8;
+// CC7/8's full sweep maxes out at a quarter turn (90 degrees) in either
+// direction, not a full -1..1 twist -- keeps the knob from being wildly
+// oversensitive vs. an actual wand twist.
+const TWIST_ANGLE_RANGE: f32 = PI / 2.0;
+
+// rot_quat[2] is a quaternion component (sin(angle/2) for rotation about
+// the twist axis), not the angle itself -- storing a fraction-of-a-turn
+// straight into it (the old TWIST_RANGE approach) made the low end of the
+// knob's travel undersensitive and the high end oversensitive, since sin()
+// isn't linear. Converting the target angle through sin(angle/2) here is
+// what draw_hydra_panel's xy_pad has to invert (via asin) to get the angle
+// back for display -- see gui.rs.
+fn twist_component (level: f32) -> f32 {
+    let angle = (1.0 - level * 2.0) * TWIST_ANGLE_RANGE;
+    (angle * 0.5).sin()
+}
 
 // Connects to the first available MIDI input port, if any, and stores
-// incoming CC 1-4 / pitch-bend values straight into the given atomics, and
+// incoming CC 1-4/7-8 / pitch-bend values straight into the given atomics, and
 // pushes Note On/Off as DeltaEvents onto `notes` (drained each tick by
 // hydra::take_midi_notes -- discrete events, so unlike the CC/bend atomics
 // above they go through the normal DeltaEvent pipeline rather than the
@@ -64,7 +82,7 @@ const CC_THUMP:  u8 = 4;
 // it matches the currently-held one. Returns None (without panicking) if no
 // MIDI backend/port is available -- the caller just proceeds without MIDI
 // input, same as running with no Hydra hardware attached.
-fn connect_midi (filter: Arc<AtomicF32>, width: Arc<AtomicF32>, fuzz: Arc<AtomicF32>, thump: Arc<AtomicF32>, bend: Arc<AtomicF32>, notes: Arc<Mutex<VecDeque<DeltaEvent>>>) -> Option<MidiInputConnection<()>> {
+fn connect_midi (filter: Arc<AtomicF32>, width: Arc<AtomicF32>, fuzz: Arc<AtomicF32>, thump: Arc<AtomicF32>, bend: Arc<AtomicF32>, rot_left: Arc<AtomicF32>, rot_right: Arc<AtomicF32>, notes: Arc<Mutex<VecDeque<DeltaEvent>>>) -> Option<MidiInputConnection<()>> {
     let mut midi_in = MidiInput::new("zgicabra").ok()?;
     midi_in.ignore(Ignore::None);
 
@@ -85,6 +103,8 @@ fn connect_midi (filter: Arc<AtomicF32>, width: Arc<AtomicF32>, fuzz: Arc<Atomic
                     CC_WIDTH  => width.store(level),
                     CC_FUZZ   => fuzz.store(level),
                     CC_THUMP  => thump.store(level),
+                    CC_ROT_LEFT  => rot_left.store(twist_component(level)),
+                    CC_ROT_RIGHT => rot_right.store(twist_component(level)),
                     _ => {},
                 }
             },
@@ -237,11 +257,17 @@ pub struct MockBackend {
     sequence: u8,
     _cbreak_guard: CbreakGuard, // restores the terminal on drop
 
-    midi_filter: Arc<AtomicF32>,
-    midi_width:  Arc<AtomicF32>,
-    midi_fuzz:   Arc<AtomicF32>,
-    midi_thump:  Arc<AtomicF32>,
-    midi_bend:   Arc<AtomicF32>,
+    midi_filter:    Arc<AtomicF32>,
+    midi_width:     Arc<AtomicF32>,
+    midi_fuzz:      Arc<AtomicF32>,
+    midi_thump:     Arc<AtomicF32>,
+    midi_bend:      Arc<AtomicF32>,
+    // CC7/8: fed straight into wand_frame's rot_quat twist slot (see
+    // wand_frame) rather than through a SignalOverride like the other
+    // midi_* atomics -- these need to drive zgicabra's own rotation->bend
+    // math, not bypass it the way midi_bend does.
+    midi_rot_left:  Arc<AtomicF32>,
+    midi_rot_right: Arc<AtomicF32>,
     midi_connected: bool,
     notes: Arc<Mutex<VecDeque<DeltaEvent>>>, // Note On/Off/PC events, MIDI or audition-sequence sourced
     _midi_connection: Option<MidiInputConnection<()>>, // held to keep the callback alive; disconnects on drop
@@ -262,15 +288,17 @@ impl MockBackend {
 
         println!("Hydra::start - mock backend active. 'z'/'.' toggle triggers, 'a'/'s' cycle voice, '-'/'=' tune, arrows steer left stick, 'q' quits.");
 
-        let midi_filter = Arc::new(AtomicF32::new(0.0));
-        let midi_width  = Arc::new(AtomicF32::new(0.0));
-        let midi_fuzz   = Arc::new(AtomicF32::new(0.0));
-        let midi_thump  = Arc::new(AtomicF32::new(0.0));
-        let midi_bend   = Arc::new(AtomicF32::new(0.0));
+        let midi_filter    = Arc::new(AtomicF32::new(0.0));
+        let midi_width     = Arc::new(AtomicF32::new(0.0));
+        let midi_fuzz      = Arc::new(AtomicF32::new(0.0));
+        let midi_thump     = Arc::new(AtomicF32::new(0.0));
+        let midi_bend      = Arc::new(AtomicF32::new(0.0));
+        let midi_rot_left  = Arc::new(AtomicF32::new(0.0));
+        let midi_rot_right = Arc::new(AtomicF32::new(0.0));
 
         let notes: Arc<Mutex<VecDeque<DeltaEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
 
-        let midi_connection = connect_midi(midi_filter.clone(), midi_width.clone(), midi_fuzz.clone(), midi_thump.clone(), midi_bend.clone(), notes.clone());
+        let midi_connection = connect_midi(midi_filter.clone(), midi_width.clone(), midi_fuzz.clone(), midi_thump.clone(), midi_bend.clone(), midi_rot_left.clone(), midi_rot_right.clone(), notes.clone());
         let midi_connected = midi_connection.is_some();
         if !midi_connected {
             println!("Hydra::start - no MIDI controller found, proceeding without MIDI input.");
@@ -297,6 +325,8 @@ impl MockBackend {
             midi_fuzz,
             midi_thump,
             midi_bend,
+            midi_rot_left,
+            midi_rot_right,
             midi_connected,
             notes,
             _midi_connection: midi_connection,
@@ -404,9 +434,9 @@ impl MockBackend {
 
         self.sequence = self.sequence.wrapping_add(1);
 
-        controllers[0] = self.wand_frame(LEFT_HAND,  0.0, self.left_trigger.load(),
+        controllers[0] = self.wand_frame(LEFT_HAND,  0.0, self.left_trigger.load(), self.midi_rot_left.load(),
             self.left_stick_x.load(), self.left_stick_y.load(), &self.left_buttons);
-        controllers[1] = self.wand_frame(RIGHT_HAND, PI,  self.right_trigger.load(),
+        controllers[1] = self.wand_frame(RIGHT_HAND, PI,  self.right_trigger.load(), self.midi_rot_right.load(),
             self.right_stick_x.load(), self.right_stick_y.load(), &self.right_buttons);
     }
 
@@ -437,7 +467,7 @@ impl MockBackend {
         }
     }
 
-    fn wand_frame (&self, hand: u8, phase: f32, trigger: f32, stick_x: f32, stick_y: f32, buttons: &[Arc<AtomicBool>; 4]) -> ControllerFrame {
+    fn wand_frame (&self, hand: u8, phase: f32, trigger: f32, twist: f32, stick_x: f32, stick_y: f32, buttons: &[Arc<AtomicBool>; 4]) -> ControllerFrame {
         let mut frame = ControllerFrame::new();
 
         frame.which_hand      = hand;
@@ -447,6 +477,11 @@ impl MockBackend {
         frame.joystick_x      = stick_x.clamp(-1.0, 1.0);
         frame.joystick_y      = stick_y.clamp(-1.0, 1.0);
 
+        // rot_quat[2] (twist) is CC7/8-driven regardless of sine_drift --
+        // see copy_frame_to_wand/wand.twist in zgicabra.rs, which is what
+        // actually turns this into bend.
+        frame.rot_quat[2] = twist.clamp(-1.0, 1.0);
+
         if self.sine_drift.load(Ordering::Relaxed) {
             frame.pos = [
                 sin(0.13, phase)       * 200.0,
@@ -454,12 +489,9 @@ impl MockBackend {
                 sin(0.09, phase + 2.0) * 200.0,
             ];
 
-            frame.rot_quat = [
-                sin(0.19, phase),
-                sin(0.17, phase + 0.5),
-                sin(0.15, phase + 1.5),
-                0.0,
-            ];
+            frame.rot_quat[0] = sin(0.19, phase);
+            frame.rot_quat[1] = sin(0.17, phase + 0.5);
+            frame.rot_quat[3] = 0.0;
         }
 
         for (bit, pressed) in BUTTON_BITS.iter().zip(buttons.iter()) {

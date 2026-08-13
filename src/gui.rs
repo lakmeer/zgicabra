@@ -86,8 +86,15 @@ fn level_checkbox (ui: &imgui::Ui, label: &str, level: &Shared) {
 
 // A draggable 2D pad: click/drag anywhere inside to set (x, y) in [-1, 1],
 // y flipped so up (top of the pad) is positive -- matches joystick_y
-// convention elsewhere (ControllerFrame, Joystick).
-fn xy_pad (ui: &imgui::Ui, id: &str, size: f32, x: &Arc<AtomicF32>, y: &Arc<AtomicF32>) {
+// convention elsewhere (ControllerFrame, Joystick). `twist` is the wand's
+// raw rot_quat[2] component (see draw_hydra_panel) -- not itself an angle,
+// since rot is a quaternion (see ui.rs's draw_wand: `wand.twist`, i.e.
+// rot_quat[2]*2.0, is what that already-working TUI view uses as its
+// facing angle), so it's doubled here the same way before being handed to
+// cos/sin to spin the crosshair. The background is already a circle so it
+// doesn't need rotating, and imgui has no built-in rotated-primitive
+// support anyway, so this rotates the two line endpoints by hand.
+fn xy_pad (ui: &imgui::Ui, id: &str, size: f32, twist: f32, x: &Arc<AtomicF32>, y: &Arc<AtomicF32>) {
     let origin = ui.cursor_screen_pos();
     ui.invisible_button(id, [size, size]);
 
@@ -103,22 +110,25 @@ fn xy_pad (ui: &imgui::Ui, id: &str, size: f32, x: &Arc<AtomicF32>, y: &Arc<Atom
     }
 
     let draw_list = ui.get_window_draw_list();
-    let p_min = origin;
-    let p_max = [origin[0] + size, origin[1] + size];
     let center = [origin[0] + size/2.0, origin[1] + size/2.0];
 
     let bg = if active { [0.30, 0.34, 0.42, 1.0] } else if hovered { [0.22, 0.25, 0.31, 1.0] } else { [0.15, 0.16, 0.20, 1.0] };
     draw_list.add_circle(center, size/2.0, bg).filled(true).build();
     draw_list.add_circle(center, size/2.0, [0.5, 0.5, 0.55, 1.0]).build();
 
-    let cx = origin[0] + size * 0.5;
-    let cy = origin[1] + size * 0.5;
-    draw_list.add_line([cx, p_min[1]], [cx, p_max[1]], [0.4, 0.4, 0.45, 1.0]).build();
-    draw_list.add_line([p_min[0], cy], [p_max[0], cy], [0.4, 0.4, 0.45, 1.0]).build();
+    let (s, c) = (twist * 2.0).sin_cos();
+    let half = size * 0.5;
+    let spoke = |lx: f32, ly: f32| [center[0] + lx * c - ly * s, center[1] + lx * s + ly * c];
+    draw_list.add_line(spoke(-half, 0.0), spoke(half, 0.0), [0.4, 0.4, 0.45, 1.0]).build();
+    draw_list.add_line(spoke(0.0, -half), spoke(0.0, half), [0.4, 0.4, 0.45, 1.0]).build();
 
-    let px = origin[0] + (x.load() * 0.5 + 0.5) * size;
-    let py = origin[1] + (1.0 - (y.load() * 0.5 + 0.5)) * size;
-    draw_list.add_circle([px, py], 5.0, [0.95, 0.80, 0.30, 1.0]).filled(true).build();
+    // Joystick offset is expressed in the wand's own (rotated) frame too --
+    // the stick sits on the wand, so twisting the wand carries it around
+    // with the crosshair -- and a stalk from center to the dot reads as the
+    // joystick itself, not just a floating position marker.
+    let dot = spoke(x.load() * half, -y.load() * half);
+    draw_list.add_line(center, dot, [0.95, 0.80, 0.30, 1.0]).thickness(2.0).build();
+    draw_list.add_circle(dot, 5.0, [0.95, 0.80, 0.30, 1.0]).filled(true).build();
 }
 
 // A rotary knob: click and drag vertically to change value within [lo, hi]
@@ -216,6 +226,10 @@ fn vslider (ui: &imgui::Ui, id: &str, label: &str, size: [f32; 2], lo: f32, hi: 
 
 const KNOB_RADIUS: f32 = 8.0;
 const VSLIDER_SIZE: [f32; 2] = [24.0, 90.0];
+// Same width as the trigger hslider (see draw_wand_mock) so the width
+// double-slider lines up with them when it sits atop the signal column,
+// between the two wands' trigger rows.
+const HCENTER_SIZE: [f32; 2] = [120.0, 18.0];
 
 // A horizontal fader for the analog trigger (0..1, hardware reports a real
 // depth via TRIG_SCALE -- see hydra/hid.rs -- so the mock side needs a
@@ -253,6 +267,43 @@ fn hslider (ui: &imgui::Ui, id: &str, size: [f32; 2], mirrored: bool, value: &Ar
     let (fill_from, fill_to) = if mirrored { (p_max[0] - t * w, p_max[0]) } else { (p_min[0], p_min[0] + t * w) };
     draw_list.add_rect([fill_from, p_min[1]], [fill_to, p_max[1]], [0.95, 0.80, 0.30, 1.0]).filled(true).build();
 
+    changed
+}
+
+// A double-ended horizontal fader: still a single 0..1 value, but it fills
+// outward from the center in both directions at once rather than from an
+// edge -- width's "spread" reads more naturally as a distance from center
+// than as a left-to-right quantity. Drag position maps to distance from
+// center, so dragging toward either edge drives the value the same way.
+fn hslider_center (ui: &imgui::Ui, id: &str, size: [f32; 2], value: &mut f32) -> bool {
+    let [w, h] = size;
+    let p_min = ui.cursor_screen_pos();
+    ui.invisible_button(id, size);
+
+    let active  = ui.is_item_active();
+    let hovered = ui.is_item_hovered();
+    let mut changed = false;
+
+    if active {
+        let mouse_x = ui.io().mouse_pos[0];
+        let t = ((mouse_x - p_min[0]) / w).clamp(0.0, 1.0);
+        let new_value = ((t - 0.5).abs() * 2.0).clamp(0.0, 1.0);
+        if new_value != *value {
+            *value = new_value;
+            changed = true;
+        }
+    }
+
+    let p_max = [p_min[0] + w, p_min[1] + h];
+    let draw_list = ui.get_window_draw_list();
+    let bg = if active { [0.30, 0.34, 0.42, 1.0] } else if hovered { [0.22, 0.25, 0.31, 1.0] } else { [0.15, 0.16, 0.20, 1.0] };
+    draw_list.add_rect(p_min, p_max, bg).filled(true).build();
+    draw_list.add_rect(p_min, p_max, [0.5, 0.5, 0.55, 1.0]).build();
+
+    let center_x = (p_min[0] + p_max[0]) * 0.5;
+    let half = value.clamp(0.0, 1.0) * 0.5 * w;
+    draw_list.add_rect([center_x - half, p_min[1]], [center_x + half, p_max[1]], [0.95, 0.80, 0.30, 1.0]).filled(true).build();
+    draw_list.add_line([center_x, p_min[1]], [center_x, p_max[1]], [1.0, 1.0, 1.0, 1.0]).build();
     changed
 }
 // Simple cards (fixed knob set) vs. the voice card, which needs extra width
@@ -460,35 +511,40 @@ fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut Sn
     }
 }
 
-// One draggable row for a SignalState field: an "override" checkbox that
-// takes the field over from whatever normally computes it, and a drag box
-// for the value itself (greyed out until override is checked, since
-// otherwise the engine loop stomps it back to the live value every tick --
-// see ZgicabraBridge::sync).
+// One draggable row for a SignalState field: dragging the fader takes the
+// field over from whatever normally computes it (field.set() flips
+// `enabled` -- see ZgicabraBridge::sync) -- same "just drive it" convention
+// MIDI input already uses, so there's no separate override switch to flip
+// first.
 fn signal_override_row (ui: &imgui::Ui, label: &str, lo: f32, hi: f32, origin: f32, field: &SignalOverride) {
     ui.group(|| {
-        let mut enabled = field.enabled.load(Ordering::Relaxed);
-        if ui.checkbox(format!("##{label}_override"), &mut enabled) {
-            field.enabled.store(enabled, Ordering::Relaxed);
+        let mut value = field.value.load();
+        if vslider(ui, &format!("##{label}_value"), label, VSLIDER_SIZE, lo, hi, origin, &mut value) {
+            field.set(value);
         }
-
-        ui.disabled(!enabled, || {
-            let mut value = field.value.load();
-            if vslider(ui, &format!("##{label}_value"), label, VSLIDER_SIZE, lo, hi, origin, &mut value) {
-                field.value.store(value);
-            }
-        });
     });
 }
 
-// 5 vertical faders for the signal overrides that matter live (F/W/B/Z/T) --
-// the Hydra panel's answer to the layout mockup's central knob column.
-// velocity/acceleration/jerk dropped: they're readouts, not something you'd
-// ride by hand mid-performance.
+// W's own row: same "drag takes it over" convention as signal_override_row,
+// just driving the center-out hslider instead of a vslider.
+fn signal_override_row_center (ui: &imgui::Ui, label: &str, size: [f32; 2], field: &SignalOverride) {
+    ui.group(|| {
+        let mut value = field.value.load();
+        if hslider_center(ui, &format!("##{label}_value"), size, &mut value) {
+            field.set(value);
+        }
+    });
+}
+
+// W (double-ended, center-out) sits above the remaining 4 vertical faders
+// (F/B/Z/T) -- the Hydra panel's answer to the layout mockup's central knob
+// column. velocity/acceleration/jerk dropped: they're readouts, not
+// something you'd ride by hand mid-performance.
 fn draw_signal_state (ui: &imgui::Ui, bridge: &ZgicabraBridge) {
-    let rows: [(&str, f32, f32, f32, &SignalOverride); 5] = [
+    signal_override_row_center(ui, "W", HCENTER_SIZE, &bridge.width);
+
+    let rows: [(&str, f32, f32, f32, &SignalOverride); 4] = [
         ("F", 0.0,  1.0, 0.0, &bridge.filter),
-        ("W", 0.0,  1.0, 0.0, &bridge.width),
         ("B", -1.0, 1.0, 0.0, &bridge.bend),
         ("Z", 0.0,  1.0, 0.0, &bridge.fuzz),
         ("T", 0.0,  1.0, 0.0, &bridge.thump),
@@ -550,9 +606,9 @@ fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, snapshot_browser: &m
     draw_snapshot_browser(ui, audio, snapshot_browser);
 }
 
-fn draw_wand_mock (ui: &imgui::Ui, label: &str, mirrored: bool, trigger: &Arc<AtomicF32>, stick_x: &Arc<AtomicF32>, stick_y: &Arc<AtomicF32>, buttons: &[Arc<AtomicBool>; 4]) {
+fn draw_wand_mock (ui: &imgui::Ui, label: &str, mirrored: bool, twist: f32, trigger: &Arc<AtomicF32>, stick_x: &Arc<AtomicF32>, stick_y: &Arc<AtomicF32>, buttons: &[Arc<AtomicBool>; 4]) {
     hslider(ui, &format!("##{label}_trigger"), [120.0, 18.0], mirrored, trigger);
-    xy_pad(ui, &format!("##{label}_stick"), 120.0, stick_x, stick_y);
+    xy_pad(ui, &format!("##{label}_stick"), 120.0, twist, stick_x, stick_y);
 
     for (i, button) in buttons.iter().enumerate() {
         if i > 0 { ui.same_line(); }
@@ -583,14 +639,14 @@ fn draw_hydra_panel (ui: &imgui::Ui, mock_controls: Option<&MockControls>, bridg
     match mock_controls {
         Some(controls) => {
             ui.group(|| {
-                draw_wand_mock(ui, "Left", false, &controls.left_trigger, &controls.left_stick_x, &controls.left_stick_y, &controls.left_buttons);
+                draw_wand_mock(ui, "Left", false, -bridge.left_rot[2].load(), &controls.left_trigger, &controls.left_stick_x, &controls.left_stick_y, &controls.left_buttons);
                 draw_wand_rotation(ui, &bridge.left_rot);
             });
             ui.same_line();
             ui.group(|| draw_signal_state(ui, bridge));
             ui.same_line();
             ui.group(|| {
-                draw_wand_mock(ui, "Right", true, &controls.right_trigger, &controls.right_stick_x, &controls.right_stick_y, &controls.right_buttons);
+                draw_wand_mock(ui, "Right", true, -bridge.right_rot[2].load(), &controls.right_trigger, &controls.right_stick_x, &controls.right_stick_y, &controls.right_buttons);
                 draw_wand_rotation(ui, &bridge.right_rot);
             });
         },
