@@ -143,7 +143,7 @@ impl AudioNode for BasicVoice {
 }
 
 impl Voice for BasicVoice {
-    const INDEX: usize = 1;
+    const INDEX: usize = 3;
     fn name (&self) -> &'static str { "Basic" }
     fn set_signal (&mut self, signal: &SignalState) { self.thump_signal = signal.thump; }
 }

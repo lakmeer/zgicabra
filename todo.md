@@ -12,14 +12,15 @@
 - Voices
   - Basic
     - sin/tri/saw/sq select
-    - tanh saturation
-      - range protection
     - multivoice
   - Growl
     - Multiband distortion
       - low: `bass`
       - hi: `mesa`
     - Phaser ^ width
+  - Reese
+    - Octave layers
+    - vel ^ width_param
   - SamplePlayer
   - Experiment with waveshapers
 

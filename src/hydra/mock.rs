@@ -117,14 +117,7 @@ fn connect_midi (filter: Arc<AtomicF32>, width: Arc<AtomicF32>, fuzz: Arc<Atomic
     }, ()).ok()
 }
 
-// Audition sequence: a canned note loop for auditioning voices without a
-// wand/MIDI controller attached, driven the same way real note/CC input is --
-// NoteStart/NoteChange/NoteEnd DeltaEvents onto the shared `notes` queue, and
-// a published filter sweep for main.rs to feed onto SignalState through the
-// same SignalOverride path connect_midi's CCs use (see hydra::take_midi_notes
-// and MockControls::sequence_filter below). One 16-beat loop at 120bpm: a
-// descending line (C3 F#2 F2) answered a fifth up (G3 C#3 C2). MIDI numbers
-// assume C4 = 60.
+// Audition sequence: One 16-beat loop at 120bpm.
 const SEQ_BPM: f32 = 120.0;
 const SEQ_NOTES: [(u8, f32); 6] = [
     (48, 1.5), // C3

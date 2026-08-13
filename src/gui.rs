@@ -32,11 +32,11 @@ use winit::event_loop::EventLoop;
 use winit::window::{Fullscreen, WindowAttributes};
 
 use crate::hydra::MockControls;
-use crate::audio::{AudioHandles, GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, snapshot, GorgleHandle, GorgleParams};
+use crate::audio::{AudioHandles, GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, snapshot, GorgleHandle, GorgleParams, ReeseHandle, ReeseParams};
 use crate::tools::AtomicF32;
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
 
-const VOICE_NAMES: [&str; 4] = ["Growl", "Gorgle", "Basic", "Basic"];
+const VOICE_NAMES: [&str; 4] = ["Growl", "Gorgle", "Reese", "Basic"];
 
 // Local (GUI-thread-only) browser state for saved voice-param snapshots --
 // save/load are one-off file actions the GUI thread can just do directly on
@@ -105,10 +105,11 @@ fn xy_pad (ui: &imgui::Ui, id: &str, size: f32, x: &Arc<AtomicF32>, y: &Arc<Atom
     let draw_list = ui.get_window_draw_list();
     let p_min = origin;
     let p_max = [origin[0] + size, origin[1] + size];
+    let center = [origin[0] + size/2.0, origin[1] + size/2.0];
 
     let bg = if active { [0.30, 0.34, 0.42, 1.0] } else if hovered { [0.22, 0.25, 0.31, 1.0] } else { [0.15, 0.16, 0.20, 1.0] };
-    draw_list.add_rect(p_min, p_max, bg).filled(true).build();
-    draw_list.add_rect(p_min, p_max, [0.5, 0.5, 0.55, 1.0]).build();
+    draw_list.add_circle(center, size/2.0, bg).filled(true).build();
+    draw_list.add_circle(center, size/2.0, [0.5, 0.5, 0.55, 1.0]).build();
 
     let cx = origin[0] + size * 0.5;
     let cy = origin[1] + size * 0.5;
@@ -176,6 +177,10 @@ const CARD_SIZE:       [f32; 2] = [140.0, 66.0];
 // One per-voice card (4 knobs, plus Growl's extra NAM cycler row) -- all 4
 // now drawn side by side (see draw_voice_card), not just the selected one.
 const VOICE_CARD_SIZE: [f32; 2] = [160.0, 140.0];
+// Reese exposes 8 knobs (2 rows of 4) instead of the usual single row --
+// same height as VOICE_CARD_SIZE, extra room isn't needed since knobs wrap
+// to a second row rather than widening.
+const REESE_CARD_SIZE: [f32; 2] = [160.0, 190.0];
 
 // Dark blue background tint for whichever voice card is currently active --
 // see draw_voice_card.
@@ -264,6 +269,23 @@ fn draw_voice_gorgle (ui: &imgui::Ui, gorgle: &GorgleHandle) {
     ]);
 }
 
+// Reese's 8 macro knobs -- see reese.rs for what each does. Two rows of 4
+// since it's twice the knob count of the other voices' single row.
+fn draw_voice_reese (ui: &imgui::Ui, reese: &ReeseHandle) {
+    draw_knob_row(ui, &[
+        ("reese_detune",    "detune",  0.0,  50.0, &reese.detune),
+        ("reese_sub",       "sub",     0.0,  1.0,  &reese.sub_level),
+        ("reese_drive",     "drive",   1.0,  8.0,  &reese.drive),
+        ("reese_cutoff",    "cutoff",  0.0,  1.0,  &reese.cutoff),
+    ]);
+    draw_knob_row(ui, &[
+        ("reese_res",       "res",     0.3,  3.0,  &reese.resonance),
+        ("reese_lfo_rate",  "lfo rate", 0.05, 3.0,  &reese.lfo_rate),
+        ("reese_lfo_depth", "lfo dep", 0.0,  1.0,  &reese.lfo_depth),
+        ("reese_width",     "width",   0.0,  1.0,  &reese.width),
+    ]);
+}
+
 // All 4 voices drawn side by side, always -- the active one (voice_selected)
 // gets a dark blue card background instead of only the selected voice's
 // controls being shown.
@@ -281,8 +303,8 @@ fn draw_voice_card (ui: &imgui::Ui, audio: &AudioHandles) {
         draw_voice_gorgle(ui, &audio.voice_b);
     });
     ui.same_line();
-    draw_module_card(ui, "Basic C", None, VOICE_CARD_SIZE, selected == 2, |ui| {
-        draw_voice_basic(ui, &audio.voice_c);
+    draw_module_card(ui, "Reese", None, REESE_CARD_SIZE, selected == 2, |ui| {
+        draw_voice_reese(ui, &audio.voice_c);
     });
     ui.same_line();
     draw_module_card(ui, "Basic D", None, VOICE_CARD_SIZE, selected == 3, |ui| {
@@ -299,7 +321,7 @@ fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut Sn
         let result = match audio.voice_selected.value() as i32 {
             0 => snapshot::save_snapshot(GrowlParams::voice_name(), &audio.voice_a.params().fields()),
             1 => snapshot::save_snapshot(GorgleParams::voice_name(), &audio.voice_b.params().fields()),
-            2 => snapshot::save_snapshot(BasicParams::voice_name(), &audio.voice_c.params().fields()),
+            2 => snapshot::save_snapshot(ReeseParams::voice_name(), &audio.voice_c.params().fields()),
             3 => snapshot::save_snapshot(BasicParams::voice_name(), &audio.voice_d.params().fields()),
             _ => Ok(std::path::PathBuf::new()),
         };
@@ -332,7 +354,8 @@ fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut Sn
                     let expected = match audio.voice_selected.value() as i32 {
                         0 => GrowlParams::voice_name(),
                         1 => GorgleParams::voice_name(),
-                        2 | 3 => BasicParams::voice_name(),
+                        2 => ReeseParams::voice_name(),
+                        3 => BasicParams::voice_name(),
                         _ => "",
                     };
                     if voice_name != expected {
@@ -341,7 +364,7 @@ fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut Sn
                         match audio.voice_selected.value() as i32 {
                             0 => audio.voice_a.load(&GrowlParams::from_fields(&fields)),
                             1 => audio.voice_b.load(&GorgleParams::from_fields(&fields)),
-                            2 => audio.voice_c.load(&BasicParams::from_fields(&fields)),
+                            2 => audio.voice_c.load(&ReeseParams::from_fields(&fields)),
                             3 => audio.voice_d.load(&BasicParams::from_fields(&fields)),
                             _ => {},
                         }

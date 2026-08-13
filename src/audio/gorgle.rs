@@ -621,7 +621,7 @@ impl AudioNode for GorgleVoice {
 }
 
 impl Voice for GorgleVoice {
-    const INDEX: usize = 2;
+    const INDEX: usize = 1;
     fn name (&self) -> &'static str { "Gorgle" }
     fn set_signal (&mut self, signal: &SignalState) { self.thump_signal = signal.thump; }
 }

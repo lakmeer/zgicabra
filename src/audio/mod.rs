@@ -34,9 +34,11 @@ use compressor::Compressor;
 use voice::Voice;
 use growl::GrowlVoice;
 use gorgle::GorgleVoice;
+use reese::ReeseVoice;
 use basic::BasicVoice;
 pub use growl::{GrowlHandle, GrowlParams};
 pub use gorgle::{GorgleHandle, GorgleParams};
+pub use reese::{ReeseHandle, ReeseParams};
 pub use basic::{BasicHandle, BasicParams};
 pub use voice::VoiceParams;
 
@@ -131,7 +133,7 @@ pub struct AudioHandles {
     pub voice_selected: Shared,
     pub voice_a: GrowlHandle,
     pub voice_b: GorgleHandle,
-    pub voice_c: BasicHandle,
+    pub voice_c: ReeseHandle,
     pub voice_d: BasicHandle,
 
     pub main_sub_lvl:  Shared,
@@ -172,7 +174,7 @@ pub struct AudioOutput {
     voice_selected: Shared,
     voice_a: GrowlHandle,
     voice_b: GorgleHandle,
-    voice_c: BasicHandle,
+    voice_c: ReeseHandle,
     voice_d: BasicHandle,
 
     main_sub_lvl:  Shared,
@@ -253,7 +255,7 @@ impl AudioOutput {
         let voice_selected = shared(0.0);
         let voice_a = GrowlHandle::new(&GrowlParams::default(), growl_nam_names);
         let voice_b = GorgleHandle::new(&GorgleParams::default());
-        let voice_c = BasicHandle::new(&BasicParams::default());
+        let voice_c = ReeseHandle::new(&ReeseParams::default());
         let voice_d = BasicHandle::new(&BasicParams::default());
 
         let main_sub_lvl  = shared(0.35);
@@ -367,7 +369,7 @@ struct Engine {
 
     voice_a: GrowlVoice,
     voice_b: GorgleVoice,
-    voice_c: BasicVoice,
+    voice_c: ReeseVoice,
     voice_d: BasicVoice,
     voice_selected: Shared,
 
@@ -400,7 +402,7 @@ impl Engine {
         freq: Shared, gate: Shared, bend: Shared, width: Shared, filter: Shared, fuzz: Shared,
         thump_amt: Shared, thump_trigger: Shared, velocity: Shared, acceleration: Shared,
         voice_selected: Shared, voice_a: GrowlHandle, growl_nam_models: Vec<Option<nam::NamModelSlot>>,
-        voice_b: GorgleHandle, voice_c: BasicHandle, voice_d: BasicHandle,
+        voice_b: GorgleHandle, voice_c: ReeseHandle, voice_d: BasicHandle,
         main_sub_lvl: Shared, main_sub_wave: Shared, dry_sub_lvl: Shared,
         thump_peak: Shared, thump_decay: Shared,
         amp_model_l: nam::NamModelSlot, amp_model_r: nam::NamModelSlot,
@@ -423,7 +425,7 @@ impl Engine {
 
             voice_a: GrowlVoice::new(voice_a, growl_nam_models, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
             voice_b: GorgleVoice::new(voice_b, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-            voice_c: BasicVoice::new(voice_c, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_c: ReeseVoice::new(voice_c, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
             voice_d: BasicVoice::new(voice_d, thump_trigger, thump_peak, thump_decay),
             voice_selected,
 

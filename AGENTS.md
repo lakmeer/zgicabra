@@ -24,7 +24,7 @@ hardware is attached.
 Entry point: `src/main.rs`. Run modes selected by CLI flags
 (`tools::parse_args`): `--audio` (default) vs `--osc` output backend,
 `--gui` to open the tuner window, `--no-ui` to suppress the terminal UI,
-`--test` to run the audio self-test (see below, needs `--gui` + `--audio`).
+`--test` to run the audio self-test
 
 ## Process / thread model
 
@@ -47,7 +47,7 @@ Entry point: `src/main.rs`. Run modes selected by CLI flags
   actual DSP graph (`audio::build_stream`'s closure). Never blocks, never
   allocates, never locks (see the NAM section below for the *one* mutex in
   the whole audio path, and why it's fine).
-- **`--test` self-test** (`main.rs::run_self_test`, needs `--gui --audio`
+- **`--test` self-test** (`main.rs::run_self_test`, needs `--gui`
   — errors out otherwise): spawned on its own thread alongside the engine
   loop when `--test` is passed. Holds a synthetic A4 note through
   `AudioHandles::audition_note`, captures ~0.1s of raw cpal output via
@@ -468,7 +468,7 @@ the audio thread reads, so there's nothing to keep in sync — the widget
   that rate — don't let a generator/effect assume `DEFAULT_SR` or any
   other rate; always honor `set_sample_rate()`.
 - Verification is still mostly ears-driven — `cargo build` + actually
-  running `--gui --audio` (or `--gui --audio --test` for the automated
+  running `--gui ` (or `--gui --test` for the automated
   signal-present check, see above) is the primary loop this project uses.
   `snapshot.rs` has one `#[cfg(test)]` unit test; nothing else does.
   `cargo build` clean is necessary but not sufficient; flag when you
