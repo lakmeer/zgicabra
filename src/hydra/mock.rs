@@ -152,8 +152,8 @@ const BUTTON_BITS: [u32; 4] = [BUTTON_1, BUTTON_2, BUTTON_3, BUTTON_4];
 // so writes here take effect immediately with no polling/sync needed.
 #[derive(Clone)]
 pub struct MockControls {
-    pub left_trigger:  Arc<AtomicBool>,
-    pub right_trigger: Arc<AtomicBool>,
+    pub left_trigger:  Arc<AtomicF32>,
+    pub right_trigger: Arc<AtomicF32>,
 
     pub left_stick_x:  Arc<AtomicF32>,
     pub left_stick_y:  Arc<AtomicF32>,
@@ -205,14 +205,21 @@ impl MockControls {
     pub fn toggle (flag: &Arc<AtomicBool>) {
         flag.fetch_xor(true, Ordering::Relaxed);
     }
+
+    // Snaps an analog trigger to fully released/fully pulled -- keyboard
+    // 'z'/'.' don't have an analog range to report, so they just toggle
+    // between the two ends of it.
+    pub fn toggle_trigger (trigger: &Arc<AtomicF32>) {
+        trigger.store(if trigger.load() > 0.5 { 0.0 } else { 1.0 });
+    }
 }
 
 use super::CbreakGuard;
 
 pub struct MockBackend {
     keys: Keys<AsyncReader>,
-    left_trigger:  Arc<AtomicBool>,
-    right_trigger: Arc<AtomicBool>,
+    left_trigger:  Arc<AtomicF32>,
+    right_trigger: Arc<AtomicF32>,
     voice_cycle: Arc<AtomicI8>,
     tune_cycle:  Arc<AtomicI8>,
 
@@ -271,8 +278,8 @@ impl MockBackend {
 
         MockBackend {
             keys: termion::async_stdin().keys(),
-            left_trigger:  Arc::new(AtomicBool::new(false)),
-            right_trigger: Arc::new(AtomicBool::new(false)),
+            left_trigger:  Arc::new(AtomicF32::new(0.0)),
+            right_trigger: Arc::new(AtomicF32::new(0.0)),
             voice_cycle: Arc::new(AtomicI8::new(0)),
             tune_cycle:  Arc::new(AtomicI8::new(0)),
             left_stick_x:  Arc::new(AtomicF32::new(0.0)),
@@ -397,9 +404,9 @@ impl MockBackend {
 
         self.sequence = self.sequence.wrapping_add(1);
 
-        controllers[0] = self.wand_frame(LEFT_HAND,  0.0, self.left_trigger.load(Ordering::Relaxed),
+        controllers[0] = self.wand_frame(LEFT_HAND,  0.0, self.left_trigger.load(),
             self.left_stick_x.load(), self.left_stick_y.load(), &self.left_buttons);
-        controllers[1] = self.wand_frame(RIGHT_HAND, PI,  self.right_trigger.load(Ordering::Relaxed),
+        controllers[1] = self.wand_frame(RIGHT_HAND, PI,  self.right_trigger.load(),
             self.right_stick_x.load(), self.right_stick_y.load(), &self.right_buttons);
     }
 
@@ -414,8 +421,8 @@ impl MockBackend {
 
         while let Some(Ok(key)) = self.keys.next() {
             match key {
-                Key::Char('z') => MockControls::toggle(&self.left_trigger),
-                Key::Char('.') => MockControls::toggle(&self.right_trigger),
+                Key::Char('z') => MockControls::toggle_trigger(&self.left_trigger),
+                Key::Char('.') => MockControls::toggle_trigger(&self.right_trigger),
                 Key::Char('a') => { self.voice_cycle.fetch_add(-1, Ordering::Relaxed); },
                 Key::Char('s') => { self.voice_cycle.fetch_add(1, Ordering::Relaxed); },
                 Key::Char('-') => { self.tune_cycle.fetch_add(-1, Ordering::Relaxed); },
@@ -430,13 +437,13 @@ impl MockBackend {
         }
     }
 
-    fn wand_frame (&self, hand: u8, phase: f32, trigger_on: bool, stick_x: f32, stick_y: f32, buttons: &[Arc<AtomicBool>; 4]) -> ControllerFrame {
+    fn wand_frame (&self, hand: u8, phase: f32, trigger: f32, stick_x: f32, stick_y: f32, buttons: &[Arc<AtomicBool>; 4]) -> ControllerFrame {
         let mut frame = ControllerFrame::new();
 
         frame.which_hand      = hand;
         frame.enabled         = 1;
         frame.sequence_number = self.sequence;
-        frame.trigger         = if trigger_on { 1.0 } else { 0.0 };
+        frame.trigger         = trigger.clamp(0.0, 1.0);
         frame.joystick_x      = stick_x.clamp(-1.0, 1.0);
         frame.joystick_y      = stick_y.clamp(-1.0, 1.0);
 
