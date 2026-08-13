@@ -91,31 +91,23 @@ impl AudioCapture {
     }
 }
 
-// Direct handle onto the note gate and filter cell, for the GUI's audition
-// sequence player to drive from the GUI thread -- bypasses DeltaEvent/
-// DeltaConsumer entirely, same shared-atomic mechanism as everything else
-// here. Note: running this at the same time as a real controller note will
-// fight over the same `freq`/`gate`/`filter` cells; it's a manual audition
-// tool, not a second voice.
+// Direct handle onto the note gate, for main.rs's --test self-test to hold a
+// single test tone -- deliberately bypasses DeltaEvent/DeltaConsumer/hydra
+// entirely so a failure here isolates to the audio graph itself, independent
+// of the note/CC dispatch pipeline (see hydra::mock's audition sequence
+// player and MIDI listener for the DeltaEvent-driven equivalent). Note:
+// running this at the same time as a real controller note will fight over
+// the same `freq`/`gate` cells; it's a manual test tone, not a second voice.
 #[derive(Clone)]
-pub struct AuditionSequence {
-    freq:   Shared,
-    gate:   Shared,
-    filter: Shared,
+pub struct TestTone {
+    freq: Shared,
+    gate: Shared,
 }
 
-impl AuditionSequence {
+impl TestTone {
     pub fn start (&self, note: u8) {
         self.freq.set_value(midi_hz(note as f32));
         self.gate.set_value(GATE_ON);
-    }
-
-    pub fn set_note (&self, note: u8) {
-        self.freq.set_value(midi_hz(note as f32));
-    }
-
-    pub fn set_filter (&self, value: f32) {
-        self.filter.set_value(value);
     }
 
     pub fn stop (&self) {
@@ -127,7 +119,7 @@ impl AuditionSequence {
 // gui.rs thread one Option through instead of one per feature.
 #[derive(Clone)]
 pub struct AudioHandles {
-    pub audition_seq: AuditionSequence,
+    pub test_tone: TestTone,
 
     pub voice_selected: Shared,
     pub voice_a: GrowlHandle,
@@ -205,7 +197,7 @@ impl AudioOutput {
     // to build (every field is an Arc'd atomic cell or Arc'd name list).
     pub fn handles (&self) -> AudioHandles {
         AudioHandles {
-            audition_seq: AuditionSequence { freq: self.freq.clone(), gate: self.gate.clone(), filter: self.filter.clone() },
+            test_tone: TestTone { freq: self.freq.clone(), gate: self.gate.clone() },
             voice_selected: self.voice_selected.clone(),
             voice_a: self.voice_a.clone(),
             voice_b: self.voice_b.clone(),
@@ -359,7 +351,7 @@ fn pick_output_config (device: &cpal::Device, target_rate: u32) -> io::Result<cp
 // very end (dry_sub bypasses amp/reverb/limiter entirely, same as before).
 struct Engine {
     freq: Shared, gate: Shared, bend: Shared, width: Shared, filter: Shared, fuzz: Shared,
-    thump_amt: Shared, thump_trigger: Shared, velocity: Shared, acceleration: Shared,
+    thump_amt: Shared, velocity: Shared, acceleration: Shared,
 
     main_sub_tri: An<WaveSynth<U1>>,
     main_sub_saw: An<WaveSynth<U1>>,
@@ -375,8 +367,6 @@ struct Engine {
     main_sub_lvl:  Shared,
     main_sub_wave: Shared,
     dry_sub_lvl:   Shared,
-    thump_peak:    Shared,
-    thump_decay:   Shared,
 
     // Two fully independent NamStage instances (own weights, own WaveNet
     // dilation state) -- "amp" is stereo per spec, and sharing one model
@@ -396,10 +386,6 @@ struct Engine {
     limiter: Compressor,
     limiter_bypass: Shared,
     limiter_thresh: Shared,
-
-    thump_last_trigger:    f32,
-    thump_elapsed_samples: f32,
-    sample_rate:           f32,
 }
 
 impl Engine {
@@ -422,29 +408,25 @@ impl Engine {
         let amp_r = nam::NamStage::new(vec![Some(amp_model_r)], shared(0.0));
 
         Engine {
-            freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration,
+            freq, gate, bend, width, filter, fuzz, thump_amt, velocity, acceleration,
             main_sub_tri: triangle(),
             main_sub_saw: saw(),
             dry_sub:      sine(),
             envelope: Box::new(adsr_live(ENVELOPE_ATTACK, 0.0, 1.0, ENVELOPE_RELEASE)),
 
-            voice_a: GrowlVoice::new(voice_a, growl_nam_models),
-            voice_b: GorgleVoice::new(voice_b),
-            voice_c: BasicVoice::new(voice_c),
-            voice_d: BasicVoice::new(voice_d),
+            voice_a: GrowlVoice::new(voice_a, growl_nam_models, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_b: GorgleVoice::new(voice_b, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_c: BasicVoice::new(voice_c, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_d: BasicVoice::new(voice_d, thump_trigger, thump_peak, thump_decay),
             voice_selected,
 
-            main_sub_lvl, main_sub_wave, dry_sub_lvl, thump_peak, thump_decay,
+            main_sub_lvl, main_sub_wave, dry_sub_lvl,
 
             amp_l, amp_r, amp_bypass, amp_boost, amp_blend, amp_crossover,
 
             reverb: ReverbFx::new(reverb_size, reverb_decay, reverb_damp), reverb_bypass, reverb_dry,
 
             limiter: Compressor::new(), limiter_bypass, limiter_thresh,
-
-            thump_last_trigger:    0.0,
-            thump_elapsed_samples: 0.0,
-            sample_rate:           DEFAULT_SR as f32,
         }
     }
 
@@ -461,7 +443,6 @@ impl Engine {
         self.amp_r.set_sample_rate(sr);
         self.reverb.set_sample_rate(sr);
         self.limiter.set_sample_rate(sr);
-        self.sample_rate = sr as f32;
     }
 
     // Everything up to (not including) the amp stage: both voices (parallel,
@@ -480,7 +461,7 @@ impl Engine {
         };
 
         let bend_mult = 2f32.powf(signal.bend);
-        let base_freq = self.freq.value() * bend_mult * self.tick_thump(signal.thump);
+        let base_freq = self.freq.value() * bend_mult;
 
         let sel = self.voice_selected.value();
         self.voice_a.set_signal(&signal);
@@ -494,7 +475,7 @@ impl Engine {
         let voice_l = voice_a_out[0] + voice_b_out[0] + voice_c_out[0] + voice_d_out[0];
         let voice_r = voice_a_out[1] + voice_b_out[1] + voice_c_out[1] + voice_d_out[1];
 
-        let main_sub_wave = self.main_sub_wave.value();
+        let main_sub_wave = (self.main_sub_wave.value() * signal.filter).clamp(0.0, 1.0);
         let tri = self.main_sub_tri.filter_mono(base_freq);
         let saw = self.main_sub_saw.filter_mono(base_freq);
         let main_sub = (tri * (1.0 - main_sub_wave) + saw * main_sub_wave) * self.main_sub_lvl.value();
@@ -559,22 +540,6 @@ impl Engine {
             (l + dry_sub).clamp(-1.0, 1.0),
             (r + dry_sub).clamp(-1.0, 1.0),
         )
-    }
-
-    fn tick_thump (&mut self, signal_thump: f32) -> f32 {
-        let trigger = self.thump_trigger.value();
-        if trigger != self.thump_last_trigger {
-            self.thump_last_trigger = trigger;
-            self.thump_elapsed_samples = 0.0;
-        }
-
-        let t = self.thump_elapsed_samples / self.sample_rate;
-        self.thump_elapsed_samples += 1.0;
-
-        let decay_sec  = self.thump_decay.value().max(0.001);
-        let pitch_bump = self.thump_peak.value() * signal_thump;
-        let decay = (-5.0 * t / decay_sec).exp();
-        1.0 + decay * pitch_bump
     }
 }
 

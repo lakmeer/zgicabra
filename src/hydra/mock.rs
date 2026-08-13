@@ -23,10 +23,11 @@
 // driven straight through MockControls.
 //
 
-use std::f32::consts::PI;
+use std::f32::consts::{PI, TAU};
 use std::collections::VecDeque;
 use std::sync::{Arc,Mutex};
 use std::sync::atomic::{AtomicBool, AtomicI8, Ordering};
+use std::time::Instant;
 
 use termion::AsyncReader;
 use termion::event::Key;
@@ -116,6 +117,40 @@ fn connect_midi (filter: Arc<AtomicF32>, width: Arc<AtomicF32>, fuzz: Arc<Atomic
     }, ()).ok()
 }
 
+// Audition sequence: a canned note loop for auditioning voices without a
+// wand/MIDI controller attached, driven the same way real note/CC input is --
+// NoteStart/NoteChange/NoteEnd DeltaEvents onto the shared `notes` queue, and
+// a published filter sweep for main.rs to feed onto SignalState through the
+// same SignalOverride path connect_midi's CCs use (see hydra::take_midi_notes
+// and MockControls::sequence_filter below). One 16-beat loop at 120bpm: a
+// descending line (C3 F#2 F2) answered a fifth up (G3 C#3 C2). MIDI numbers
+// assume C4 = 60.
+const SEQ_BPM: f32 = 120.0;
+const SEQ_NOTES: [(u8, f32); 6] = [
+    (48, 1.5), // C3
+    (42, 1.5), // F#2
+    (41, 5.0), // F2
+    (43, 1.5), // G2
+    (37, 1.5), // C#2
+    (36, 5.0), // C2
+];
+
+fn seq_beat_seconds () -> f32 { 60.0 / SEQ_BPM }
+
+fn seq_total_seconds () -> f32 {
+    SEQ_NOTES.iter().map(|(_, beats)| beats).sum::<f32>() * seq_beat_seconds()
+}
+
+// Which note is sounding `t` seconds into the loop.
+fn seq_note_at (t: f32) -> u8 {
+    let mut acc = 0.0;
+    for (note, beats) in SEQ_NOTES {
+        acc += beats * seq_beat_seconds();
+        if t < acc { return note; }
+    }
+    SEQ_NOTES.last().unwrap().0
+}
+
 const BUTTON_BITS: [u32; 4] = [BUTTON_1, BUTTON_2, BUTTON_3, BUTTON_4];
 
 // Shared handle onto a running MockBackend's togglable inputs, so something
@@ -155,6 +190,12 @@ pub struct MockControls {
     pub midi_thump:  Arc<AtomicF32>,
     pub midi_bend:   Arc<AtomicF32>,
     pub midi_connected: bool,
+
+    // Audition sequence player toggle (see step_sequence) and its published
+    // filter sweep -- same "live current value" reasoning as the midi_*
+    // fields above, just sourced from the canned loop instead of a CC.
+    pub seq_playing: Arc<AtomicBool>,
+    pub seq_filter:  Arc<AtomicF32>,
 }
 
 impl MockControls {
@@ -202,8 +243,17 @@ pub struct MockBackend {
     midi_thump:  Arc<AtomicF32>,
     midi_bend:   Arc<AtomicF32>,
     midi_connected: bool,
-    midi_notes: Arc<Mutex<VecDeque<DeltaEvent>>>,
+    notes: Arc<Mutex<VecDeque<DeltaEvent>>>, // Note On/Off/PC events, MIDI or audition-sequence sourced
     _midi_connection: Option<MidiInputConnection<()>>, // held to keep the callback alive; disconnects on drop
+
+    // Audition sequence player (see SEQ_NOTES above): seq_playing is the
+    // GUI-driven toggle, seq_filter is the published filter sweep, the rest
+    // is this backend's own stepping state.
+    seq_playing: Arc<AtomicBool>,
+    seq_filter:  Arc<AtomicF32>,
+    seq_elapsed: f32,
+    seq_note:    Option<u8>,
+    seq_last_tick: Instant,
 }
 
 impl MockBackend {
@@ -218,9 +268,9 @@ impl MockBackend {
         let midi_thump  = Arc::new(AtomicF32::new(0.0));
         let midi_bend   = Arc::new(AtomicF32::new(0.0));
 
-        let midi_notes: Arc<Mutex<VecDeque<DeltaEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let notes: Arc<Mutex<VecDeque<DeltaEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
 
-        let midi_connection = connect_midi(midi_filter.clone(), midi_width.clone(), midi_fuzz.clone(), midi_thump.clone(), midi_bend.clone(), midi_notes.clone());
+        let midi_connection = connect_midi(midi_filter.clone(), midi_width.clone(), midi_fuzz.clone(), midi_thump.clone(), midi_bend.clone(), notes.clone());
         let midi_connected = midi_connection.is_some();
         if !midi_connected {
             println!("Hydra::start - no MIDI controller found, proceeding without MIDI input.");
@@ -248,15 +298,62 @@ impl MockBackend {
             midi_thump,
             midi_bend,
             midi_connected,
-            midi_notes,
+            notes,
             _midi_connection: midi_connection,
+            seq_playing: Arc::new(AtomicBool::new(false)),
+            seq_filter:  Arc::new(AtomicF32::new(0.0)),
+            seq_elapsed: 0.0,
+            seq_note:    None,
+            seq_last_tick: Instant::now(),
         }
     }
 
-    // Note On/Off DeltaEvents accumulated since the last call; drains the
-    // queue. See connect_midi's doc comment for the monophonic mapping.
+    // Note On/Off/PC DeltaEvents accumulated since the last call (MIDI input
+    // and/or the audition sequence player, see step_sequence below); drains
+    // the queue. See connect_midi's doc comment for the monophonic mapping.
     pub fn take_midi_notes (&mut self) -> Vec<DeltaEvent> {
-        self.midi_notes.lock().unwrap().drain(..).collect()
+        self.notes.lock().unwrap().drain(..).collect()
+    }
+
+    // Steps the audition sequence loop (see SEQ_NOTES) if seq_playing is
+    // toggled on, pushing NoteStart/NoteChange/NoteEnd DeltaEvents onto the
+    // same queue take_midi_notes drains, and publishing the filter sweep in
+    // seq_filter for hydra::mock_controls callers (main.rs) to feed onto
+    // SignalState via bridge.filter.set -- same SignalOverride path the MIDI
+    // CCs use. Resets to the top of the loop each time playback is (re)started.
+    fn step_sequence (&mut self) {
+        let now = Instant::now();
+        let dt  = now.duration_since(self.seq_last_tick).as_secs_f32();
+        self.seq_last_tick = now;
+
+        if !self.seq_playing.load(Ordering::Relaxed) {
+            if let Some(prev) = self.seq_note.take() {
+                self.notes.lock().unwrap().push_back(DeltaEvent::NoteEnd(prev));
+            }
+            return;
+        }
+
+        if self.seq_note.is_none() {
+            self.seq_elapsed = 0.0;
+        }
+        self.seq_elapsed = (self.seq_elapsed + dt) % seq_total_seconds();
+
+        let note  = seq_note_at(self.seq_elapsed);
+        let event = match self.seq_note {
+            None                        => Some(DeltaEvent::NoteStart(note)),
+            Some(prev) if prev != note  => Some(DeltaEvent::NoteChange(prev, note)),
+            _                           => None,
+        };
+        if let Some(event) = event {
+            self.notes.lock().unwrap().push_back(event);
+        }
+        self.seq_note = Some(note);
+
+        // Slow sine drift independent of the melody's rhythm (period = 1.5x
+        // the loop length), same as the old gui.rs sequence player.
+        let period = seq_total_seconds() * 1.0;
+        let filter = (self.seq_elapsed / period * TAU).sin() * 0.5 + 0.5;
+        self.seq_filter.store(filter);
     }
 
     // Shared handle onto this backend's inputs for a UI thread to drive directly.
@@ -279,6 +376,8 @@ impl MockBackend {
             midi_thump:  self.midi_thump.clone(),
             midi_bend:   self.midi_bend.clone(),
             midi_connected: self.midi_connected,
+            seq_playing: self.seq_playing.clone(),
+            seq_filter:  self.seq_filter.clone(),
         }
     }
 
@@ -301,6 +400,7 @@ impl MockBackend {
 
     pub fn update (&mut self, controllers: &mut [ ControllerFrame; 2 ]) {
         self.poll_keys();
+        self.step_sequence();
 
         self.sequence = self.sequence.wrapping_add(1);
 

@@ -32,7 +32,7 @@ use winit::event_loop::EventLoop;
 use winit::window::{Fullscreen, WindowAttributes};
 
 use crate::hydra::MockControls;
-use crate::audio::{AudioHandles, AuditionSequence, GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, snapshot, GorgleHandle, GorgleParams};
+use crate::audio::{AudioHandles, GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, snapshot, GorgleHandle, GorgleParams};
 use crate::tools::AtomicF32;
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
 
@@ -59,42 +59,6 @@ impl SnapshotBrowser {
             self.index = self.names.len().saturating_sub(1);
         }
     }
-}
-
-// Local (GUI-thread-only) state for the audition sequence player: whether
-// it's running, and how far into the current loop it is.
-struct AuditionState {
-    playing: bool,
-    elapsed: f32,
-}
-
-// One 16-beat loop at 120bpm: a descending line (C3 F#2 F2) answered a
-// fifth up (G3 C#3 C2). MIDI numbers assume C4 = 60 (same convention as the
-// old "Hold Note" A4-is-69 test tone).
-const SEQ_BPM: f32 = 120.0;
-const SEQ_NOTES: [(u8, f32); 6] = [
-    (48, 1.5), // C3
-    (42, 1.5), // F#2
-    (41, 5.0), // F2
-    (43, 1.5), // G2
-    (37, 1.5), // C#2
-    (36, 5.0), // C2
-];
-
-fn seq_beat_seconds () -> f32 { 60.0 / SEQ_BPM }
-
-fn seq_total_seconds () -> f32 {
-    SEQ_NOTES.iter().map(|(_, beats)| beats).sum::<f32>() * seq_beat_seconds()
-}
-
-// Which note is sounding `t` seconds into the loop.
-fn seq_note_at (t: f32) -> u8 {
-    let mut acc = 0.0;
-    for (note, beats) in SEQ_NOTES {
-        acc += beats * seq_beat_seconds();
-        if t < acc { return note; }
-    }
-    SEQ_NOTES.last().unwrap().0
 }
 
 // Drag widgets need a step size that feels right whether the underlying
@@ -246,34 +210,6 @@ fn draw_knob_row (ui: &imgui::Ui, knobs: &[(&str, &str, f32, f32, &Shared)]) {
     }
 }
 
-// "Play Sequence" toggle: drives AudioOutput's freq/gate/filter cells
-// directly so voices can be auditioned by ear without touching the wand
-// controller. Click to start the loop (see SEQ_NOTES); click again to stop.
-// While playing, the filter cell is driven by a slow sine drift (period =
-// 1.5x the loop length) independent of the note stepping, so the sweep
-// isn't locked to the melody's rhythm.
-fn draw_audition_sequence (ui: &imgui::Ui, seq: &AuditionSequence, state: &mut AuditionState) {
-    let label = if state.playing { "Stop Sequence" } else { "Play Sequence" };
-    if ui.button(label) {
-        state.playing = !state.playing;
-        if state.playing {
-            state.elapsed = 0.0;
-            seq.start(seq_note_at(0.0));
-        } else {
-            seq.stop();
-        }
-    }
-
-    if state.playing {
-        state.elapsed = (state.elapsed + ui.io().delta_time) % seq_total_seconds();
-        seq.set_note(seq_note_at(state.elapsed));
-
-        let period = seq_total_seconds() * 1.5;
-        let filter = (state.elapsed / period * std::f32::consts::TAU).sin() * 0.5 + 0.5;
-        seq.set_filter(filter);
-    }
-}
-
 // Voice selector: cycles voice_selected between VOICE_NAMES by index, same
 // "< label >" idiom the old gen/fx slot cyclers used.
 fn draw_voice_selector (ui: &imgui::Ui, selected: &Shared) {
@@ -313,6 +249,7 @@ fn draw_voice_basic (ui: &imgui::Ui, basic: &BasicHandle) {
         ("basic_tri",    "tri",    0.0, 1.0, &basic.tri_level),
         ("basic_square", "square", 0.0, 1.0, &basic.square_level),
         ("basic_saw",    "saw",    0.0, 1.0, &basic.saw_level),
+        ("basic_sat",    "sat",    1.0, 10.0, &basic.saturation),
     ]);
 }
 
@@ -458,10 +395,7 @@ fn draw_signal_state (ui: &imgui::Ui, bridge: &ZgicabraBridge) {
 
 // Engine panel: globals first (main sub, dry sub, amp, reverb, limiter,
 // voice selector), then the currently-selected voice's own param card.
-fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, audition_state: &mut AuditionState, snapshot_browser: &mut SnapshotBrowser) {
-    draw_audition_sequence(ui, &audio.audition_seq, audition_state);
-    ui.separator();
-
+fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, snapshot_browser: &mut SnapshotBrowser) {
     draw_module_card(ui, "Main Sub", None, CARD_SIZE, false, |ui| {
         draw_knob_row(ui, &[
             ("main_sub_wave", "wave",  0.0, 1.0, &audio.main_sub_wave),
@@ -567,6 +501,9 @@ fn draw_hydra_panel (ui: &imgui::Ui, mock_controls: Option<&MockControls>, bridg
     if let Some(controls) = mock_controls {
         if ui.button("Sine Drift") { MockControls::toggle(&controls.sine_drift); }
         ui.same_line();
+        let seq_label = if controls.seq_playing.load(Ordering::Relaxed) { "Stop Sequence" } else { "Play Sequence" };
+        if ui.button(seq_label) { MockControls::toggle(&controls.seq_playing); }
+        ui.same_line();
         if ui.button("< Tune") { controls.bump_tune_cycle(-1); }
         ui.same_line();
         if ui.button("Tune >") { controls.bump_tune_cycle(1); }
@@ -577,7 +514,7 @@ fn draw_hydra_panel (ui: &imgui::Ui, mock_controls: Option<&MockControls>, bridg
     if ui.button("Fuzz") { bridge.fuzz.toggle(); }
 }
 
-fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge, audition_state: &mut AuditionState, snapshot_browser: &mut SnapshotBrowser) {
+fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge, snapshot_browser: &mut SnapshotBrowser) {
     let [screen_width, screen_height] = ui.io().display_size;
     let engine_h = screen_height * 0.63;
 
@@ -587,7 +524,7 @@ fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<
         .size([screen_width - 20.0, engine_h], imgui::Condition::FirstUseEver)
         .build(|| {
             match audio {
-                Some(audio) => draw_engine_panel(ui, audio, audition_state, snapshot_browser),
+                Some(audio) => draw_engine_panel(ui, audio, snapshot_browser),
                 None => ui.text("Engine controls only available with the --audio backend."),
             }
         });
@@ -632,7 +569,6 @@ fn save_screenshot (gl: &glow::Context, width: u32, height: u32, path: &str) {
 pub fn run (audio: Option<AudioHandles>, mock_controls: Option<MockControls>, bridge: ZgicabraBridge, quit: Arc<AtomicBool>) {
     let screenshot_path = env::var("ZGICABRA_GUI_SCREENSHOT").ok();
     let mut frame_count: u32 = 0;
-    let mut audition_state = AuditionState { playing: false, elapsed: 0.0 };
     let mut snapshot_browser = SnapshotBrowser::new();
     let event_loop = EventLoop::new().expect("failed to create winit event loop");
 
@@ -711,7 +647,7 @@ pub fn run (audio: Option<AudioHandles>, mock_controls: Option<MockControls>, br
             }
             Event::WindowEvent { event: WindowEvent::RedrawRequested, .. } => {
                 let ui = imgui_context.frame();
-                draw_ui(ui, audio.as_ref(), mock_controls.as_ref(), &bridge, &mut audition_state, &mut snapshot_browser);
+                draw_ui(ui, audio.as_ref(), mock_controls.as_ref(), &bridge, &mut snapshot_browser);
 
                 winit_platform.prepare_render(ui, &window);
                 let draw_data = imgui_context.render();

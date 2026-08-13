@@ -17,7 +17,7 @@ use fundsp::prelude64::*;
 use nam_rs::{Model, NamModel};
 
 const NAM_DIR: &str = "nam";
-const DEFAULT_NAM_MODEL: &str = "6505";
+const DEFAULT_NAM_MODEL: &str = "comp-50";
 // TONE3000's A2 recipe normalizes training data to -18dB RMS and folds the
 // rescale into head_scale, and the reference plugin's "Normalized" output
 // mode targets the same figure -- match it so cycling models doesn't jump

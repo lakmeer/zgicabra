@@ -120,10 +120,10 @@ fn main() {
 }
 
 // Self-test seam (--gui --test): launches the real gui-mode code path, holds
-// a test note through the same audition-sequence mechanism the GUI's
-// "Play Sequence" button uses, then taps ~0.1s of the raw cpal output buffer (see
-// AudioCapture in audio/mod.rs) and checks it's non-zero. Diagnoses "no
-// audio output" independent of the OS/device layer -- if this reports
+// a test note directly on the audio graph's gate (bypassing DeltaEvent/hydra
+// entirely -- see TestTone in audio/mod.rs), then taps ~0.1s of the raw cpal
+// output buffer (see AudioCapture in audio/mod.rs) and checks it's non-zero.
+// Diagnoses "no audio output" independent of the OS/device layer -- if this reports
 // non-zero, the engine is producing signal and the bug is downstream (cpal
 // device selection, OS routing, etc); if it reports all-zero, the bug is in
 // the graph itself (note/gate wiring, envelope, a stuck bypass level, etc).
@@ -132,7 +132,7 @@ fn run_self_test (audio: audio::AudioHandles, quit: Arc<AtomicBool>) {
     sleep(Duration::from_millis(300));
 
     println!("║ [selftest] holding test note (A4, 440Hz)...");
-    audio.audition_seq.start(69); // A4 -- clearly audible on any speaker/headphone
+    audio.test_tone.start(69); // A4 -- clearly audible on any speaker/headphone
     sleep(Duration::from_millis(50)); // let the envelope attack
 
     audio.capture.start();
@@ -158,7 +158,7 @@ fn run_self_test (audio: audio::AudioHandles, quit: Arc<AtomicBool>) {
     // break is downstream of this process entirely (OS/device routing).
     println!("║ [selftest] 🔊 LISTEN NOW: holding an audible A4 tone for 3 seconds...");
     sleep(Duration::from_secs(3));
-    audio.audition_seq.stop();
+    audio.test_tone.stop();
 
     sleep(Duration::from_millis(200));
     quit.store(true, Ordering::Relaxed);
@@ -203,6 +203,9 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
                 bridge.fuzz.set(mc.midi_fuzz.load());
                 bridge.thump.set(mc.midi_thump.load());
                 bridge.bend.set(mc.midi_bend.load());
+            }
+            if mc.seq_playing.load(Ordering::Relaxed) {
+                bridge.filter.set(mc.seq_filter.load());
             }
         }
 
