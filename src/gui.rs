@@ -175,7 +175,7 @@ const KNOB_RADIUS: f32 = 8.0;
 const CARD_SIZE:       [f32; 2] = [140.0, 66.0];
 // One per-voice card (4 knobs, plus Growl's extra NAM cycler row) -- all 4
 // now drawn side by side (see draw_voice_card), not just the selected one.
-const VOICE_CARD_SIZE: [f32; 2] = [160.0, 90.0];
+const VOICE_CARD_SIZE: [f32; 2] = [160.0, 140.0];
 
 // Dark blue background tint for whichever voice card is currently active --
 // see draw_voice_card.
@@ -234,6 +234,7 @@ fn draw_voice_growl (ui: &imgui::Ui, growl: &GrowlHandle) {
         ("growl_filter",     "filter",     0.0, 1.0, &growl.filter),
         ("growl_space",      "space",      0.0, 1.0, &growl.space),
         ("growl_warp",       "warp",       0.0, 1.0, &growl.warp),
+        ("growl_nam_xover",  "xover",      0.0, 2000.0, &growl.nam_crossover),
     ]);
     if ui.button("< ##growl_nam") { growl.nam.cycle(-1); }
     ui.same_line();

@@ -40,7 +40,9 @@ use fundsp::prelude64::*;
 use fundsp::fft::inverse_fft;
 use num_complex::Complex32;
 
+use crate::zgicabra::SignalState;
 use super::gen_node::GenNode;
+use super::voice::{Voice, VoiceParams, ThumpMod};
 
 const FRAME_LEN: usize = 256;
 const NUM_HARMONICS: usize = 32;
@@ -492,6 +494,136 @@ impl AudioNode for GorgleGen {
 impl GenNode for GorgleGen {
     fn name (&self) -> &'static str { "Gorgle" }
     fn param_names (&self) -> [&'static str; 4] { ["wobble", "ambience", "girgle", "grind"] }
+}
+
+//
+// GorgleVoice -- wraps GorgleGen above with a live Shared per param, same as
+// GrowlVoice in growl.rs.
+//
+
+#[derive(Clone, Copy)]
+pub struct GorgleParams {
+    pub wobble:   f32,
+    pub ambience: f32,
+    pub girgle:   f32,
+    pub grind:    f32,
+}
+
+impl Default for GorgleParams {
+    fn default () -> GorgleParams {
+        GorgleParams { wobble: 0.3, ambience: 0.4, girgle: 0.3, grind: 0.25 }
+    }
+}
+
+impl VoiceParams for GorgleParams {
+    fn voice_name () -> &'static str { "gorgle" }
+
+    fn fields (&self) -> Vec<(&'static str, f32)> {
+        vec![
+            ("wobble",   self.wobble),
+            ("ambience", self.ambience),
+            ("girgle",   self.girgle),
+            ("grind",    self.grind),
+        ]
+    }
+
+    fn from_fields (fields: &[(String, f32)]) -> GorgleParams {
+        let mut params = GorgleParams::default();
+        for (name, value) in fields {
+            match name.as_str() {
+                "wobble"   => params.wobble   = *value,
+                "ambience" => params.ambience = *value,
+                "girgle"   => params.girgle   = *value,
+                "grind"    => params.grind    = *value,
+                _ => {},
+            }
+        }
+        params
+    }
+}
+
+#[derive(Clone)]
+pub struct GorgleHandle {
+    pub wobble:   Shared,
+    pub ambience: Shared,
+    pub girgle:   Shared,
+    pub grind:    Shared,
+}
+
+impl GorgleHandle {
+    pub fn new (params: &GorgleParams) -> GorgleHandle {
+        GorgleHandle {
+            wobble:   shared(params.wobble),
+            ambience: shared(params.ambience),
+            girgle:   shared(params.girgle),
+            grind:    shared(params.grind),
+        }
+    }
+
+    pub fn params (&self) -> GorgleParams {
+        GorgleParams {
+            wobble:   self.wobble.value(),
+            ambience: self.ambience.value(),
+            girgle:   self.girgle.value(),
+            grind:    self.grind.value(),
+        }
+    }
+
+    pub fn load (&self, params: &GorgleParams) {
+        self.wobble.set_value(params.wobble);
+        self.ambience.set_value(params.ambience);
+        self.girgle.set_value(params.girgle);
+        self.grind.set_value(params.grind);
+    }
+}
+
+#[derive(Clone)]
+pub struct GorgleVoice {
+    inner:  GorgleGen,
+    handle: GorgleHandle,
+
+    thump:        ThumpMod,
+    thump_signal: f32,
+}
+
+impl GorgleVoice {
+    pub fn new (handle: GorgleHandle, thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared) -> GorgleVoice {
+        GorgleVoice {
+            inner: GorgleGen::new(), handle,
+            thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay), thump_signal: 0.0,
+        }
+    }
+}
+
+impl AudioNode for GorgleVoice {
+    const ID: u64 = 0x7A_51;
+    type Inputs = U2;
+    type Outputs = U2;
+
+    fn tick (&mut self, input: &Frame<f32, U2>) -> Frame<f32, U2> {
+        let freq     = input[0];
+        let selected = input[1] as usize;
+        if selected != Self::INDEX { return Frame::from([0.0, 0.0]); }
+
+        let freq = freq * self.thump.tick(self.thump_signal);
+
+        self.inner.tick(&Frame::from([
+            freq, 1.0,
+            self.handle.wobble.value(), self.handle.ambience.value(),
+            self.handle.girgle.value(), self.handle.grind.value(),
+        ]))
+    }
+
+    fn set_sample_rate (&mut self, sample_rate: f64) {
+        self.inner.set_sample_rate(sample_rate);
+        self.thump.set_sample_rate(sample_rate);
+    }
+}
+
+impl Voice for GorgleVoice {
+    const INDEX: usize = 2;
+    fn name (&self) -> &'static str { "Gorgle" }
+    fn set_signal (&mut self, signal: &SignalState) { self.thump_signal = signal.thump; }
 }
 
 #[cfg(test)]

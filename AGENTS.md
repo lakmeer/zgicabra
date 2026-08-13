@@ -98,8 +98,8 @@ implementing:
   typenum-style sizes: `U0`, `U1`, `U2`, `U7`, ...), `fn tick(&mut self,
   input: &Frame<f32, Self::Inputs>) -> Frame<f32, Self::Outputs>`.
   Requires `Self: Clone`. This is what you implement for a new
-  self-contained DSP voice/effect (see `src/audio/voice.rs`'s
-  `GrowlVoice`/`BasicVoice` for the current examples).
+  self-contained DSP voice/effect (see `src/audio/growl.rs`'s `GrowlVoice`
+  or `src/audio/basic.rs`'s `BasicVoice` for the current examples).
   `An<X>` wraps an `AudioNode` and makes it composable with `>>` / `|` /
   etc combinator syntax, and gets a **blanket impl of `AudioUnit`** for
   free — that's the bridge to the next trait.
@@ -233,6 +233,23 @@ Engine::tick_pre_nam()  -->  Engine::run_nam() [NamStage L/R]  -->  Engine::tick
   which this does not reuse. `limiter_thresh` is live; fixed `RATIO`,
   `ATTACK`, `RELEASE` constants in `compressor.rs`.
 
+### One module per voice — `*Params`/`*Handle`/`*Voice` live next to the patch, not in `voice.rs`
+
+`voice.rs` holds only the shared contract: the `Voice` trait, the
+`VoiceParams` trait, and `ThumpMod` (`pub(super)`, since every concrete
+voice uses it). Each concrete voice's `*Params`/`*Handle`/`*Voice` struct
+trio and their impls (`AudioNode`, `Voice`, `VoiceParams`) live in that
+voice's own patch file, appended after its `GenNode`/generator impl:
+`GrowlParams`/`GrowlHandle`/`GrowlVoice` in `growl.rs` (below
+`WavetableGen`), `GorgleParams`/`GorgleHandle`/`GorgleVoice` in `gorgle.rs`
+(below `GorgleGen`), `BasicParams`/`BasicHandle`/`BasicVoice` in
+`basic.rs` (no separate generator to wrap, so the whole voice lives in its
+own file). `mod.rs` re-exports each `*Handle`/`*Params` pair from its own
+module (`pub use growl::{GrowlHandle, GrowlParams}`, etc) so
+`gui.rs`/`AudioHandles` keep importing from `crate::audio` either way —
+**when adding a new voice, put its structs in its own file and re-export
+from `mod.rs`, don't add them to `voice.rs`.**
+
 ### The `Voice` trait (`voice.rs`) — replaces the old ParamSpec/weight-matrix system
 
 **If you remember an older version of this doc describing `ParamSpec`,
@@ -276,7 +293,8 @@ What replaced it:
   bumps), what `AudioHandles`/`gui.rs` hold. The matching `*Voice` struct
   (`GrowlVoice`, `BasicVoice`, `GorgleVoice`) owns the real DSP state *and*
   a clone of the same handle — GUI writes go straight through the shared
-  `Shared` cell, no sync needed.
+  `Shared` cell, no sync needed. See "One module per voice" above for where
+  each of these actually lives.
 
 ### `WavetableGen` (`growl.rs`) — Growl's patch
 
@@ -286,7 +304,11 @@ macro knobs (`bass_drive`, `filter`, `space`, `warp`) exposed via
 `GrowlHandle`. `WavetableGen::clone()` resets to a fresh, un-warmed-up
 instance (required by `AudioNode: Clone`, but means a cloned instance
 doesn't carry over live oscillator/filter state — only ever clone it at
-construction time, not mid-stream).
+construction time, not mid-stream). `growl.rs` also holds
+`GrowlParams`/`GrowlHandle`/`GrowlVoice` (appended after `WavetableGen`) —
+the `Voice`-trait wrapper around it, plus the bolted-on NAM amp stage
+(`nam_crossover`/`nam` model cycler on `GrowlHandle`, `NamStage` on
+`GrowlVoice`, run from `on_block_start`).
 
 ### `GorgleGen` (`gorgle.rs`) — Gorgle's patch
 
@@ -301,18 +323,23 @@ delay lines — see `CombFilter` in `gorgle.rs`, ported from
 `vital_test/src/synthesis/filters/comb_filter.cpp:35-50`) rather than
 growl.rs's Smear-morph-into-a-highpass approach. Same `Clone` caveat as
 `WavetableGen`: resets to a fresh instance, only clone at construction.
+Same bundling as `growl.rs`: `GorgleParams`/`GorgleHandle`/`GorgleVoice`
+are appended after `GorgleGen` in this same file (no separate NAM stage on
+this one).
 
 ### Adding a new Voice
 
-Follow `BasicVoice` (simplest complete example) in `voice.rs`: pick an
-unused `INDEX`, `#[derive(Clone)]` struct, implement `AudioNode<Inputs =
-U2, Outputs = U2>` + `Voice` (silence-unless-selected check first thing in
-`tick()`), forward `set_sample_rate` to every child unit you own. Add its
-`*Params`/`*Handle` pair if it has GUI-tunable params (same shape as
-`GrowlParams`/`GrowlHandle`), wire the handle through
-`AudioOutput`/`Engine` construction and `AudioHandles`, add it to `Engine`
-as a field ticked every sample, and add both a `VOICE_NAMES` entry and a
-`draw_voice_*` match arm in `gui.rs`.
+Follow `BasicVoice` (simplest complete example, `basic.rs`): give it its
+own module (or append to an existing patch file if it wraps a generator
+that already has one, e.g. `growl.rs`/`gorgle.rs`) — don't add it to
+`voice.rs`. Pick an unused `INDEX`, `#[derive(Clone)]` struct, implement
+`AudioNode<Inputs = U2, Outputs = U2>` + `Voice` (silence-unless-selected
+check first thing in `tick()`), forward `set_sample_rate` to every child
+unit you own. Add its `*Params`/`*Handle` pair if it has GUI-tunable params
+(same shape as `GrowlParams`/`GrowlHandle`), re-export both from `mod.rs`,
+wire the handle through `AudioOutput`/`Engine` construction and
+`AudioHandles`, add it to `Engine` as a field ticked every sample, and add
+both a `VOICE_NAMES` entry and a `draw_voice_*` match arm in `gui.rs`.
 
 ### Persistence
 

@@ -17,14 +17,8 @@ use fundsp::prelude64::*;
 use nam_rs::{Model, NamModel};
 
 const NAM_DIR: &str = "nam";
-const DEFAULT_NAM_MODEL: &str = "comp-50";
-// TONE3000's A2 recipe normalizes training data to -18dB RMS and folds the
-// rescale into head_scale, and the reference plugin's "Normalized" output
-// mode targets the same figure -- match it so cycling models doesn't jump
-// wildly in level.
+const DEFAULT_NAM_MODEL: &str = "mesa";
 const TARGET_LOUDNESS_DB: f32 = -18.0;
-// ~5Hz one-pole highpass to strip WaveNet DC bias post-inference, same as
-// the reference plugin's DC blocker. R = exp(-2*pi*fc/fs).
 const DC_BLOCKER_R: f32 = 0.9993;
 
 // Crossover split runs at the same fixed rate the model itself is pinned to

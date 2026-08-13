@@ -23,12 +23,17 @@
 // p4 WARP       -- osc_b Smear boost (real ported mod-matrix effect) + chorus wet mix
 //
 
+use std::sync::Arc;
+
 use fundsp::prelude64::*;
 use fundsp::fft::inverse_fft;
 use num_complex::Complex32;
 
 use crate::tools::linexp;
+use crate::zgicabra::SignalState;
 use super::gen_node::GenNode;
+use super::voice::{Voice, VoiceParams, ThumpMod};
+use super::nam::{NamStage, NamModelCycler, NamModelSlot, NAM_BLOCK_CAP, default_model_index};
 
 const FRAME_LEN: usize = 256;    // power of two, required by fundsp::fft
 const NUM_HARMONICS: usize = 32; // harmonics 1..=32 tracked per oscillator
@@ -279,6 +284,211 @@ impl AudioNode for WavetableGen {
 impl GenNode for WavetableGen {
     fn name (&self) -> &'static str { "Wavetable" }
     fn param_names (&self) -> [&'static str; 4] { ["bass_drive", "filter", "space", "warp"] }
+}
+
+//
+// GrowlVoice -- wraps WavetableGen above with a live Shared per param, same
+// as everything else in this engine, plus a bolted-on NAM amp stage.
+//
+
+#[derive(Clone, Copy)]
+pub struct GrowlParams {
+    pub bass_drive:    f32,
+    pub filter:        f32,
+    pub space:         f32,
+    pub warp:          f32,
+    // NAM crossover split freq (Hz) -- see NamStage::xover_alpha. 0.0 keeps
+    // the prior no-op default (full signal into the model, no dry low band).
+    pub nam_crossover: f32,
+}
+
+impl Default for GrowlParams {
+    fn default () -> GrowlParams {
+        GrowlParams { bass_drive: 0.8, filter: 0.9, space: 0.25, warp: 0.3, nam_crossover: 0.0 }
+    }
+}
+
+impl VoiceParams for GrowlParams {
+    fn voice_name () -> &'static str { "growl" }
+
+    fn fields (&self) -> Vec<(&'static str, f32)> {
+        vec![
+            ("bass_drive",    self.bass_drive),
+            ("filter",        self.filter),
+            ("space",         self.space),
+            ("warp",          self.warp),
+            ("nam_crossover", self.nam_crossover),
+        ]
+    }
+
+    fn from_fields (fields: &[(String, f32)]) -> GrowlParams {
+        let mut params = GrowlParams::default();
+        for (name, value) in fields {
+            match name.as_str() {
+                "bass_drive"    => params.bass_drive    = *value,
+                "filter"        => params.filter        = *value,
+                "space"         => params.space         = *value,
+                "warp"          => params.warp          = *value,
+                "nam_crossover" => params.nam_crossover = *value,
+                _ => {},
+            }
+        }
+        params
+    }
+}
+
+// GUI/AudioHandles-facing handle: just the live Shared cells, no DSP state --
+// cheap to clone (Arc bump), safe to hand to the GUI thread.
+#[derive(Clone)]
+pub struct GrowlHandle {
+    pub bass_drive:    Shared,
+    pub filter:        Shared,
+    pub space:         Shared,
+    pub warp:          Shared,
+    // NAM crossover split freq (Hz), read by GrowlVoice::on_block_start --
+    // see GrowlParams::nam_crossover.
+    pub nam_crossover: Shared,
+    // Post-oscillator NAM amp stage bolted onto Growl -- "extra" model-select
+    // cell, same idiom as gen_node's BasicOscGen (see extra there). Bypass
+    // (index 0) keeps Growl exactly as it sounded before this existed.
+    pub nam: NamModelCycler,
+}
+
+impl GrowlHandle {
+    pub fn new (params: &GrowlParams, nam_names: Arc<Vec<String>>) -> GrowlHandle {
+        let default_nam = default_model_index(&nam_names) as f32;
+        GrowlHandle {
+            bass_drive:    shared(params.bass_drive),
+            filter:        shared(params.filter),
+            space:         shared(params.space),
+            warp:          shared(params.warp),
+            nam_crossover: shared(params.nam_crossover),
+            nam: NamModelCycler::new(shared(default_nam), nam_names),
+        }
+    }
+
+    pub fn params (&self) -> GrowlParams {
+        GrowlParams {
+            bass_drive:    self.bass_drive.value(),
+            filter:        self.filter.value(),
+            space:         self.space.value(),
+            warp:          self.warp.value(),
+            nam_crossover: self.nam_crossover.value(),
+        }
+    }
+
+    pub fn load (&self, params: &GrowlParams) {
+        self.bass_drive.set_value(params.bass_drive);
+        self.filter.set_value(params.filter);
+        self.space.set_value(params.space);
+        self.warp.set_value(params.warp);
+        self.nam_crossover.set_value(params.nam_crossover);
+    }
+}
+
+// Audio-thread owner: the real WavetableGen plus the same Shared cells the
+// handle above holds (cloned in, same underlying Arc -- edits sync).
+// AudioNode requires Self: Clone -- WavetableGen's own Clone impl resets to
+// a fresh, un-warmed-up instance (see above), same as it always has; the
+// handle's Shared cells clone cheap (Arc bump) and stay live.
+#[derive(Clone)]
+pub struct GrowlVoice {
+    inner:  WavetableGen,
+    handle: GrowlHandle,
+    nam:    NamStage,
+    // One-block-latency in-place ring: on_block_start runs the model over
+    // whatever tick() wrote here last block (raw), turning it into this
+    // block's wet output in place; tick() then reads-then-overwrites each
+    // cell in turn (read = last block's wet, write = this block's raw) --
+    // see NamStage::process_block's block-not-per-sample requirement and
+    // the Voice::on_block_start doc.
+    scratch: Vec<f32>,
+    pos:     usize,
+
+    thump:        ThumpMod,
+    thump_signal: f32,
+
+    // Live SignalState.filter (0..1), sets filter cutoff -- see set_signal.
+    filter_signal: f32,
+    // Live SignalState.fuzz (0..1), sets the NamStage blend -- see
+    // set_signal/on_block_start. Block-rate resolution (last value from the
+    // block's samples), same as amp_l/amp_r's own blend knob.
+    fuzz_signal: f32,
+}
+
+impl GrowlVoice {
+    pub fn new (handle: GrowlHandle, nam_models: Vec<Option<NamModelSlot>>, thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared) -> GrowlVoice {
+        let nam = NamStage::new(nam_models, handle.nam.shared());
+        GrowlVoice {
+            inner: WavetableGen::new(), handle, nam, scratch: vec![0.0; NAM_BLOCK_CAP], pos: 0,
+            thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay), thump_signal: 0.0,
+            filter_signal: 0.0, fuzz_signal: 0.0,
+        }
+    }
+}
+
+impl AudioNode for GrowlVoice {
+    const ID: u64 = 0x7A_40;
+    type Inputs = U2;
+    type Outputs = U2;
+
+    fn tick (&mut self, input: &Frame<f32, U2>) -> Frame<f32, U2> {
+        let freq     = input[0];
+        let selected = input[1] as usize;
+
+        if selected != Self::INDEX {
+            // Not the active voice: skip the (expensive) oscillator, but
+            // still zero this cell so a stale raw sample from a previous
+            // active stretch can't bleed into the next block's inference.
+            if let Some(cell) = self.scratch.get_mut(self.pos) { *cell = 0.0; }
+            self.pos += 1;
+            return Frame::from([0.0, 0.0]);
+        }
+
+        let freq = freq * self.thump.tick(self.thump_signal);
+        let filter_cutoff = (self.handle.filter.value() * self.filter_signal).clamp(0.0, 1.0);
+
+        let raw = self.inner.tick(&Frame::from([
+            freq, 1.0,
+            self.handle.bass_drive.value(), filter_cutoff,
+            self.handle.space.value(), self.handle.warp.value(),
+        ]))[0];
+
+        let wet = self.scratch.get(self.pos).copied().unwrap_or(0.0);
+        if let Some(cell) = self.scratch.get_mut(self.pos) { *cell = raw; }
+        self.pos += 1;
+
+        Frame::from([wet, wet])
+    }
+
+    fn set_sample_rate (&mut self, sample_rate: f64) {
+        self.inner.set_sample_rate(sample_rate);
+        self.nam.set_sample_rate(sample_rate);
+        self.thump.set_sample_rate(sample_rate);
+    }
+}
+
+impl Voice for GrowlVoice {
+    const INDEX: usize = 0;
+    fn name (&self) -> &'static str { "Growl" }
+    fn set_signal (&mut self, signal: &SignalState) {
+        self.thump_signal  = signal.thump;
+        self.filter_signal = signal.filter;
+        self.fuzz_signal   = signal.fuzz;
+    }
+
+    // Runs the NAM model over last block's buffered raw output (see
+    // `scratch` above) before this block's tick() calls start reading it.
+    // Fixed level=1/boost=1 -- Bypass (model index 0, GrowlHandle::new's
+    // default) already gives dry passthrough, so there's no separate on/off
+    // knob to wire here. blend tracks live fuzz_signal; crossover tracks the
+    // handle's nam_crossover knob.
+    fn on_block_start (&mut self, block_len: usize) {
+        let n = std::cmp::min(block_len, self.scratch.len());
+        let crossover_hz = self.handle.nam_crossover.value();
+        self.nam.process_block(&mut self.scratch[..n], 1.0, self.fuzz_signal, 1.0, crossover_hz);
+        self.pos = 0;
+    }
 }
 
 #[cfg(test)]
