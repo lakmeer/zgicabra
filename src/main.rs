@@ -120,8 +120,8 @@ fn main() {
 }
 
 // Self-test seam (--gui --test): launches the real gui-mode code path, holds
-// a test note through the audition-note mechanism the GUI's "Hold Note"
-// button also uses, then taps ~0.1s of the raw cpal output buffer (see
+// a test note through the same audition-sequence mechanism the GUI's
+// "Play Sequence" button uses, then taps ~0.1s of the raw cpal output buffer (see
 // AudioCapture in audio/mod.rs) and checks it's non-zero. Diagnoses "no
 // audio output" independent of the OS/device layer -- if this reports
 // non-zero, the engine is producing signal and the bug is downstream (cpal
@@ -132,7 +132,7 @@ fn run_self_test (audio: audio::AudioHandles, quit: Arc<AtomicBool>) {
     sleep(Duration::from_millis(300));
 
     println!("║ [selftest] holding test note (A4, 440Hz)...");
-    audio.audition_note.hold(69); // A4 -- clearly audible on any speaker/headphone
+    audio.audition_seq.start(69); // A4 -- clearly audible on any speaker/headphone
     sleep(Duration::from_millis(50)); // let the envelope attack
 
     audio.capture.start();
@@ -158,7 +158,7 @@ fn run_self_test (audio: audio::AudioHandles, quit: Arc<AtomicBool>) {
     // break is downstream of this process entirely (OS/device routing).
     println!("║ [selftest] 🔊 LISTEN NOW: holding an audible A4 tone for 3 seconds...");
     sleep(Duration::from_secs(3));
-    audio.audition_note.release();
+    audio.audition_seq.stop();
 
     sleep(Duration::from_millis(200));
     quit.store(true, Ordering::Relaxed);

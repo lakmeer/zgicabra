@@ -26,18 +26,17 @@ use glutin::display::GetGlDisplay;
 use glutin::prelude::*;
 use glutin::surface::{SurfaceAttributesBuilder, WindowSurface};
 use glutin_winit::DisplayBuilder;
-use imgui::Drag;
 use raw_window_handle::HasWindowHandle;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::window::{Fullscreen, WindowAttributes};
 
 use crate::hydra::MockControls;
-use crate::audio::{AudioHandles, AuditionNote, GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, snapshot, GorgleHandle, GorgleParams};
+use crate::audio::{AudioHandles, AuditionSequence, GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, snapshot, GorgleHandle, GorgleParams};
 use crate::tools::AtomicF32;
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
 
-const VOICE_NAMES: [&str; 3] = ["Growl", "Basic", "Gorgle"];
+const VOICE_NAMES: [&str; 4] = ["Growl", "Gorgle", "Basic", "Basic"];
 
 // Local (GUI-thread-only) browser state for saved voice-param snapshots --
 // save/load are one-off file actions the GUI thread can just do directly on
@@ -62,10 +61,40 @@ impl SnapshotBrowser {
     }
 }
 
-// Local (GUI-thread-only) state for the "hold note" audition button.
+// Local (GUI-thread-only) state for the audition sequence player: whether
+// it's running, and how far into the current loop it is.
 struct AuditionState {
-    held:  bool,
-    pitch: f32,
+    playing: bool,
+    elapsed: f32,
+}
+
+// One 16-beat loop at 120bpm: a descending line (C3 F#2 F2) answered a
+// fifth up (G3 C#3 C2). MIDI numbers assume C4 = 60 (same convention as the
+// old "Hold Note" A4-is-69 test tone).
+const SEQ_BPM: f32 = 120.0;
+const SEQ_NOTES: [(u8, f32); 6] = [
+    (48, 1.5), // C3
+    (42, 1.5), // F#2
+    (41, 5.0), // F2
+    (43, 1.5), // G2
+    (37, 1.5), // C#2
+    (36, 5.0), // C2
+];
+
+fn seq_beat_seconds () -> f32 { 60.0 / SEQ_BPM }
+
+fn seq_total_seconds () -> f32 {
+    SEQ_NOTES.iter().map(|(_, beats)| beats).sum::<f32>() * seq_beat_seconds()
+}
+
+// Which note is sounding `t` seconds into the loop.
+fn seq_note_at (t: f32) -> u8 {
+    let mut acc = 0.0;
+    for (note, beats) in SEQ_NOTES {
+        acc += beats * seq_beat_seconds();
+        if t < acc { return note; }
+    }
+    SEQ_NOTES.last().unwrap().0
 }
 
 // Drag widgets need a step size that feels right whether the underlying
@@ -180,11 +209,20 @@ const KNOB_RADIUS: f32 = 8.0;
 // Simple cards (fixed knob set) vs. the voice card, which needs extra width
 // for the voice selector row plus up to 4 param knobs.
 const CARD_SIZE:       [f32; 2] = [140.0, 66.0];
-const VOICE_CARD_SIZE: [f32; 2] = [300.0, 110.0];
+// One per-voice card (4 knobs, plus Growl's extra NAM cycler row) -- all 4
+// now drawn side by side (see draw_voice_card), not just the selected one.
+const VOICE_CARD_SIZE: [f32; 2] = [160.0, 90.0];
+
+// Dark blue background tint for whichever voice card is currently active --
+// see draw_voice_card.
+const ACTIVE_VOICE_BG: [f32; 4] = [0.10, 0.16, 0.42, 1.0];
 
 // Bordered box with a title and an optional top-right bypass checkbox --
-// the Engine panel's one repeated "module card" shape.
-fn draw_module_card (ui: &imgui::Ui, title: &str, bypass: Option<&Shared>, size: [f32; 2], body: impl FnOnce(&imgui::Ui)) {
+// the Engine panel's one repeated "module card" shape. `active` tints the
+// card's background (used by draw_voice_card to mark the selected voice;
+// every other caller passes false, which leaves imgui's default ChildBg).
+fn draw_module_card (ui: &imgui::Ui, title: &str, bypass: Option<&Shared>, size: [f32; 2], active: bool, body: impl FnOnce(&imgui::Ui)) {
+    let _bg = active.then(|| ui.push_style_color(imgui::StyleColor::ChildBg, ACTIVE_VOICE_BG));
     ui.child_window(format!("##card_{title}")).size(size).border(true).build(|| {
         ui.text(title);
         if let Some(level) = bypass {
@@ -208,18 +246,31 @@ fn draw_knob_row (ui: &imgui::Ui, knobs: &[(&str, &str, f32, f32, &Shared)]) {
     }
 }
 
-// "Hold Note" toggle: drives AudioOutput's freq/gate cells directly so
-// voices can be auditioned by ear without touching the wand controller.
-// Click to trigger and hold the gate open; click again to release.
-fn draw_audition_note (ui: &imgui::Ui, note: &AuditionNote, state: &mut AuditionState) {
-    ui.set_next_item_width(80.0);
-    Drag::new("Note##audition_pitch").range(0.0, 127.0).speed(0.2).build(ui, &mut state.pitch);
-    ui.same_line();
-
-    let label = if state.held { "Release Note" } else { "Hold Note" };
+// "Play Sequence" toggle: drives AudioOutput's freq/gate/filter cells
+// directly so voices can be auditioned by ear without touching the wand
+// controller. Click to start the loop (see SEQ_NOTES); click again to stop.
+// While playing, the filter cell is driven by a slow sine drift (period =
+// 1.5x the loop length) independent of the note stepping, so the sweep
+// isn't locked to the melody's rhythm.
+fn draw_audition_sequence (ui: &imgui::Ui, seq: &AuditionSequence, state: &mut AuditionState) {
+    let label = if state.playing { "Stop Sequence" } else { "Play Sequence" };
     if ui.button(label) {
-        state.held = !state.held;
-        if state.held { note.hold(state.pitch as u8); } else { note.release(); }
+        state.playing = !state.playing;
+        if state.playing {
+            state.elapsed = 0.0;
+            seq.start(seq_note_at(0.0));
+        } else {
+            seq.stop();
+        }
+    }
+
+    if state.playing {
+        state.elapsed = (state.elapsed + ui.io().delta_time) % seq_total_seconds();
+        seq.set_note(seq_note_at(state.elapsed));
+
+        let period = seq_total_seconds() * 1.5;
+        let filter = (state.elapsed / period * std::f32::consts::TAU).sin() * 0.5 + 0.5;
+        seq.set_filter(filter);
     }
 }
 
@@ -238,7 +289,9 @@ fn draw_voice_selector (ui: &imgui::Ui, selected: &Shared) {
     }
 }
 
-// Growl's 4 macro knobs -- see wavetable_gen.rs for what each does.
+// Growl's 4 macro knobs -- see wavetable_gen.rs for what each does -- plus
+// its bolted-on NAM amp stage's model cycler ("< Model / name / Model >",
+// same idiom as draw_voice_selector).
 fn draw_voice_growl (ui: &imgui::Ui, growl: &GrowlHandle) {
     draw_knob_row(ui, &[
         ("growl_bass_drive", "bass drive", 0.0, 1.0, &growl.bass_drive),
@@ -246,6 +299,11 @@ fn draw_voice_growl (ui: &imgui::Ui, growl: &GrowlHandle) {
         ("growl_space",      "space",      0.0, 1.0, &growl.space),
         ("growl_warp",       "warp",       0.0, 1.0, &growl.warp),
     ]);
+    if ui.button("< ##growl_nam") { growl.nam.cycle(-1); }
+    ui.same_line();
+    ui.text(format!("{}", growl.nam.selected_name()));
+    ui.same_line();
+    if ui.button(">##growl_nam") { growl.nam.cycle(1); }
 }
 
 // Basic's 4 oscillator mix levels.
@@ -268,16 +326,29 @@ fn draw_voice_gorgle (ui: &imgui::Ui, gorgle: &GorgleHandle) {
     ]);
 }
 
+// All 4 voices drawn side by side, always -- the active one (voice_selected)
+// gets a dark blue card background instead of only the selected voice's
+// controls being shown.
 fn draw_voice_card (ui: &imgui::Ui, audio: &AudioHandles) {
-    draw_module_card(ui, "Voice", None, VOICE_CARD_SIZE, |ui| {
-        draw_voice_selector(ui, &audio.voice_selected);
-        ui.separator();
-        match audio.voice_selected.value() as i32 {
-            0 => draw_voice_growl(ui, &audio.growl),
-            1 => draw_voice_basic(ui, &audio.basic),
-            2 => draw_voice_gorgle(ui, &audio.gorgle),
-            _ => {},
-        }
+    draw_voice_selector(ui, &audio.voice_selected);
+    ui.separator();
+
+    let selected = audio.voice_selected.value() as i32;
+
+    draw_module_card(ui, "Growl", None, VOICE_CARD_SIZE, selected == 0, |ui| {
+        draw_voice_growl(ui, &audio.voice_a);
+    });
+    ui.same_line();
+    draw_module_card(ui, "Gorgle", None, VOICE_CARD_SIZE, selected == 1, |ui| {
+        draw_voice_gorgle(ui, &audio.voice_b);
+    });
+    ui.same_line();
+    draw_module_card(ui, "Basic C", None, VOICE_CARD_SIZE, selected == 2, |ui| {
+        draw_voice_basic(ui, &audio.voice_c);
+    });
+    ui.same_line();
+    draw_module_card(ui, "Basic D", None, VOICE_CARD_SIZE, selected == 3, |ui| {
+        draw_voice_basic(ui, &audio.voice_d);
     });
 }
 
@@ -288,9 +359,10 @@ fn draw_voice_card (ui: &imgui::Ui, audio: &AudioHandles) {
 fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut SnapshotBrowser) {
     if ui.button("Save Snapshot") {
         let result = match audio.voice_selected.value() as i32 {
-            0 => snapshot::save_snapshot(GrowlParams::voice_name(), &audio.growl.params().fields()),
-            1 => snapshot::save_snapshot(BasicParams::voice_name(), &audio.basic.params().fields()),
-            2 => snapshot::save_snapshot(GorgleParams::voice_name(), &audio.gorgle.params().fields()),
+            0 => snapshot::save_snapshot(GrowlParams::voice_name(), &audio.voice_a.params().fields()),
+            1 => snapshot::save_snapshot(GorgleParams::voice_name(), &audio.voice_b.params().fields()),
+            2 => snapshot::save_snapshot(BasicParams::voice_name(), &audio.voice_c.params().fields()),
+            3 => snapshot::save_snapshot(BasicParams::voice_name(), &audio.voice_d.params().fields()),
             _ => Ok(std::path::PathBuf::new()),
         };
         if let Err(e) = result {
@@ -319,14 +391,22 @@ fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut Sn
             let path = snapshot::snapshot_path(name);
             match snapshot::load_snapshot(&path) {
                 Ok((voice_name, fields)) => {
-                    if voice_name == GrowlParams::voice_name() {
-                        audio.growl.load(&GrowlParams::from_fields(&fields));
-                    } else if voice_name == BasicParams::voice_name() {
-                        audio.basic.load(&BasicParams::from_fields(&fields));
-                    } else if voice_name == GorgleParams::voice_name() {
-                        audio.gorgle.load(&GorgleParams::from_fields(&fields));
+                    let expected = match audio.voice_selected.value() as i32 {
+                        0 => GrowlParams::voice_name(),
+                        1 => GorgleParams::voice_name(),
+                        2 | 3 => BasicParams::voice_name(),
+                        _ => "",
+                    };
+                    if voice_name != expected {
+                        eprintln!("║ 🟥 Snapshot '{name}' is for voice '{voice_name}', not the selected voice");
                     } else {
-                        eprintln!("║ 🟥 Snapshot '{name}' is for an unknown voice '{voice_name}'");
+                        match audio.voice_selected.value() as i32 {
+                            0 => audio.voice_a.load(&GrowlParams::from_fields(&fields)),
+                            1 => audio.voice_b.load(&GorgleParams::from_fields(&fields)),
+                            2 => audio.voice_c.load(&BasicParams::from_fields(&fields)),
+                            3 => audio.voice_d.load(&BasicParams::from_fields(&fields)),
+                            _ => {},
+                        }
                     }
                 },
                 Err(e) => eprintln!("║ 🟥 Failed to load snapshot: {e}"),
@@ -379,28 +459,28 @@ fn draw_signal_state (ui: &imgui::Ui, bridge: &ZgicabraBridge) {
 // Engine panel: globals first (main sub, dry sub, amp, reverb, limiter,
 // voice selector), then the currently-selected voice's own param card.
 fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, audition_state: &mut AuditionState, snapshot_browser: &mut SnapshotBrowser) {
-    draw_audition_note(ui, &audio.audition_note, audition_state);
+    draw_audition_sequence(ui, &audio.audition_seq, audition_state);
     ui.separator();
 
-    draw_module_card(ui, "Main Sub", None, CARD_SIZE, |ui| {
+    draw_module_card(ui, "Main Sub", None, CARD_SIZE, false, |ui| {
         draw_knob_row(ui, &[
             ("main_sub_wave", "wave",  0.0, 1.0, &audio.main_sub_wave),
             ("main_sub_lvl",  "level", 0.0, 1.0, &audio.main_sub_lvl),
         ]);
     });
     ui.same_line();
-    draw_module_card(ui, "Dry Sub", None, CARD_SIZE, |ui| {
+    draw_module_card(ui, "Dry Sub", None, CARD_SIZE, false, |ui| {
         draw_knob_row(ui, &[("dry_sub_lvl", "level", 0.0, 1.0, &audio.dry_sub_lvl)]);
     });
     ui.same_line();
-    draw_module_card(ui, "Thump", None, CARD_SIZE, |ui| {
+    draw_module_card(ui, "Thump", None, CARD_SIZE, false, |ui| {
         draw_knob_row(ui, &[
             ("thump_peak",  "peak",  0.0,  1.5, &audio.thump_peak),
             ("thump_decay", "decay", 0.02, 1.0, &audio.thump_decay),
         ]);
     });
 
-    draw_module_card(ui, "Amp", Some(&audio.amp_bypass), CARD_SIZE, |ui| {
+    draw_module_card(ui, "Amp", Some(&audio.amp_bypass), CARD_SIZE, false, |ui| {
         draw_knob_row(ui, &[
             ("amp_blend",     "blend", 0.0, 1.0,    &audio.amp_blend),
             ("amp_boost",     "boost", 1.0, 4.0,    &audio.amp_boost),
@@ -411,7 +491,7 @@ fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, audition_state: &mut
     // reverb_decay/damp/size are baked into the reverb tail at engine
     // construction time -- editing them here only takes effect on the next
     // process restart, same documented caveat this project has always had.
-    draw_module_card(ui, "Reverb", Some(&audio.reverb_bypass), CARD_SIZE, |ui| {
+    draw_module_card(ui, "Reverb", Some(&audio.reverb_bypass), CARD_SIZE, false, |ui| {
         draw_knob_row(ui, &[
             ("reverb_size",  "size",  10.0, 30.0, &audio.reverb_size),
             ("reverb_decay", "decay", 0.1,  4.0,  &audio.reverb_decay),
@@ -420,7 +500,7 @@ fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, audition_state: &mut
         ]);
     });
     ui.same_line();
-    draw_module_card(ui, "Limiter", Some(&audio.limiter_bypass), CARD_SIZE, |ui| {
+    draw_module_card(ui, "Limiter", Some(&audio.limiter_bypass), CARD_SIZE, false, |ui| {
         draw_knob_row(ui, &[("limiter_thresh", "thresh", -60.0, 0.0, &audio.limiter_thresh)]);
     });
 
@@ -552,7 +632,7 @@ fn save_screenshot (gl: &glow::Context, width: u32, height: u32, path: &str) {
 pub fn run (audio: Option<AudioHandles>, mock_controls: Option<MockControls>, bridge: ZgicabraBridge, quit: Arc<AtomicBool>) {
     let screenshot_path = env::var("ZGICABRA_GUI_SCREENSHOT").ok();
     let mut frame_count: u32 = 0;
-    let mut audition_state = AuditionState { held: false, pitch: 43.0 };
+    let mut audition_state = AuditionState { playing: false, elapsed: 0.0 };
     let mut snapshot_browser = SnapshotBrowser::new();
     let event_loop = EventLoop::new().expect("failed to create winit event loop");
 

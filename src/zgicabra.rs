@@ -38,7 +38,14 @@ impl Voice {
     pub fn cycle(self, delta: i8) -> Self {
         let current = self as i8;
         let next = (current + delta).rem_euclid(Self::COUNT as i8) as u8;
-        match next {
+        Self::from_index(next)
+    }
+
+    // Absolute select by index (wraps mod COUNT) -- e.g. a MIDI Program
+    // Change picking a voice directly, unlike the rocking button's relative
+    // cycle() above.
+    pub fn from_index(index: u8) -> Self {
+        match index % Self::COUNT {
             0 => Voice::Classic,
             1 => Voice::Eternal,
             2 => Voice::VoiceC,

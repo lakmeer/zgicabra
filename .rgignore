@@ -2,3 +2,4 @@ target/
 libs/
 hid_test/target/
 gui.sh
+vital_test

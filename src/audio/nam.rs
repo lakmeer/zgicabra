@@ -53,6 +53,12 @@ impl NamModelCycler {
         self.names.get(i).map(String::as_str).unwrap_or("?")
     }
 
+    // Raw Shared cell, for handing to a NamStage that this cycler's model
+    // selection should drive (see GrowlVoice).
+    pub fn shared (&self) -> Shared {
+        self.selected.clone()
+    }
+
     pub fn cycle (&self, delta: i32) {
         let count = self.names.len() as i32;
         if count == 0 { return; }
@@ -176,6 +182,9 @@ pub struct NamModelSlot {
 // are always far below it in practice.
 pub(crate) const NAM_BLOCK_CAP: usize = 4096;
 
+// Clone is a structural bound only (see GrowlVoice/AudioNode) -- nothing
+// actually clones a live NamStage.
+#[derive(Clone)]
 pub struct NamStage {
     models:    Vec<Option<NamModelSlot>>,
     // Model selector -- the FxNode's one extra int field.

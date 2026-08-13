@@ -1,12 +1,15 @@
 
 # TODO
 
-- Filter audibly snaps back to neutral then note released
-- Remove def.lo.hi from matrix
-- Can't hear FX chain
-- Check curve blending
+- Filter audibly snaps back to neutral when note released
+  - Still?
 - Compressor feedback?
 - Performance audit
+- Switch GUI framework
+  - raylib
+  - gpui
+- Play demo sequence
+  - C3(1.5) F#2(1.5) F2(5), G3(1.5) C#3(1.5) C2(5)
 
 - Gens
   - Basic

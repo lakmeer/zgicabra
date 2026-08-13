@@ -35,7 +35,7 @@ use termion::input::{Keys,TermRead};
 use midir::{MidiInput,MidiInputConnection,Ignore};
 
 use crate::tools::{sin, AtomicF32};
-use crate::zgicabra::DeltaEvent;
+use crate::zgicabra::{DeltaEvent, Voice};
 
 use super::{Backend,ControllerFrame,LEFT_HAND,RIGHT_HAND,BUTTON_1,BUTTON_2,BUTTON_3,BUTTON_4};
 
@@ -104,6 +104,12 @@ fn connect_midi (filter: Arc<AtomicF32>, width: Arc<AtomicF32>, fuzz: Arc<Atomic
                     held_note = None;
                     notes.lock().unwrap().push_back(DeltaEvent::NoteEnd(*note));
                 }
+            },
+            // Program Change: absolute voice select (PC 0-3, one per voice
+            // slot -- see VOICE_NAMES in gui.rs) instead of the rocking
+            // button/keyboard's relative cycle().
+            [status, program] if status & 0xF0 == 0xC0 => {
+                notes.lock().unwrap().push_back(DeltaEvent::VoiceChange(Voice::from_index(*program)));
             },
             _ => {},
         }

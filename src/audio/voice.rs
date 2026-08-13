@@ -16,11 +16,14 @@
 // shape -- see VoiceParams and snapshot.rs.
 //
 
+use std::sync::Arc;
+
 use fundsp::prelude64::*;
 
 use crate::zgicabra::SignalState;
 use super::growl::WavetableGen;
 use super::gorgle::GorgleGen;
+use super::nam::{NamStage, NamModelCycler, NamModelSlot, NAM_BLOCK_CAP};
 
 pub trait Voice: AudioNode<Inputs = U2, Outputs = U2> {
     const INDEX: usize;
@@ -99,15 +102,20 @@ pub struct GrowlHandle {
     pub filter:     Shared,
     pub space:      Shared,
     pub warp:       Shared,
+    // Post-oscillator NAM amp stage bolted onto Growl -- "extra" model-select
+    // cell, same idiom as gen_node's BasicOscGen (see extra there). Bypass
+    // (index 0) keeps Growl exactly as it sounded before this existed.
+    pub nam: NamModelCycler,
 }
 
 impl GrowlHandle {
-    pub fn new (params: &GrowlParams) -> GrowlHandle {
+    pub fn new (params: &GrowlParams, nam_names: Arc<Vec<String>>) -> GrowlHandle {
         GrowlHandle {
             bass_drive: shared(params.bass_drive),
             filter:     shared(params.filter),
             space:      shared(params.space),
             warp:       shared(params.warp),
+            nam: NamModelCycler::new(shared(0.0), nam_names),
         }
     }
 
@@ -137,11 +145,21 @@ impl GrowlHandle {
 pub struct GrowlVoice {
     inner:  WavetableGen,
     handle: GrowlHandle,
+    nam:    NamStage,
+    // One-block-latency in-place ring: on_block_start runs the model over
+    // whatever tick() wrote here last block (raw), turning it into this
+    // block's wet output in place; tick() then reads-then-overwrites each
+    // cell in turn (read = last block's wet, write = this block's raw) --
+    // see NamStage::process_block's block-not-per-sample requirement and
+    // the Voice::on_block_start doc.
+    scratch: Vec<f32>,
+    pos:     usize,
 }
 
 impl GrowlVoice {
-    pub fn new (handle: GrowlHandle) -> GrowlVoice {
-        GrowlVoice { inner: WavetableGen::new(), handle }
+    pub fn new (handle: GrowlHandle, nam_models: Vec<Option<NamModelSlot>>) -> GrowlVoice {
+        let nam = NamStage::new(nam_models, handle.nam.shared());
+        GrowlVoice { inner: WavetableGen::new(), handle, nam, scratch: vec![0.0; NAM_BLOCK_CAP], pos: 0 }
     }
 }
 
@@ -153,17 +171,32 @@ impl AudioNode for GrowlVoice {
     fn tick (&mut self, input: &Frame<f32, U2>) -> Frame<f32, U2> {
         let freq     = input[0];
         let selected = input[1] as usize;
-        if selected != Self::INDEX { return Frame::from([0.0, 0.0]); }
 
-        self.inner.tick(&Frame::from([
+        if selected != Self::INDEX {
+            // Not the active voice: skip the (expensive) oscillator, but
+            // still zero this cell so a stale raw sample from a previous
+            // active stretch can't bleed into the next block's inference.
+            if let Some(cell) = self.scratch.get_mut(self.pos) { *cell = 0.0; }
+            self.pos += 1;
+            return Frame::from([0.0, 0.0]);
+        }
+
+        let raw = self.inner.tick(&Frame::from([
             freq, 1.0,
             self.handle.bass_drive.value(), self.handle.filter.value(),
             self.handle.space.value(), self.handle.warp.value(),
-        ]))
+        ]))[0];
+
+        let wet = self.scratch.get(self.pos).copied().unwrap_or(0.0);
+        if let Some(cell) = self.scratch.get_mut(self.pos) { *cell = raw; }
+        self.pos += 1;
+
+        Frame::from([wet, wet])
     }
 
     fn set_sample_rate (&mut self, sample_rate: f64) {
         self.inner.set_sample_rate(sample_rate);
+        self.nam.set_sample_rate(sample_rate);
     }
 }
 
@@ -171,6 +204,17 @@ impl Voice for GrowlVoice {
     const INDEX: usize = 0;
     fn name (&self) -> &'static str { "Growl" }
     fn set_signal (&mut self, _signal: &SignalState) {}
+
+    // Runs the NAM model over last block's buffered raw output (see
+    // `scratch` above) before this block's tick() calls start reading it.
+    // Fixed level=1/blend=1/boost=1/crossover=0 -- Bypass (model index 0,
+    // GrowlHandle::new's default) already gives dry passthrough, so there's
+    // no separate on/off knob to wire here.
+    fn on_block_start (&mut self, block_len: usize) {
+        let n = std::cmp::min(block_len, self.scratch.len());
+        self.nam.process_block(&mut self.scratch[..n], 1.0, 1.0, 1.0, 0.0);
+        self.pos = 0;
+    }
 }
 
 //

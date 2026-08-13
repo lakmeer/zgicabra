@@ -91,24 +91,34 @@ impl AudioCapture {
     }
 }
 
-// Direct handle onto the note gate, for a "hold note" audition button to
-// drive from the GUI thread -- bypasses DeltaEvent/DeltaConsumer entirely,
-// same shared-atomic mechanism as everything else here. Note: holding this
-// open at the same time as a real controller note will fight over the same
-// `freq`/`gate` cells; it's a manual audition tool, not a second voice.
+// Direct handle onto the note gate and filter cell, for the GUI's audition
+// sequence player to drive from the GUI thread -- bypasses DeltaEvent/
+// DeltaConsumer entirely, same shared-atomic mechanism as everything else
+// here. Note: running this at the same time as a real controller note will
+// fight over the same `freq`/`gate`/`filter` cells; it's a manual audition
+// tool, not a second voice.
 #[derive(Clone)]
-pub struct AuditionNote {
-    freq: Shared,
-    gate: Shared,
+pub struct AuditionSequence {
+    freq:   Shared,
+    gate:   Shared,
+    filter: Shared,
 }
 
-impl AuditionNote {
-    pub fn hold (&self, note: u8) {
+impl AuditionSequence {
+    pub fn start (&self, note: u8) {
         self.freq.set_value(midi_hz(note as f32));
         self.gate.set_value(GATE_ON);
     }
 
-    pub fn release (&self) {
+    pub fn set_note (&self, note: u8) {
+        self.freq.set_value(midi_hz(note as f32));
+    }
+
+    pub fn set_filter (&self, value: f32) {
+        self.filter.set_value(value);
+    }
+
+    pub fn stop (&self) {
         self.gate.set_value(GATE_OFF);
     }
 }
@@ -117,12 +127,13 @@ impl AuditionNote {
 // gui.rs thread one Option through instead of one per feature.
 #[derive(Clone)]
 pub struct AudioHandles {
-    pub audition_note: AuditionNote,
+    pub audition_seq: AuditionSequence,
 
     pub voice_selected: Shared,
-    pub growl: GrowlHandle,
-    pub basic: BasicHandle,
-    pub gorgle: GorgleHandle,
+    pub voice_a: GrowlHandle,
+    pub voice_b: GorgleHandle,
+    pub voice_c: BasicHandle,
+    pub voice_d: BasicHandle,
 
     pub main_sub_lvl:  Shared,
     pub main_sub_wave: Shared,
@@ -160,9 +171,10 @@ pub struct AudioOutput {
     acceleration:      Shared,
 
     voice_selected: Shared,
-    growl: GrowlHandle,
-    basic: BasicHandle,
-    gorgle: GorgleHandle,
+    voice_a: GrowlHandle,
+    voice_b: GorgleHandle,
+    voice_c: BasicHandle,
+    voice_d: BasicHandle,
 
     main_sub_lvl:  Shared,
     main_sub_wave: Shared,
@@ -193,11 +205,12 @@ impl AudioOutput {
     // to build (every field is an Arc'd atomic cell or Arc'd name list).
     pub fn handles (&self) -> AudioHandles {
         AudioHandles {
-            audition_note: AuditionNote { freq: self.freq.clone(), gate: self.gate.clone() },
+            audition_seq: AuditionSequence { freq: self.freq.clone(), gate: self.gate.clone(), filter: self.filter.clone() },
             voice_selected: self.voice_selected.clone(),
-            growl: self.growl.clone(),
-            basic: self.basic.clone(),
-            gorgle: self.gorgle.clone(),
+            voice_a: self.voice_a.clone(),
+            voice_b: self.voice_b.clone(),
+            voice_c: self.voice_c.clone(),
+            voice_d: self.voice_d.clone(),
             main_sub_lvl:  self.main_sub_lvl.clone(),
             main_sub_wave: self.main_sub_wave.clone(),
             dry_sub_lvl:   self.dry_sub_lvl.clone(),
@@ -232,14 +245,20 @@ impl AudioOutput {
         let velocity      = shared(0.0);
         let acceleration  = shared(0.0);
 
+        println!("║ Loading NAM models for Growl... ");
+        let (growl_nam_models, growl_nam_names) = nam::load_nam_models()?;
+        let growl_nam_names = Arc::new(growl_nam_names);
+        println!("║ Growl NAM models loaded ({} found).", growl_nam_names.len().saturating_sub(1));
+
         // Defaults to Growl (index 0) so a fresh run has an audible voice.
         let voice_selected = shared(0.0);
-        let growl = GrowlHandle::new(&GrowlParams::default());
-        let basic = BasicHandle::new(&BasicParams::default());
-        let gorgle = GorgleHandle::new(&GorgleParams::default());
+        let voice_a = GrowlHandle::new(&GrowlParams::default(), growl_nam_names);
+        let voice_b = GorgleHandle::new(&GorgleParams::default());
+        let voice_c = BasicHandle::new(&BasicParams::default());
+        let voice_d = BasicHandle::new(&BasicParams::default());
 
         let main_sub_lvl  = shared(0.35);
-        let main_sub_wave = shared(0.0);
+        let main_sub_wave = shared(0.5);
         let dry_sub_lvl   = shared(0.35);
         let thump_peak    = shared(1.5);
         let thump_decay   = shared(0.18);
@@ -270,7 +289,7 @@ impl AudioOutput {
         let mut engine = Engine::new(
             freq.clone(), gate.clone(), bend.clone(), width.clone(), filter.clone(), fuzz.clone(),
             thump_amt.clone(), thump_trigger.clone(), velocity.clone(), acceleration.clone(),
-            voice_selected.clone(), growl.clone(), basic.clone(), gorgle.clone(),
+            voice_selected.clone(), voice_a.clone(), growl_nam_models, voice_b.clone(), voice_c.clone(), voice_d.clone(),
             main_sub_lvl.clone(), main_sub_wave.clone(), dry_sub_lvl.clone(),
             thump_peak.clone(), thump_decay.clone(),
             amp_model_l, amp_model_r, amp_bypass.clone(), amp_boost.clone(), amp_blend.clone(), amp_crossover.clone(),
@@ -309,7 +328,7 @@ impl AudioOutput {
 
         Ok(AudioOutput {
             freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration,
-            voice_selected, growl, basic, gorgle,
+            voice_selected, voice_a, voice_b, voice_c, voice_d,
             main_sub_lvl, main_sub_wave, dry_sub_lvl, thump_peak, thump_decay,
             amp_bypass, amp_boost, amp_blend, amp_crossover,
             reverb_bypass, reverb_dry, reverb_decay, reverb_damp, reverb_size,
@@ -347,9 +366,10 @@ struct Engine {
     dry_sub:      An<Sine<f64>>,
     envelope:     Box<dyn AudioUnit>,
 
-    growl: GrowlVoice,
-    basic: BasicVoice,
-    gorgle: GorgleVoice,
+    voice_a: GrowlVoice,
+    voice_b: GorgleVoice,
+    voice_c: BasicVoice,
+    voice_d: BasicVoice,
     voice_selected: Shared,
 
     main_sub_lvl:  Shared,
@@ -386,7 +406,8 @@ impl Engine {
     fn new (
         freq: Shared, gate: Shared, bend: Shared, width: Shared, filter: Shared, fuzz: Shared,
         thump_amt: Shared, thump_trigger: Shared, velocity: Shared, acceleration: Shared,
-        voice_selected: Shared, growl: GrowlHandle, basic: BasicHandle, gorgle: GorgleHandle,
+        voice_selected: Shared, voice_a: GrowlHandle, growl_nam_models: Vec<Option<nam::NamModelSlot>>,
+        voice_b: GorgleHandle, voice_c: BasicHandle, voice_d: BasicHandle,
         main_sub_lvl: Shared, main_sub_wave: Shared, dry_sub_lvl: Shared,
         thump_peak: Shared, thump_decay: Shared,
         amp_model_l: nam::NamModelSlot, amp_model_r: nam::NamModelSlot,
@@ -407,9 +428,10 @@ impl Engine {
             dry_sub:      sine(),
             envelope: Box::new(adsr_live(ENVELOPE_ATTACK, 0.0, 1.0, ENVELOPE_RELEASE)),
 
-            growl: GrowlVoice::new(growl),
-            basic: BasicVoice::new(basic),
-            gorgle: GorgleVoice::new(gorgle),
+            voice_a: GrowlVoice::new(voice_a, growl_nam_models),
+            voice_b: GorgleVoice::new(voice_b),
+            voice_c: BasicVoice::new(voice_c),
+            voice_d: BasicVoice::new(voice_d),
             voice_selected,
 
             main_sub_lvl, main_sub_wave, dry_sub_lvl, thump_peak, thump_decay,
@@ -431,9 +453,10 @@ impl Engine {
         self.main_sub_saw.set_sample_rate(sr);
         self.dry_sub.set_sample_rate(sr);
         self.envelope.set_sample_rate(sr);
-        self.growl.set_sample_rate(sr);
-        self.basic.set_sample_rate(sr);
-        self.gorgle.set_sample_rate(sr);
+        self.voice_a.set_sample_rate(sr);
+        self.voice_b.set_sample_rate(sr);
+        self.voice_c.set_sample_rate(sr);
+        self.voice_d.set_sample_rate(sr);
         self.amp_l.set_sample_rate(sr);
         self.amp_r.set_sample_rate(sr);
         self.reverb.set_sample_rate(sr);
@@ -460,14 +483,16 @@ impl Engine {
         let base_freq = self.freq.value() * bend_mult * self.tick_thump(signal.thump);
 
         let sel = self.voice_selected.value();
-        self.growl.set_signal(&signal);
-        self.basic.set_signal(&signal);
-        self.gorgle.set_signal(&signal);
-        let growl_out = self.growl.tick(&Frame::from([base_freq, sel]));
-        let basic_out = self.basic.tick(&Frame::from([base_freq, sel]));
-        let gorgle_out = self.gorgle.tick(&Frame::from([base_freq, sel]));
-        let voice_l = growl_out[0] + basic_out[0] + gorgle_out[0];
-        let voice_r = growl_out[1] + basic_out[1] + gorgle_out[1];
+        self.voice_a.set_signal(&signal);
+        self.voice_b.set_signal(&signal);
+        self.voice_c.set_signal(&signal);
+        self.voice_d.set_signal(&signal);
+        let voice_a_out = self.voice_a.tick(&Frame::from([base_freq, sel]));
+        let voice_b_out = self.voice_b.tick(&Frame::from([base_freq, sel]));
+        let voice_c_out = self.voice_c.tick(&Frame::from([base_freq, sel]));
+        let voice_d_out = self.voice_d.tick(&Frame::from([base_freq, sel]));
+        let voice_l = voice_a_out[0] + voice_b_out[0] + voice_c_out[0] + voice_d_out[0];
+        let voice_r = voice_a_out[1] + voice_b_out[1] + voice_c_out[1] + voice_d_out[1];
 
         let main_sub_wave = self.main_sub_wave.value();
         let tri = self.main_sub_tri.filter_mono(base_freq);
@@ -556,7 +581,7 @@ impl Engine {
 fn build_stream<T> (
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    mut node: Engine,
+    mut engine: Engine,
     capture: AudioCapture,
     err_fn: impl FnMut(cpal::Error) + Send + 'static,
 ) -> Result<cpal::Stream, cpal::Error>
@@ -585,22 +610,23 @@ where
                 let dryr_block   = &mut dryr_scratch[..n];
                 let drysub_block = &mut drysub_scratch[..n];
 
-                node.growl.on_block_start(n);
-                node.basic.on_block_start(n);
-                node.gorgle.on_block_start(n);
+                engine.voice_a.on_block_start(n);
+                engine.voice_b.on_block_start(n);
+                engine.voice_c.on_block_start(n);
+                engine.voice_d.on_block_start(n);
 
                 for i in 0..n {
-                    let (dry_l, dry_r, dry_sub) = node.tick_pre_nam();
+                    let (dry_l, dry_r, dry_sub) = engine.tick_pre_nam();
                     dryl_block[i]   = dry_l;
                     dryr_block[i]   = dry_r;
                     drysub_block[i] = dry_sub;
                 }
 
                 // Batched, not per-sample -- see NamStage::process_block.
-                node.run_nam(dryl_block, dryr_block);
+                engine.run_nam(dryl_block, dryr_block);
 
                 for i in 0..n {
-                    let (left, right) = node.tick_post_nam(dryl_block[i], dryr_block[i], drysub_block[i]);
+                    let (left, right) = engine.tick_post_nam(dryl_block[i], dryr_block[i], drysub_block[i]);
                     capture.push(left);
                     let frame_start = (done + i) * channels;
                     for ch in 0..channels {
@@ -643,6 +669,11 @@ impl DeltaConsumer for AudioOutput {
                 self.gate.set_value(GATE_ON);
             },
             DeltaEvent::NoteEnd(_) => self.gate.set_value(GATE_OFF),
+            // Rocking button / keyboard 'a'/'s' relative cycle, or MIDI
+            // Program Change absolute select (see hydra/mock.rs) -- either
+            // way, just apply the resulting Voice's index (matches
+            // VOICE_NAMES order in gui.rs).
+            DeltaEvent::VoiceChange(voice) => self.voice_selected.set_value(*voice as u8 as f32),
             DeltaEvent::Panic()    => self.gate.set_value(GATE_OFF),
             _ => {},
         }
