@@ -20,6 +20,7 @@ use fundsp::prelude64::*;
 
 use crate::zgicabra::SignalState;
 use super::growl::WavetableGen;
+use super::gorgle::GorgleGen;
 
 pub trait Voice: AudioNode<Inputs = U2, Outputs = U2> {
     const INDEX: usize;
@@ -59,7 +60,7 @@ pub struct GrowlParams {
 
 impl Default for GrowlParams {
     fn default () -> GrowlParams {
-        GrowlParams { bass_drive: 0.3, filter: 0.6, space: 0.25, warp: 0.3 }
+        GrowlParams { bass_drive: 0.8, filter: 0.9, space: 0.25, warp: 0.3 }
     }
 }
 
@@ -296,5 +297,126 @@ impl AudioNode for BasicVoice {
 impl Voice for BasicVoice {
     const INDEX: usize = 1;
     fn name (&self) -> &'static str { "Basic" }
+    fn set_signal (&mut self, _signal: &SignalState) {}
+}
+
+//
+// Gorgle -- wraps GorgleGen (gorgle.vital, unmodified) with a live Shared
+// per param, same as Growl above.
+//
+
+#[derive(Clone, Copy)]
+pub struct GorgleParams {
+    pub wobble:   f32,
+    pub ambience: f32,
+    pub girgle:   f32,
+    pub grind:    f32,
+}
+
+impl Default for GorgleParams {
+    fn default () -> GorgleParams {
+        GorgleParams { wobble: 0.3, ambience: 0.4, girgle: 0.3, grind: 0.25 }
+    }
+}
+
+impl VoiceParams for GorgleParams {
+    fn voice_name () -> &'static str { "gorgle" }
+
+    fn fields (&self) -> Vec<(&'static str, f32)> {
+        vec![
+            ("wobble",   self.wobble),
+            ("ambience", self.ambience),
+            ("girgle",   self.girgle),
+            ("grind",    self.grind),
+        ]
+    }
+
+    fn from_fields (fields: &[(String, f32)]) -> GorgleParams {
+        let mut params = GorgleParams::default();
+        for (name, value) in fields {
+            match name.as_str() {
+                "wobble"   => params.wobble   = *value,
+                "ambience" => params.ambience = *value,
+                "girgle"   => params.girgle   = *value,
+                "grind"    => params.grind    = *value,
+                _ => {},
+            }
+        }
+        params
+    }
+}
+
+#[derive(Clone)]
+pub struct GorgleHandle {
+    pub wobble:   Shared,
+    pub ambience: Shared,
+    pub girgle:   Shared,
+    pub grind:    Shared,
+}
+
+impl GorgleHandle {
+    pub fn new (params: &GorgleParams) -> GorgleHandle {
+        GorgleHandle {
+            wobble:   shared(params.wobble),
+            ambience: shared(params.ambience),
+            girgle:   shared(params.girgle),
+            grind:    shared(params.grind),
+        }
+    }
+
+    pub fn params (&self) -> GorgleParams {
+        GorgleParams {
+            wobble:   self.wobble.value(),
+            ambience: self.ambience.value(),
+            girgle:   self.girgle.value(),
+            grind:    self.grind.value(),
+        }
+    }
+
+    pub fn load (&self, params: &GorgleParams) {
+        self.wobble.set_value(params.wobble);
+        self.ambience.set_value(params.ambience);
+        self.girgle.set_value(params.girgle);
+        self.grind.set_value(params.grind);
+    }
+}
+
+#[derive(Clone)]
+pub struct GorgleVoice {
+    inner:  GorgleGen,
+    handle: GorgleHandle,
+}
+
+impl GorgleVoice {
+    pub fn new (handle: GorgleHandle) -> GorgleVoice {
+        GorgleVoice { inner: GorgleGen::new(), handle }
+    }
+}
+
+impl AudioNode for GorgleVoice {
+    const ID: u64 = 0x7A_51;
+    type Inputs = U2;
+    type Outputs = U2;
+
+    fn tick (&mut self, input: &Frame<f32, U2>) -> Frame<f32, U2> {
+        let freq     = input[0];
+        let selected = input[1] as usize;
+        if selected != Self::INDEX { return Frame::from([0.0, 0.0]); }
+
+        self.inner.tick(&Frame::from([
+            freq, 1.0,
+            self.handle.wobble.value(), self.handle.ambience.value(),
+            self.handle.girgle.value(), self.handle.grind.value(),
+        ]))
+    }
+
+    fn set_sample_rate (&mut self, sample_rate: f64) {
+        self.inner.set_sample_rate(sample_rate);
+    }
+}
+
+impl Voice for GorgleVoice {
+    const INDEX: usize = 2;
+    fn name (&self) -> &'static str { "Gorgle" }
     fn set_signal (&mut self, _signal: &SignalState) {}
 }

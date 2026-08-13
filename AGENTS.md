@@ -159,8 +159,9 @@ monomorphized to `f64` internally:
   (`FmVoice`, orphaned), `0x7A_11` (`ReeseVoice`, orphaned), `0x7A_12`
   (`NamStage`), `0x7A_20` (orphaned `gen_node`/`fx_node` adapters),
   `0x7A_24` (`ReverbFx`), `0x7A_30` (`BasicOscGen`, orphaned), `0x7A_40`
-  (`GrowlVoice`), `0x7A_41` (`BasicVoice`). Grep for `const ID: u64 =
-  0x7A_` before picking a new one.
+  (`GrowlVoice`), `0x7A_41` (`BasicVoice`), `0x7A_50` (`GorgleGen`),
+  `0x7A_51` (`GorgleVoice`). Grep for `const ID: u64 = 0x7A_` before
+  picking a new one.
 - `MAX_BUFFER_SIZE`/`NAM_BLOCK_CAP` bound any single NAM-stage
   block call — the NAM convolver re-runs its WaveNet dilation machinery
   per call, so driving it one sample at a time (`tick()`) causes audible
@@ -257,26 +258,27 @@ What replaced it:
   selected]`, and each impl returns silence unless `selected as usize ==
   Self::INDEX` — so only the actually-selected voice burns CPU despite the
   whole graph staying wired.
-- **Two concrete voices exist today**: `GrowlVoice` (`INDEX = 0`, wraps
-  `WavetableGen` — see below) and `BasicVoice` (`INDEX = 1`, four fundsp
-  builtin oscillators sin/tri/square/saw, independently level-mixed; a
-  test voice, not a real patch). `VOICE_NAMES` in `gui.rs` and the
+- **Three concrete voices exist today**: `GrowlVoice` (`INDEX = 0`, wraps
+  `WavetableGen` in `growl.rs` — see below), `BasicVoice` (`INDEX = 1`, four
+  fundsp builtin oscillators sin/tri/square/saw, independently level-mixed;
+  a test voice, not a real patch), and `GorgleVoice` (`INDEX = 2`, wraps
+  `GorgleGen` in `gorgle.rs` — see below). `VOICE_NAMES` in `gui.rs` and the
   `voice_selected` `Shared` index must stay in sync with each `Voice`'s
-  `INDEX` if you add a third.
+  `INDEX` if you add a fourth.
 - **`VoiceParams` trait** (`voice.rs`, distinct from the old removed
   `VoiceParams` *struct*): `fn voice_name() -> &'static str`, `fn
   fields(&self) -> Vec<(&'static str, f32)>`, `fn from_fields(&[(String,
   f32)]) -> Self` — the shape `snapshot.rs` needs to save/load one voice's
-  params as flat text (see Persistence below). `GrowlParams`/`BasicParams`
-  implement it.
-- **`*Handle` structs** (`GrowlHandle`, `BasicHandle`): just the live
-  `Shared` cells for one voice's params, cheap to clone (`Arc` bumps),
-  what `AudioHandles`/`gui.rs` hold. The matching `*Voice` struct
-  (`GrowlVoice`, `BasicVoice`) owns the real DSP state *and* a clone of
-  the same handle — GUI writes go straight through the shared `Shared`
-  cell, no sync needed.
+  params as flat text (see Persistence below). `GrowlParams`/`BasicParams`/
+  `GorgleParams` implement it.
+- **`*Handle` structs** (`GrowlHandle`, `BasicHandle`, `GorgleHandle`): just
+  the live `Shared` cells for one voice's params, cheap to clone (`Arc`
+  bumps), what `AudioHandles`/`gui.rs` hold. The matching `*Voice` struct
+  (`GrowlVoice`, `BasicVoice`, `GorgleVoice`) owns the real DSP state *and*
+  a clone of the same handle — GUI writes go straight through the shared
+  `Shared` cell, no sync needed.
 
-### `WavetableGen` (`wavetable_gen.rs`) — Growl's patch
+### `WavetableGen` (`growl.rs`) — Growl's patch
 
 Reproduces one specific Vital synth patch (`growl.vital` in the repo root
 — reference file, not loaded at runtime) as a fundsp `AudioNode` graph, 4
@@ -285,6 +287,20 @@ macro knobs (`bass_drive`, `filter`, `space`, `warp`) exposed via
 instance (required by `AudioNode: Clone`, but means a cloned instance
 doesn't carry over live oscillator/filter state — only ever clone it at
 construction time, not mid-stream).
+
+### `GorgleGen` (`gorgle.rs`) — Gorgle's patch
+
+Reproduces `gorgle.vital` (repo root, reference only) the same way Growl
+reproduces its patch: one self-contained fundsp `AudioNode`, 4 macro knobs
+(`wobble`, `ambience`, `girgle`, `grind`) exposed via `GorgleHandle`. A
+meaningfully different patch, not a copy-paste of growl.rs's structure —
+3 oscillators (one InharmonicScale-morphed and phase-warped, one LowPass-
+morphed 16-voice unison, one silent-until-`girgle` FM layer) feeding two
+*comb* filters in series (Vital `FilterModel::kComb`, hand-rolled feedback
+delay lines — see `CombFilter` in `gorgle.rs`, ported from
+`vital_test/src/synthesis/filters/comb_filter.cpp:35-50`) rather than
+growl.rs's Smear-morph-into-a-highpass approach. Same `Clone` caveat as
+`WavetableGen`: resets to a fresh instance, only clone at construction.
 
 ### Adding a new Voice
 
@@ -445,7 +461,9 @@ the audio thread reads, so there's nothing to keep in sync — the widget
 
 ## Non-Rust reference material in the repo root (not part of the build)
 
-- `growl.vital` — the source Vital synth patch that `wavetable_gen.rs`
+- `growl.vital` — the source Vital synth patch that `growl.rs` reproduces.
+  Reference only, never loaded at runtime.
+- `gorgle.vital` — the source Vital synth patch that `gorgle.rs`
   reproduces. Reference only, never loaded at runtime.
 - `panel.html`/`panel.html.png` — a saved snapshot of a separate sibling
   web project (`zgi-panel`, Svelte-based) that gui.rs's layout comments

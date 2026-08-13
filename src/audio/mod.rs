@@ -15,6 +15,7 @@ use crate::zgicabra::{DeltaEvent, SignalState};
 mod nam;
 mod stutter;
 mod growl;
+mod gorgle;
 mod gen_node;
 mod fx_node;
 mod reese;
@@ -29,8 +30,8 @@ pub mod snapshot;
 use nam::NAM_BLOCK_CAP;
 use reverb::ReverbFx;
 use compressor::Compressor;
-use voice::{Voice, GrowlVoice, BasicVoice};
-pub use voice::{GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams};
+use voice::{Voice, GrowlVoice, BasicVoice, GorgleVoice};
+pub use voice::{GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, GorgleHandle, GorgleParams};
 
 const GATE_ON:  f32 = 1.0;
 const GATE_OFF: f32 = -1.0;
@@ -121,6 +122,7 @@ pub struct AudioHandles {
     pub voice_selected: Shared,
     pub growl: GrowlHandle,
     pub basic: BasicHandle,
+    pub gorgle: GorgleHandle,
 
     pub main_sub_lvl:  Shared,
     pub main_sub_wave: Shared,
@@ -160,6 +162,7 @@ pub struct AudioOutput {
     voice_selected: Shared,
     growl: GrowlHandle,
     basic: BasicHandle,
+    gorgle: GorgleHandle,
 
     main_sub_lvl:  Shared,
     main_sub_wave: Shared,
@@ -194,6 +197,7 @@ impl AudioOutput {
             voice_selected: self.voice_selected.clone(),
             growl: self.growl.clone(),
             basic: self.basic.clone(),
+            gorgle: self.gorgle.clone(),
             main_sub_lvl:  self.main_sub_lvl.clone(),
             main_sub_wave: self.main_sub_wave.clone(),
             dry_sub_lvl:   self.dry_sub_lvl.clone(),
@@ -232,6 +236,7 @@ impl AudioOutput {
         let voice_selected = shared(0.0);
         let growl = GrowlHandle::new(&GrowlParams::default());
         let basic = BasicHandle::new(&BasicParams::default());
+        let gorgle = GorgleHandle::new(&GorgleParams::default());
 
         let main_sub_lvl  = shared(0.35);
         let main_sub_wave = shared(0.0);
@@ -265,7 +270,7 @@ impl AudioOutput {
         let mut engine = Engine::new(
             freq.clone(), gate.clone(), bend.clone(), width.clone(), filter.clone(), fuzz.clone(),
             thump_amt.clone(), thump_trigger.clone(), velocity.clone(), acceleration.clone(),
-            voice_selected.clone(), growl.clone(), basic.clone(),
+            voice_selected.clone(), growl.clone(), basic.clone(), gorgle.clone(),
             main_sub_lvl.clone(), main_sub_wave.clone(), dry_sub_lvl.clone(),
             thump_peak.clone(), thump_decay.clone(),
             amp_model_l, amp_model_r, amp_bypass.clone(), amp_boost.clone(), amp_blend.clone(), amp_crossover.clone(),
@@ -304,7 +309,7 @@ impl AudioOutput {
 
         Ok(AudioOutput {
             freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration,
-            voice_selected, growl, basic,
+            voice_selected, growl, basic, gorgle,
             main_sub_lvl, main_sub_wave, dry_sub_lvl, thump_peak, thump_decay,
             amp_bypass, amp_boost, amp_blend, amp_crossover,
             reverb_bypass, reverb_dry, reverb_decay, reverb_damp, reverb_size,
@@ -344,6 +349,7 @@ struct Engine {
 
     growl: GrowlVoice,
     basic: BasicVoice,
+    gorgle: GorgleVoice,
     voice_selected: Shared,
 
     main_sub_lvl:  Shared,
@@ -380,7 +386,7 @@ impl Engine {
     fn new (
         freq: Shared, gate: Shared, bend: Shared, width: Shared, filter: Shared, fuzz: Shared,
         thump_amt: Shared, thump_trigger: Shared, velocity: Shared, acceleration: Shared,
-        voice_selected: Shared, growl: GrowlHandle, basic: BasicHandle,
+        voice_selected: Shared, growl: GrowlHandle, basic: BasicHandle, gorgle: GorgleHandle,
         main_sub_lvl: Shared, main_sub_wave: Shared, dry_sub_lvl: Shared,
         thump_peak: Shared, thump_decay: Shared,
         amp_model_l: nam::NamModelSlot, amp_model_r: nam::NamModelSlot,
@@ -403,6 +409,7 @@ impl Engine {
 
             growl: GrowlVoice::new(growl),
             basic: BasicVoice::new(basic),
+            gorgle: GorgleVoice::new(gorgle),
             voice_selected,
 
             main_sub_lvl, main_sub_wave, dry_sub_lvl, thump_peak, thump_decay,
@@ -426,6 +433,7 @@ impl Engine {
         self.envelope.set_sample_rate(sr);
         self.growl.set_sample_rate(sr);
         self.basic.set_sample_rate(sr);
+        self.gorgle.set_sample_rate(sr);
         self.amp_l.set_sample_rate(sr);
         self.amp_r.set_sample_rate(sr);
         self.reverb.set_sample_rate(sr);
@@ -454,10 +462,12 @@ impl Engine {
         let sel = self.voice_selected.value();
         self.growl.set_signal(&signal);
         self.basic.set_signal(&signal);
+        self.gorgle.set_signal(&signal);
         let growl_out = self.growl.tick(&Frame::from([base_freq, sel]));
         let basic_out = self.basic.tick(&Frame::from([base_freq, sel]));
-        let voice_l = growl_out[0] + basic_out[0];
-        let voice_r = growl_out[1] + basic_out[1];
+        let gorgle_out = self.gorgle.tick(&Frame::from([base_freq, sel]));
+        let voice_l = growl_out[0] + basic_out[0] + gorgle_out[0];
+        let voice_r = growl_out[1] + basic_out[1] + gorgle_out[1];
 
         let main_sub_wave = self.main_sub_wave.value();
         let tri = self.main_sub_tri.filter_mono(base_freq);
@@ -577,6 +587,7 @@ where
 
                 node.growl.on_block_start(n);
                 node.basic.on_block_start(n);
+                node.gorgle.on_block_start(n);
 
                 for i in 0..n {
                     let (dry_l, dry_r, dry_sub) = node.tick_pre_nam();

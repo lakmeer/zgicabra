@@ -33,11 +33,11 @@ use winit::event_loop::EventLoop;
 use winit::window::{Fullscreen, WindowAttributes};
 
 use crate::hydra::MockControls;
-use crate::audio::{AudioHandles, AuditionNote, GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, snapshot};
+use crate::audio::{AudioHandles, AuditionNote, GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, snapshot, GorgleHandle, GorgleParams};
 use crate::tools::AtomicF32;
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
 
-const VOICE_NAMES: [&str; 2] = ["Growl", "Basic"];
+const VOICE_NAMES: [&str; 3] = ["Growl", "Basic", "Gorgle"];
 
 // Local (GUI-thread-only) browser state for saved voice-param snapshots --
 // save/load are one-off file actions the GUI thread can just do directly on
@@ -258,6 +258,16 @@ fn draw_voice_basic (ui: &imgui::Ui, basic: &BasicHandle) {
     ]);
 }
 
+// Gorgle's 4 macro knobs -- see gorgle.rs for what each does.
+fn draw_voice_gorgle (ui: &imgui::Ui, gorgle: &GorgleHandle) {
+    draw_knob_row(ui, &[
+        ("gorgle_wobble",   "wobble",   0.0, 1.0, &gorgle.wobble),
+        ("gorgle_ambience", "ambience", 0.0, 1.0, &gorgle.ambience),
+        ("gorgle_girgle",   "girgle",   0.0, 1.0, &gorgle.girgle),
+        ("gorgle_grind",    "grind",    0.0, 1.0, &gorgle.grind),
+    ]);
+}
+
 fn draw_voice_card (ui: &imgui::Ui, audio: &AudioHandles) {
     draw_module_card(ui, "Voice", None, VOICE_CARD_SIZE, |ui| {
         draw_voice_selector(ui, &audio.voice_selected);
@@ -265,6 +275,7 @@ fn draw_voice_card (ui: &imgui::Ui, audio: &AudioHandles) {
         match audio.voice_selected.value() as i32 {
             0 => draw_voice_growl(ui, &audio.growl),
             1 => draw_voice_basic(ui, &audio.basic),
+            2 => draw_voice_gorgle(ui, &audio.gorgle),
             _ => {},
         }
     });
@@ -279,6 +290,7 @@ fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut Sn
         let result = match audio.voice_selected.value() as i32 {
             0 => snapshot::save_snapshot(GrowlParams::voice_name(), &audio.growl.params().fields()),
             1 => snapshot::save_snapshot(BasicParams::voice_name(), &audio.basic.params().fields()),
+            2 => snapshot::save_snapshot(GorgleParams::voice_name(), &audio.gorgle.params().fields()),
             _ => Ok(std::path::PathBuf::new()),
         };
         if let Err(e) = result {
@@ -311,6 +323,8 @@ fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut Sn
                         audio.growl.load(&GrowlParams::from_fields(&fields));
                     } else if voice_name == BasicParams::voice_name() {
                         audio.basic.load(&BasicParams::from_fields(&fields));
+                    } else if voice_name == GorgleParams::voice_name() {
+                        audio.gorgle.load(&GorgleParams::from_fields(&fields));
                     } else {
                         eprintln!("║ 🟥 Snapshot '{name}' is for an unknown voice '{voice_name}'");
                     }
