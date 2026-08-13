@@ -19,8 +19,9 @@
       - hi: `mesa`
     - Phaser ^ width
   - Reese
-    - Octave layers
+    - Octave layers ^ width
     - vel ^ width_param
+    - lfo_rate ^ width
   - SamplePlayer
   - Experiment with waveshapers
 

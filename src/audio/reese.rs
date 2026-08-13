@@ -162,6 +162,7 @@ pub struct ReeseVoice {
     thump_signal:  f32,
     filter_signal: f32,
     width_signal:  f32,
+    fuzz_signal:   f32,
 }
 
 impl ReeseVoice {
@@ -180,7 +181,7 @@ impl ReeseVoice {
             filter_r: lowpass(),
             handle,
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
-            thump_signal: 0.0, filter_signal: 0.0, width_signal: 0.0,
+            thump_signal: 0.0, filter_signal: 0.0, width_signal: 0.0, fuzz_signal: 0.0,
         }
     }
 }
@@ -201,8 +202,12 @@ impl AudioNode for ReeseVoice {
         let lfo_depth = self.handle.lfo_depth.value();
 
         // §3/§6: detune scales with pitch automatically (ratio, not Hz offset),
-        // wobbled slowly by the LFO for "motion".
-        let detune = self.handle.detune.value() * (1.0 + lfo_val * lfo_depth * DETUNE_LFO_DEPTH);
+        // wobbled slowly by the LFO for "motion", and widened live by hand
+        // span (`width` signal) -- wide hands, wide unison spread.
+        let width_signal = self.width_signal.clamp(0.0, 1.0);
+        let detune = self.handle.detune.value()
+            * (1.0 + lfo_val * lfo_depth * DETUNE_LFO_DEPTH)
+            * (1.0 + width_signal);
 
         // width signal spreads/collapses the unison pan stack live -- at
         // width=0 every voice collapses to center (still beating, just mono).
@@ -229,8 +234,9 @@ impl AudioNode for ReeseVoice {
         mix_l += sub;
         mix_r += sub;
 
-        // §8: tanh soft-clip pre-filter, for harmonic richness.
-        let drive = self.handle.drive.value().max(1.0);
+        // §8: tanh soft-clip pre-filter, for harmonic richness -- live `fuzz`
+        // signal boosts drive on top of the macro knob.
+        let drive = (self.handle.drive.value() * (1.0 + self.fuzz_signal.clamp(0.0, 1.0))).max(1.0);
         let shaped_l = (mix_l * drive).tanh();
         let shaped_r = (mix_r * drive).tanh();
 
@@ -260,9 +266,10 @@ impl AudioNode for ReeseVoice {
 impl Voice for ReeseVoice {
     const INDEX: usize = 2;
     fn name (&self) -> &'static str { "Reese" }
-    fn set_signal (&mut self, signal: &SignalState) {
-        self.thump_signal  = signal.thump;
-        self.filter_signal = signal.filter;
-        self.width_signal  = signal.width;
+    fn set_signal (&mut self, _bend: f32, filter: f32, fuzz: f32, width: f32, thump: f32) {
+        self.thump_signal  = thump;
+        self.filter_signal = filter;
+        self.width_signal  = width;
+        self.fuzz_signal   = fuzz;
     }
 }

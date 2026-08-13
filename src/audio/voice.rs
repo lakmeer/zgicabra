@@ -18,15 +18,15 @@
 
 use fundsp::prelude64::*;
 
-use crate::zgicabra::SignalState;
-
 pub trait Voice: AudioNode<Inputs = U2, Outputs = U2> {
     const INDEX: usize;
     fn name (&self) -> &'static str;
-    // Read-only access to the live signal (thump, bend/pitch, velocity,
-    // etc) for whatever internal modulation a voice wants -- see ThumpMod
-    // below for the one every voice currently uses.
-    fn set_signal (&mut self, signal: &SignalState);
+    // The 5 hand-riddable performance signals (see gui.rs draw_signal_state --
+    // W/F/B/Z/T; velocity/acceleration/jerk/lfo are readouts, not something a
+    // voice modulates on), always passed in full so no voice can silently
+    // drop one -- a voice that doesn't care about a given signal just ignores
+    // the argument. See ThumpMod below for the one every voice currently uses.
+    fn set_signal (&mut self, bend: f32, filter: f32, fuzz: f32, width: f32, thump: f32);
     // Extension point for a future voice wrapping a NamStage internally:
     // NamStage::process_block needs a real block, so such a voice would
     // fill a scratch buffer across its own tick() calls and run inference

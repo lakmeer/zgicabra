@@ -473,10 +473,10 @@ impl Engine {
         let base_freq = self.freq.value() * bend_mult;
 
         let sel = self.voice_selected.value();
-        self.voice_a.set_signal(&signal);
-        self.voice_b.set_signal(&signal);
-        self.voice_c.set_signal(&signal);
-        self.voice_d.set_signal(&signal);
+        self.voice_a.set_signal(signal.bend, signal.filter, signal.fuzz, signal.width, signal.thump);
+        self.voice_b.set_signal(signal.bend, signal.filter, signal.fuzz, signal.width, signal.thump);
+        self.voice_c.set_signal(signal.bend, signal.filter, signal.fuzz, signal.width, signal.thump);
+        self.voice_d.set_signal(signal.bend, signal.filter, signal.fuzz, signal.width, signal.thump);
         let voice_a_out = self.voice_a.tick(&Frame::from([base_freq, sel]));
         let voice_b_out = self.voice_b.tick(&Frame::from([base_freq, sel]));
         let voice_c_out = self.voice_c.tick(&Frame::from([base_freq, sel]));

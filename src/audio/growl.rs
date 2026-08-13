@@ -414,6 +414,9 @@ pub struct GrowlVoice {
     // set_signal/on_block_start. Block-rate resolution (last value from the
     // block's samples), same as amp_l/amp_r's own blend knob.
     fuzz_signal: f32,
+    // Live SignalState.width (0..1), inverted onto `warp` -- wide hands
+    // close the space down, narrow hands open it up.
+    width_signal: f32,
 }
 
 impl GrowlVoice {
@@ -422,7 +425,7 @@ impl GrowlVoice {
         GrowlVoice {
             inner: WavetableGen::new(), handle, nam, scratch: vec![0.0; NAM_BLOCK_CAP], pos: 0,
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay), thump_signal: 0.0,
-            filter_signal: 0.0, fuzz_signal: 0.0,
+            filter_signal: 0.0, fuzz_signal: 0.0, width_signal: 0.0,
         }
     }
 }
@@ -447,12 +450,11 @@ impl AudioNode for GrowlVoice {
 
         let freq = freq * self.thump.tick(self.thump_signal);
         let filter_cutoff = (self.handle.filter.value() * self.filter_signal).clamp(0.0, 1.0);
+        let drive = self.handle.bass_drive.value();
+        let space = self.handle.space.value();
+        let warp = (self.handle.warp.value() * (1.0 - self.width_signal)).clamp(0.0, 1.0);
 
-        let raw = self.inner.tick(&Frame::from([
-            freq, 1.0,
-            self.handle.bass_drive.value(), filter_cutoff,
-            self.handle.space.value(), self.handle.warp.value(),
-        ]))[0];
+        let raw = self.inner.tick(&Frame::from([ freq, 1.0, drive, filter_cutoff, space, warp ]))[0];
 
         let wet = self.scratch.get(self.pos).copied().unwrap_or(0.0);
         if let Some(cell) = self.scratch.get_mut(self.pos) { *cell = raw; }
@@ -471,10 +473,11 @@ impl AudioNode for GrowlVoice {
 impl Voice for GrowlVoice {
     const INDEX: usize = 0;
     fn name (&self) -> &'static str { "Growl" }
-    fn set_signal (&mut self, signal: &SignalState) {
-        self.thump_signal  = signal.thump;
-        self.filter_signal = signal.filter;
-        self.fuzz_signal   = signal.fuzz;
+    fn set_signal (&mut self, _bend: f32, filter: f32, fuzz: f32, width: f32, thump: f32) {
+        self.thump_signal  = thump;
+        self.filter_signal = filter;
+        self.fuzz_signal   = fuzz;
+        self.width_signal  = width;
     }
 
     // Runs the NAM model over last block's buffered raw output (see
