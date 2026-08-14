@@ -14,19 +14,19 @@ rgb = "0.8.35"
 termion = "2.0.1"
 textplots = "0.8.7"
 rosc = "~0.10"
-fundsp = "0.23.0"
+fundsp = { version = "0.23.0", default-features = false, features = ["std"] }
 num-complex = { version = "0.4.6", default-features = false, features = ["libm"] }
 cpal = "0.18.1"
 nam-rs = "0.4.0"
 imgui = { version = "0.12", features = ["tables-api"] }
 imgui-winit-support = "0.13"
 imgui-glow-renderer = "0.13"
-winit = "0.30"
-glutin = "0.32"
-glutin-winit = "0.5"
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11"] }
+glutin = { version = "0.32", default-features = false, features = ["egl", "glx"] }
+glutin-winit = { version = "0.5", default-features = false, features = ["egl", "glx", "x11"] }
 glow = "0.14"
 raw-window-handle = "0.6"
-image = { version = "0.25", default-features = false, features = ["png"] }
+png = "0.18"
 
 # Native USB HID backend for the Hydra on macOS (see src/hydra/hid.rs) -- the
 # vendored Sixense SDK is Linux-only and dead anyway, so this never needs to

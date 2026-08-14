@@ -714,10 +714,19 @@ fn save_screenshot (gl: &glow::Context, width: u32, height: u32, path: &str) {
         flipped[dst..dst + row_bytes].copy_from_slice(&pixels[src..src + row_bytes]);
     }
 
-    match image::save_buffer(path, &flipped, width, height, image::ColorType::Rgba8) {
+    match save_png(path, &flipped, width, height) {
         Ok(())   => println!("║ Saved gui screenshot to {path}"),
         Err(e)   => eprintln!("║ 🟥 Failed to save gui screenshot to {path}: {e}"),
     }
+}
+
+fn save_png (path: &str, rgba: &[u8], width: u32, height: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let file = std::fs::File::create(path)?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header()?.write_image_data(rgba)?;
+    Ok(())
 }
 
 // Runs the GUI event loop on the calling (main) thread until the window is

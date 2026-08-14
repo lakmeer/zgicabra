@@ -3,11 +3,10 @@
 
 - Filter audibly snaps back to neutral when note released
   - Still?
-- Compressor feedback?
-- Performance audit
 - Switch GUI framework
   - raylib
   - gpui
+- Performance audit
 
 - Voices
   - Basic
@@ -31,3 +30,8 @@
     - expose per-band thresholds as params
     - scale all bands attack and release together as 'time' param
     - single 'depth' param scales all ratios and thresholds
+
+- Panel
+  - Simpler stack than imgui?
+    - Can we do it without a compositor at all? raw FB?
+      - Probably need it for raw boot mode anyway
