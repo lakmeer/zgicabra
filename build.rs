@@ -19,6 +19,19 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", libs_dir.display());
     println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
 
+    // winit dlopens libX11/libXcursor/libXi/libXrandr/libxkbcommon/libGL at
+    // runtime rather than linking them, so they never make it onto the
+    // RUNPATH via normal linking. On NixOS these live in the nix-ld library
+    // dir (programs.nix-ld.libraries) instead of a standard search path, so
+    // dlopen can't find them unless we add that dir to our own RUNPATH too
+    // (glibc's dlopen does consult the caller's RUNPATH).
+    println!("cargo:rerun-if-env-changed=NIX_LD_LIBRARY_PATH");
+    if let Ok(nix_ld_lib_path) = env::var("NIX_LD_LIBRARY_PATH") {
+        for dir in env::split_paths(&nix_ld_lib_path) {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+        }
+    }
+
     // OUT_DIR looks like target/<profile>/build/<crate>-<hash>/out
     // walk up 3 levels to reach target/<profile>/
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -27,6 +40,9 @@ fn main() {
     for file in ["libsixense_x64.so", "libstdc++.so.6"] {
         let src = libs_dir.join(file);
         let dst = target_dir.join(file);
+        // The vendored libs are read-only, and fs::copy can't overwrite an
+        // existing read-only destination, so clear it first.
+        let _ = fs::remove_file(&dst);
         fs::copy(&src, &dst).unwrap_or_else(|e| panic!("copy {:?} -> {:?}: {}", src, dst, e));
         println!("cargo:rerun-if-changed={}", src.display());
     }

@@ -12,8 +12,10 @@ use std::time::{Instant,Duration};
 use std::thread::sleep;
 
 use libc::c_int;
+use termion::input::{TermRead, Keys};
+use termion::AsyncReader;
 
-use super::{Backend, ControllerFrame};
+use super::{Backend, CbreakGuard, ControllerFrame};
 
 // How long to wait for a first frame before assuming no hardware is attached
 // and letting the caller fall back to the mock backend.
@@ -26,7 +28,10 @@ extern "C" {
     fn sixenseGetNewestData(which: c_int, data: *mut ControllerFrame);
 }
 
-pub struct SdkBackend;
+pub struct SdkBackend {
+    keys: Keys<AsyncReader>,
+    _cbreak_guard: CbreakGuard, // restores the terminal on drop
+}
 
 impl SdkBackend {
     // None (with the connection closed back down) if no controller responds
@@ -53,7 +58,10 @@ impl SdkBackend {
         }
 
         println!("✅");
-        Some(SdkBackend)
+        Some(SdkBackend {
+            keys: termion::async_stdin().keys(),
+            _cbreak_guard: CbreakGuard::enable(),
+        })
     }
 }
 
@@ -66,6 +74,14 @@ impl Backend for SdkBackend {
 
         read_frame(1, &mut frame);
         controllers[(frame.which_hand - 1) as usize] = frame;
+    }
+
+    // Trait default blocks on a canonical-mode stdin read (waits for Enter);
+    // this backend puts stdin in cbreak mode via CbreakGuard so a
+    // non-blocking check works instead (see hid.rs, which has the same fix
+    // for the same reason).
+    fn should_quit (&mut self) -> bool {
+        self.keys.next().is_some()
     }
 }
 

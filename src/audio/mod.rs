@@ -341,10 +341,26 @@ impl AudioOutput {
 
 // Picks an output config at exactly `target_rate` to match NAM A2 models
 fn pick_output_config (device: &cpal::Device, target_rate: u32) -> io::Result<cpal::SupportedStreamConfig> {
-    let mut ranges = device.supported_output_configs()
+    let ranges = device.supported_output_configs()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("no output configs available: {e}")))?;
 
-    if let Some(range) = ranges.find(|r| r.min_sample_rate() <= target_rate && r.max_sample_rate() >= target_rate) {
+    // A device can advertise the same rate under several sample formats
+    // (e.g. the PipeWire ALSA plugin lists U8/I16/U16/F32 ranges for one
+    // "default" device); pick the best-quality format we actually support
+    // in build_stream rather than whichever the enumeration happens to
+    // yield first.
+    let format_rank = |f: cpal::SampleFormat| match f {
+        cpal::SampleFormat::F32 => 0,
+        cpal::SampleFormat::I16 => 1,
+        cpal::SampleFormat::U16 => 2,
+        _ => 3,
+    };
+
+    let best = ranges
+        .filter(|r| r.min_sample_rate() <= target_rate && r.max_sample_rate() >= target_rate)
+        .min_by_key(|r| format_rank(r.sample_format()));
+
+    if let Some(range) = best {
         return Ok(range.with_sample_rate(target_rate));
     }
 

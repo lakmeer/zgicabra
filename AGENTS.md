@@ -1,21 +1,23 @@
 # AGENTS.md
 
-| ⚠️ Important: Full documentation on FunDSP is available in ref/fundsp.md.
+| ⚠️ Important:
+| - Full documentation on FunDSP is available in ref/fundsp.md.
+| - List of available FunDSP builtins is available in ref/fundsp-modules.md.
 
 Working notes for agents touching this codebase — architecture, the fundsp
 API surface actually in use, and the conventions this project has settled
 on. Read this before touching `src/audio/` or `src/gui.rs`.
 
-**This file was rewritten 2026-08-12 after a major engine/GUI rewrite** (the
-`VoiceEngine`/`ParamSpec`/`AuditionVoice`/weight-matrix system described in
-older versions of this doc is entirely gone — replaced by the `Voice`
-trait / hand-written GUI knobs described below). If you're reading an old
-copy of this file from context/memory, throw it out and re-read this one.
+For agents, recommend NOT touching src/zgicabra.rs - this is the core of
+how the instrument works and is under full control of the developer.
+
+**This file was rewritten 2026-08-12 - If you're reading an old copy of this
+file from context/memory, throw it out and re-read this one.
 
 ## What this is
 
 A Rust synth/controller app built around a Razer Hydra-style two-wand
-controller ("Sixense"). Wand motion/triggers/buttons drive a live audio
+controller ("Sixense Hydra"). Wand motion/triggers/buttons drive a live audio
 engine (or, alternately, OSC out to a DAW). There's an optional imgui
 tuning/debug GUI for editing engine parameters and driving a mock version
 of the controller from a keyboard/mouse/MIDI controller when no real
@@ -25,6 +27,48 @@ Entry point: `src/main.rs`. Run modes selected by CLI flags
 (`tools::parse_args`): `--audio` (default) vs `--osc` output backend,
 `--gui` to open the tuner window, `--no-ui` to suppress the terminal UI,
 `--test` to run the audio self-test
+
+## About the Hardware
+
+The Sixense Hydra (sold as Razer Hydra) is a two-handed motion-aware game
+controller. It is no longer produced or sold. The SDK for the device as been
+adapted here into a live-performance musical instrument. In this the hardware
+controller is called "Hydra", the musical instrument developed on top of the
+SDK is called "zgicabra" (Lojban; "a musical apparatus"). 
+
+## Platform Notes
+
+This project runs on 2 machine with different inteded uses and different
+hardware profiles. Confirm which environment you are running in when working.
+
+### The Performance Box
+
+- A MusNix (NixOS distro) linux
+- running on a small Lenovo NUC in an Intel i5
+- X86_64
+- very limited CPU
+
+This machine is intended to be brought on stage and run headless as a
+stand-alone musical instrument. It will not always have a monitor or keyboard
+attached. It should contain only the very bare minimum software required to
+successfully run the zgicabra program, and should boot it directly from
+cold start so that it works on stage without user intervention.
+
+| ⚠️ Important:
+| When working on this machine, do not attempt to read or write the
+| /etc/nixos/configuration.nix file. Show the user the necessary commands
+| and wait for them to do it themselves.
+
+### The Testing Box
+
+- MacBook Pro Laptop
+- USB-C only
+- Hydra hardware is not well supported on this machine
+- The `src/hydra/mock.rs` backend is used to stand for the real hardware
+- MacOS X86_64
+
+This machine is more ergonomic for developing the software and experimenting
+with the synth engine.
 
 ## Process / thread model
 
