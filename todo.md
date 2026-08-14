@@ -3,11 +3,8 @@
 
 - Filter audibly snaps back to neutral when note released
   - Still?
-- Switch GUI framework
-  - raylib
-  - gpui
-- Performance audit
-- Static linking audit
+- Fix twist range
+  - Flatter bend curve
 
 - Voices
   - Basic

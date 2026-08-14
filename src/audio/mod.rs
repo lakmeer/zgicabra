@@ -46,6 +46,12 @@ const GATE_OFF: f32 = -1.0;
 
 const NAM_SAMPLE_RATE: u32 = 48_000;
 
+// Requested output period, larger than ALSA's own default -- gives the
+// always-on NAM/reverb DSP more slack against scheduling jitter on the NUC's
+// limited CPU, at the cost of ~21ms extra output latency (1024 frames @
+// 48kHz). Clamped to the device's actual supported range in AudioOutput::new.
+const AUDIO_BUFFER_FRAMES: cpal::FrameCount = 1024;
+
 // Fixed envelope times -- not GUI editable.
 const ENVELOPE_ATTACK:  f32 = 0.003;
 const ENVELOPE_RELEASE: f32 = 0.1;
@@ -289,7 +295,13 @@ impl AudioOutput {
         println!("║ Output config: {supported:?}");
 
         let sample_format = supported.sample_format();
-        let config: cpal::StreamConfig = supported.into();
+        let buffer_range = *supported.buffer_size();
+        let mut config: cpal::StreamConfig = supported.into();
+        config.buffer_size = match buffer_range {
+            cpal::SupportedBufferSize::Range { min, max } => cpal::BufferSize::Fixed(AUDIO_BUFFER_FRAMES.clamp(min, max)),
+            cpal::SupportedBufferSize::Unknown => cpal::BufferSize::Default,
+        };
+        println!("║ Output buffer size: {:?}", config.buffer_size);
 
         engine.set_sample_rate(config.sample_rate as f64);
 
@@ -562,10 +574,17 @@ where
                 let dryr_block   = &mut dryr_scratch[..n];
                 let drysub_block = &mut drysub_scratch[..n];
 
-                engine.voice_a.on_block_start(n);
-                engine.voice_b.on_block_start(n);
-                engine.voice_c.on_block_start(n);
-                engine.voice_d.on_block_start(n);
+                // Only the selected voice's on_block_start runs -- GrowlVoice's
+                // is a full NAM WaveNet block inference, wasted CPU when Growl
+                // isn't even the active voice. Switching voices while a note is
+                // audible can produce a brief startup transient on Growl's
+                // model (see NamStage::process_block's warm-state comment);
+                // switching between notes/songs is silent.
+                let selected = engine.voice_selected.value() as usize;
+                if selected == ReeseVoice::INDEX { engine.voice_a.on_block_start(n); }
+                if selected == GrowlVoice::INDEX { engine.voice_b.on_block_start(n); }
+                if selected == BasicVoice::INDEX { engine.voice_c.on_block_start(n); }
+                if selected == BlankVoice::INDEX { engine.voice_d.on_block_start(n); }
 
                 for i in 0..n {
                     let (dry_l, dry_r, dry_sub) = engine.tick_pre_nam();
