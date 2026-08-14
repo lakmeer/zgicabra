@@ -1,22 +1,12 @@
 
 //
 // Reese -- classic detuned-unison-saw bass, per ref/reese-bass-dsp-guide.md.
-// A stack of VOICES band-limited saws (fundsp's wavetable saw(), already
-// anti-aliased -- no need to hand-roll PolyBLEP per the guide's §2.2) spread
-// symmetrically in cents (§3/§4, odd voice count so one voice sits at zero
-// detune/center pan as a phase-stable anchor), each run through its own
-// fundsp panner() (§4's equal-power pan law, built in rather than hand-
-// rolled trig) so the live `width` signal can spread/collapse the stack.
-// A detuned sub-octave layer (§3's optional f3) adds weight and is left
-// unpanned -- kept mono/centered on purpose, cheap stand-in for §11's
-// "keep the low end phase-coherent" advice without a full crossover split.
-// A slow LFO (§6) animates both detune spread and filter cutoff together
-// for "motion", and a live-modulated fundsp SVF lowpass (§7) shapes the
-// tone, driven by both the LFO and the live `filter` signal (same macro-
-// times-signal idiom growl.rs already uses for its own filter mapping).
-// tanh soft-clip (§8) sits pre-filter for harmonic richness. No sidechain/
-// hoover/multiband crossover -- those need a kick signal or per-band
-// routing this single-voice slot doesn't have inputs for.
+// VOICES band-limited saws spread symmetrically in cents (odd count so one
+// voice anchors at zero detune/center pan), each panned via fundsp's
+// equal-power panner() so live `width` spreads/collapses the stack. A
+// detuned sub-octave layer adds weight and stays unpanned/centered for a
+// phase-coherent low end. A slow LFO animates detune spread and filter
+// cutoff together; tanh soft-clip sits pre-filter for harmonic richness.
 //
 
 use fundsp::prelude64::*;
@@ -201,16 +191,14 @@ impl AudioNode for ReeseVoice {
         let lfo_val   = self.lfo.filter_mono(self.handle.lfo_rate.value()); // -1..1
         let lfo_depth = self.handle.lfo_depth.value();
 
-        // §3/§6: detune scales with pitch automatically (ratio, not Hz offset),
-        // wobbled slowly by the LFO for "motion", and widened live by hand
-        // span (`width` signal) -- wide hands, wide unison spread.
+        // Detune scales with pitch (ratio, not Hz offset), wobbled by the LFO,
+        // and widened live by hand span -- wide hands, wide unison spread.
         let width_signal = self.width_signal.clamp(0.0, 1.0);
         let detune = self.handle.detune.value()
             * (1.0 + lfo_val * lfo_depth * DETUNE_LFO_DEPTH)
             * (1.0 + width_signal);
 
-        // width signal spreads/collapses the unison pan stack live -- at
-        // width=0 every voice collapses to center (still beating, just mono).
+        // At width=0 every voice collapses to center (still beating, just mono).
         let width = (self.handle.width.value() + self.width_signal).clamp(0.0, 1.0);
 
         let mut mix_l = 0.0f32;
@@ -227,21 +215,18 @@ impl AudioNode for ReeseVoice {
         mix_l *= norm;
         mix_r *= norm;
 
-        // Sub layer: unpanned/centered on purpose, keeps the low end mono-
-        // compatible without a full low/high crossover split (§11).
+        // Sub layer stays unpanned/centered -- keeps the low end mono-compatible.
         let sub_ratio = SUB_RATIO * cents_to_ratio(SUB_DETUNE_CENTS);
         let sub = self.sub.filter_mono(freq * sub_ratio) * self.handle.sub_level.value();
         mix_l += sub;
         mix_r += sub;
 
-        // §8: tanh soft-clip pre-filter, for harmonic richness -- live `fuzz`
-        // signal boosts drive on top of the macro knob.
+        // Live `fuzz` signal boosts drive on top of the macro knob.
         let drive = (self.handle.drive.value() * (1.0 + self.fuzz_signal.clamp(0.0, 1.0))).max(1.0);
         let shaped_l = (mix_l * drive).tanh();
         let shaped_r = (mix_r * drive).tanh();
 
-        // §7: live SVF lowpass, cutoff driven by the macro knob (scaled by
-        // the live `filter` signal, same idiom as growl.rs) and the LFO.
+        // Cutoff driven by the macro knob (scaled by live `filter` signal) and the LFO.
         let cutoff_macro = (self.handle.cutoff.value() * self.filter_signal).clamp(0.0, 1.0);
         let cutoff_base  = linexp(0.0, 1.0, CUTOFF_LO, CUTOFF_HI, cutoff_macro);
         let cutoff_hz    = (cutoff_base * 2f32.powf(lfo_val * lfo_depth * LFO_DEPTH_OCTAVES)).clamp(20.0, 18_000.0);
@@ -264,7 +249,7 @@ impl AudioNode for ReeseVoice {
 }
 
 impl Voice for ReeseVoice {
-    const INDEX: usize = 2;
+    const INDEX: usize = 0;
     fn name (&self) -> &'static str { "Reese" }
     fn set_signal (&mut self, _bend: f32, filter: f32, fuzz: f32, width: f32, thump: f32) {
         self.thump_signal  = thump;

@@ -1,15 +1,11 @@
 
 //
-// Reverb tail, as a fixed FxNode (7 in, 2 out) -- the last stage in the
-// chain. room_size/decay/damp are baked into fundsp's FDN at construction
-// (not live audio-rate inputs, same restart-to-apply caveat the old
-// VoiceParams reverb fields had). p1 = reverb_wet, the live dry/wet balance
-// between the input and the reverb tail; `level` is still the FxNode-
-// standard master bypass on top of that (level=0 skips the reverb
-// entirely, level=1 exposes the p1 tail balance).
-//
-// Unlike Crusher/NamStage/LowpassFx, this stage is genuinely stereo --
-// reverb_stereo produces a distinct L/R tail from a mono-summed input.
+// Reverb tail, the last stage in the chain. room_size/decay/damp are
+// baked into fundsp's FDN at construction time -- not live, changing them
+// needs a restart. p1 = reverb_wet, the live dry/wet balance between
+// input and tail; `level` is a master bypass on top of that. Genuinely
+// stereo: reverb_stereo produces a distinct L/R tail from a mono-summed
+// input.
 //
 
 use fundsp::prelude64::*;

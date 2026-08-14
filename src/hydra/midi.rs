@@ -1,18 +1,11 @@
 
 //
-// MIDI controller supplement (see mock.rs)
-//
-// Real hardware-detecting Hydra backends never need this -- it exists purely
-// so the mock backend can be fed CC/pitch-bend/note input from an external
-// MIDI controller on the macOS dev machine, which has no real Hydra and
-// stands in a MIDI keyboard/controller for it. The Linux performance machine
-// always has the real Hydra hardware, and its MusNix audio setup has no
-// ALSA, so midir can't even build there (see Cargo.toml's target-scoped
-// dependency).
-//
-// `connect()` and `MidiState` are available on every target with identical
-// signatures -- non-macOS builds get the inert `stub` module below instead
-// of `real`, so callers (mock.rs, main.rs) never need their own #[cfg].
+// MIDI controller supplement for the mock backend (see mock.rs) -- lets an
+// external MIDI controller feed CC/pitch-bend/note input on the macOS dev
+// machine, which has no real Hydra. The Linux performance machine's MusNix
+// audio setup has no ALSA, so midir can't build there (see Cargo.toml's
+// target-scoped dependency); non-macOS builds get the inert `stub` module
+// below instead of `real`, so callers never need their own #[cfg].
 //
 
 use std::collections::VecDeque;
@@ -22,13 +15,11 @@ use crate::tools::AtomicF32;
 use crate::zgicabra::DeltaEvent;
 
 // Latest CC 1-4 / pitch-bend values from the MIDI listener, read fresh each
-// tick -- unlike voice/tune_cycle these aren't drain-on-read, they're a live
-// "current value" the engine loop pushes onto ZgicabraBridge's
-// SignalOverride each frame (see main.rs). rot_left/rot_right are CC7/8, fed
-// straight into wand_frame's rot_quat twist slot instead, since they need to
-// drive zgicabra's own rotation->bend math rather than bypass it the way
-// bend does. Every field stays at its default (0.0 / false) untouched on a
-// target with no MIDI support, or if `connected` is false.
+// tick (a live "current value", not drain-on-read) and pushed onto
+// ZgicabraBridge's SignalOverride each frame (see main.rs). rot_left/right
+// are CC7/8, fed into wand_frame's rot_quat twist slot instead since they
+// drive zgicabra's rotation->bend math rather than bypass it like bend does.
+// Stays at its default (0.0 / false) if `connected` is false.
 #[derive(Clone)]
 pub struct MidiState {
     pub filter:    Arc<AtomicF32>,
@@ -81,29 +72,22 @@ mod real {
     pub struct Connection(Option<MidiInputConnection<()>>);
 
     // rot_quat[2] is a quaternion component (sin(angle/2) for rotation about
-    // the twist axis), not the angle itself -- storing a fraction-of-a-turn
-    // straight into it (the old TWIST_RANGE approach) made the low end of
-    // the knob's travel undersensitive and the high end oversensitive,
-    // since sin() isn't linear. Converting the target angle through
-    // sin(angle/2) here is what draw_hydra_panel's xy_pad has to invert
-    // (via asin) to get the angle back for display -- see gui.rs.
+    // the twist axis), not the angle itself -- storing a raw fraction-of-a-
+    // turn would be nonlinear-feeling since sin() isn't linear. gui.rs's
+    // xy_pad inverts this via asin to get the angle back for display.
     fn twist_component (level: f32) -> f32 {
         let angle = (1.0 - level * 2.0) * TWIST_ANGLE_RANGE;
         (angle * 0.5).sin()
     }
 
-    // Connects to the first available MIDI input port, if any, and stores
-    // incoming CC 1-4/7-8 / pitch-bend values straight into the given
-    // atomics, and pushes Note On/Off as DeltaEvents onto `notes` (drained
-    // each tick by hydra::take_midi_notes -- discrete events, so unlike the
-    // CC/bend atomics above they go through the normal DeltaEvent pipeline
-    // rather than the SignalOverride mechanism). Monophonic, last-note-
-    // priority, same as a single wand trigger: a second Note On while one is
-    // already held emits NoteChange rather than a second NoteStart; Note Off
-    // only ends the note if it matches the currently-held one. Returns None
-    // (without panicking) if no MIDI backend/port is available -- the caller
-    // just proceeds without MIDI input, same as running with no Hydra
-    // hardware attached.
+    // Connects to the first available MIDI input port, if any, storing
+    // incoming CC 1-4/7-8 / pitch-bend values into the given atomics and
+    // pushing Note On/Off as DeltaEvents onto `notes` (drained each tick by
+    // hydra::take_midi_notes). Monophonic, last-note-priority like a single
+    // wand trigger: a second Note On while one is held emits NoteChange
+    // rather than a second NoteStart; Note Off only ends the note if it
+    // matches the currently-held one. Returns None if no MIDI port is
+    // available -- caller just proceeds without MIDI input.
     fn connect_midi (filter: Arc<AtomicF32>, width: Arc<AtomicF32>, fuzz: Arc<AtomicF32>, thump: Arc<AtomicF32>, bend: Arc<AtomicF32>, rot_left: Arc<AtomicF32>, rot_right: Arc<AtomicF32>, notes: Arc<Mutex<VecDeque<DeltaEvent>>>) -> Option<MidiInputConnection<()>> {
         let mut midi_in = MidiInput::new("zgicabra").ok()?;
         midi_in.ignore(Ignore::None);

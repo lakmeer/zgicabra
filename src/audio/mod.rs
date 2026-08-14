@@ -15,7 +15,7 @@ use crate::zgicabra::{DeltaEvent, SignalState};
 mod nam;
 mod stutter;
 mod growl;
-mod gorgle;
+mod blank;
 mod basic;
 mod gen_node;
 mod fx_node;
@@ -33,11 +33,10 @@ use reverb::ReverbFx;
 use compressor::Compressor;
 use voice::Voice;
 use growl::GrowlVoice;
-use gorgle::GorgleVoice;
+use blank::BlankVoice;
 use reese::ReeseVoice;
 use basic::BasicVoice;
 pub use growl::{GrowlHandle, GrowlParams};
-pub use gorgle::{GorgleHandle, GorgleParams};
 pub use reese::{ReeseHandle, ReeseParams};
 pub use basic::{BasicHandle, BasicParams};
 pub use voice::VoiceParams;
@@ -47,8 +46,7 @@ const GATE_OFF: f32 = -1.0;
 
 const NAM_SAMPLE_RATE: u32 = 48_000;
 
-// Fixed envelope times -- not GUI editable, baked into adsr_live at
-// construction time.
+// Fixed envelope times -- not GUI editable.
 const ENVELOPE_ATTACK:  f32 = 0.003;
 const ENVELOPE_RELEASE: f32 = 0.1;
 
@@ -58,11 +56,8 @@ const CAPTURE_SECONDS: f32 = 0.1;
 // The fixed "amp" stage always runs this one model
 const AMP_MODEL: &str = "lowgain";
 
-// Test seam: lets an external caller (see main.rs's --test self-test) tap a
-// snapshot of the raw cpal output stream to check it's actually producing
-// signal, diagnosing "no audio output" independent of the OS/device layer.
-// Captures mono (left channel) samples starting from the next audio
-// callback after `start()`, stops once `cap` samples are collected.
+// Taps the raw cpal output stream (mono, left channel) so main.rs's --test
+// self-test can confirm audio is actually producing signal.
 #[derive(Clone)]
 pub struct AudioCapture {
     enabled: Arc<AtomicBool>,
@@ -88,7 +83,6 @@ impl AudioCapture {
         self.buffer.lock().unwrap().clone()
     }
 
-    // Called from the audio callback -- cheap no-op once disabled/full.
     fn push (&self, sample: f32) {
         if !self.enabled.load(Ordering::Relaxed) { return; }
         let mut buf = self.buffer.lock().unwrap();
@@ -100,13 +94,9 @@ impl AudioCapture {
     }
 }
 
-// Direct handle onto the note gate, for main.rs's --test self-test to hold a
-// single test tone -- deliberately bypasses DeltaEvent/DeltaConsumer/hydra
-// entirely so a failure here isolates to the audio graph itself, independent
-// of the note/CC dispatch pipeline (see hydra::mock's audition sequence
-// player and MIDI listener for the DeltaEvent-driven equivalent). Note:
-// running this at the same time as a real controller note will fight over
-// the same `freq`/`gate` cells; it's a manual test tone, not a second voice.
+// Direct handle onto the note gate for main.rs's --test self-test, bypassing
+// DeltaEvent/hydra entirely. Fights the real controller's freq/gate cells if
+// used at the same time as a live note.
 #[derive(Clone)]
 pub struct TestTone {
     freq: Shared,
@@ -125,16 +115,15 @@ impl TestTone {
 }
 
 // Every GUI-facing handle onto a running AudioOutput, bundled so main.rs/
-// gui.rs thread one Option through instead of one per feature.
+// gui.rs thread one Option through instead of per-feature.
 #[derive(Clone)]
 pub struct AudioHandles {
     pub test_tone: TestTone,
 
     pub voice_selected: Shared,
-    pub voice_a: GrowlHandle,
-    pub voice_b: GorgleHandle,
-    pub voice_c: ReeseHandle,
-    pub voice_d: BasicHandle,
+    pub voice_a: ReeseHandle,
+    pub voice_b: GrowlHandle,
+    pub voice_c: BasicHandle,
 
     pub main_sub_lvl:  Shared,
     pub main_sub_wave: Shared,
@@ -172,10 +161,9 @@ pub struct AudioOutput {
     acceleration:      Shared,
 
     voice_selected: Shared,
-    voice_a: GrowlHandle,
-    voice_b: GorgleHandle,
-    voice_c: ReeseHandle,
-    voice_d: BasicHandle,
+    voice_a: ReeseHandle,
+    voice_b: GrowlHandle,
+    voice_c: BasicHandle,
 
     main_sub_lvl:  Shared,
     main_sub_wave: Shared,
@@ -202,8 +190,6 @@ pub struct AudioOutput {
 }
 
 impl AudioOutput {
-    // Every handle a UI needs to drive/display this engine, bundled. Cheap
-    // to build (every field is an Arc'd atomic cell or Arc'd name list).
     pub fn handles (&self) -> AudioHandles {
         AudioHandles {
             test_tone: TestTone { freq: self.freq.clone(), gate: self.gate.clone() },
@@ -211,7 +197,6 @@ impl AudioOutput {
             voice_a: self.voice_a.clone(),
             voice_b: self.voice_b.clone(),
             voice_c: self.voice_c.clone(),
-            voice_d: self.voice_d.clone(),
             main_sub_lvl:  self.main_sub_lvl.clone(),
             main_sub_wave: self.main_sub_wave.clone(),
             dry_sub_lvl:   self.dry_sub_lvl.clone(),
@@ -251,12 +236,11 @@ impl AudioOutput {
         let growl_nam_names = Arc::new(growl_nam_names);
         println!("║ Growl NAM models loaded ({} found).", growl_nam_names.len().saturating_sub(1));
 
-        // Defaults to Growl (index 0) so a fresh run has an audible voice.
+        // Defaults to Reese (index 0) so a fresh run has an audible voice.
         let voice_selected = shared(0.0);
-        let voice_a = GrowlHandle::new(&GrowlParams::default(), growl_nam_names);
-        let voice_b = GorgleHandle::new(&GorgleParams::default());
-        let voice_c = ReeseHandle::new(&ReeseParams::default());
-        let voice_d = BasicHandle::new(&BasicParams::default());
+        let voice_a = ReeseHandle::new(&ReeseParams::default());
+        let voice_b = GrowlHandle::new(&GrowlParams::default(), growl_nam_names);
+        let voice_c = BasicHandle::new(&BasicParams::default());
 
         let main_sub_lvl  = shared(0.35);
         let main_sub_wave = shared(0.5);
@@ -267,8 +251,7 @@ impl AudioOutput {
         let amp_bypass    = shared(0.0);
         let amp_boost     = shared(1.0);
         let amp_blend     = shared(0.0);
-        // Default 0Hz: crossover no-op, full signal to the model, same
-        // behavior as before this split existed (see NamStage::xover_alpha).
+        // 0Hz = crossover no-op, full signal to the model (see NamStage::xover_alpha).
         let amp_crossover = shared(0.0);
 
         let reverb_bypass = shared(0.0);
@@ -290,7 +273,7 @@ impl AudioOutput {
         let mut engine = Engine::new(
             freq.clone(), gate.clone(), bend.clone(), width.clone(), filter.clone(), fuzz.clone(),
             thump_amt.clone(), thump_trigger.clone(), velocity.clone(), acceleration.clone(),
-            voice_selected.clone(), voice_a.clone(), growl_nam_models, voice_b.clone(), voice_c.clone(), voice_d.clone(),
+            voice_selected.clone(), voice_a.clone(), voice_b.clone(), growl_nam_models, voice_c.clone(),
             main_sub_lvl.clone(), main_sub_wave.clone(), dry_sub_lvl.clone(),
             thump_peak.clone(), thump_decay.clone(),
             amp_model_l, amp_model_r, amp_bypass.clone(), amp_boost.clone(), amp_blend.clone(), amp_crossover.clone(),
@@ -329,7 +312,7 @@ impl AudioOutput {
 
         Ok(AudioOutput {
             freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration,
-            voice_selected, voice_a, voice_b, voice_c, voice_d,
+            voice_selected, voice_a, voice_b, voice_c,
             main_sub_lvl, main_sub_wave, dry_sub_lvl, thump_peak, thump_decay,
             amp_bypass, amp_boost, amp_blend, amp_crossover,
             reverb_bypass, reverb_dry, reverb_decay, reverb_damp, reverb_size,
@@ -370,10 +353,10 @@ fn pick_output_config (device: &cpal::Device, target_rate: u32) -> io::Result<cp
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("no usable output config: {e}")))
 }
 
-// Owns the full per-note graph: both voices wired in parallel (each
-// silences itself when not selected -- see voice.rs) summed with main_sub,
-// through the fixed amp/reverb/limiter stages, combined with dry_sub at the
-// very end (dry_sub bypasses amp/reverb/limiter entirely, same as before).
+// Owns the full per-note graph: all voices wired in parallel (each silences
+// itself when not selected -- see voice.rs) summed with main_sub, through
+// the fixed amp/reverb/limiter stages, combined with dry_sub at the very end
+// (dry_sub bypasses amp/reverb/limiter entirely).
 struct Engine {
     freq: Shared, gate: Shared, bend: Shared, width: Shared, filter: Shared, fuzz: Shared,
     thump_amt: Shared, velocity: Shared, acceleration: Shared,
@@ -383,20 +366,18 @@ struct Engine {
     dry_sub:      An<Sine<f64>>,
     envelope:     Box<dyn AudioUnit>,
 
-    voice_a: GrowlVoice,
-    voice_b: GorgleVoice,
-    voice_c: ReeseVoice,
-    voice_d: BasicVoice,
+    voice_a: ReeseVoice,
+    voice_b: GrowlVoice,
+    voice_c: BasicVoice,
+    voice_d: BlankVoice,
     voice_selected: Shared,
 
     main_sub_lvl:  Shared,
     main_sub_wave: Shared,
     dry_sub_lvl:   Shared,
 
-    // Two fully independent NamStage instances (own weights, own WaveNet
-    // dilation state) -- "amp" is stereo per spec, and sharing one model
-    // instance across both channels would mix L/R history into one
-    // recurrent state, which is wrong, not just cheaper.
+    // Two fully independent NamStage instances -- sharing one model across
+    // both channels would mix L/R WaveNet dilation state, not just save CPU.
     amp_l: nam::NamStage,
     amp_r: nam::NamStage,
     amp_bypass:    Shared,
@@ -417,8 +398,8 @@ impl Engine {
     fn new (
         freq: Shared, gate: Shared, bend: Shared, width: Shared, filter: Shared, fuzz: Shared,
         thump_amt: Shared, thump_trigger: Shared, velocity: Shared, acceleration: Shared,
-        voice_selected: Shared, voice_a: GrowlHandle, growl_nam_models: Vec<Option<nam::NamModelSlot>>,
-        voice_b: GorgleHandle, voice_c: ReeseHandle, voice_d: BasicHandle,
+        voice_selected: Shared, voice_a: ReeseHandle, voice_b: GrowlHandle,
+        growl_nam_models: Vec<Option<nam::NamModelSlot>>, voice_c: BasicHandle,
         main_sub_lvl: Shared, main_sub_wave: Shared, dry_sub_lvl: Shared,
         thump_peak: Shared, thump_decay: Shared,
         amp_model_l: nam::NamModelSlot, amp_model_r: nam::NamModelSlot,
@@ -427,8 +408,7 @@ impl Engine {
         reverb_decay: f32, reverb_damp: f32, reverb_size: f32,
         limiter_bypass: Shared, limiter_thresh: Shared,
     ) -> Engine {
-        // Model selector is fixed at 0 forever -- these NamStages each hold
-        // exactly one model, no Bypass slot, no cycling (see AudioOutput::new).
+        // Each NamStage holds exactly one fixed model -- no Bypass slot, no cycling.
         let amp_l = nam::NamStage::new(vec![Some(amp_model_l)], shared(0.0));
         let amp_r = nam::NamStage::new(vec![Some(amp_model_r)], shared(0.0));
 
@@ -439,10 +419,10 @@ impl Engine {
             dry_sub:      sine(),
             envelope: Box::new(adsr_live(ENVELOPE_ATTACK, 0.0, 1.0, ENVELOPE_RELEASE)),
 
-            voice_a: GrowlVoice::new(voice_a, growl_nam_models, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-            voice_b: GorgleVoice::new(voice_b, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-            voice_c: ReeseVoice::new(voice_c, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-            voice_d: BasicVoice::new(voice_d, thump_trigger, thump_peak, thump_decay),
+            voice_a: ReeseVoice::new(voice_a, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_b: GrowlVoice::new(voice_b, growl_nam_models, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_c: BasicVoice::new(voice_c, thump_trigger, thump_peak, thump_decay),
+            voice_d: BlankVoice::new(),
             voice_selected,
 
             main_sub_lvl, main_sub_wave, dry_sub_lvl,
@@ -470,13 +450,10 @@ impl Engine {
         self.limiter.set_sample_rate(sr);
     }
 
-    // Everything up to (not including) the amp stage: both voices (parallel,
-    // self-gating) summed with main_sub, gated by the envelope. Returns
-    // (dry_l, dry_r, dry_sub) -- dry_sub bypasses amp/reverb/limiter entirely
-    // and is re-added at the very end by tick_post_nam. Split out of a single
-    // tick() so build_stream can batch every sample's dry_l/dry_r into a
-    // block and run the amp stage once per block instead of once per sample
-    // -- see run_nam and NamStage::process_block in nam.rs for why.
+    // Everything before the amp stage, gated by the envelope. Returns
+    // (dry_l, dry_r, dry_sub) -- split out of a single tick() so build_stream
+    // can batch dry_l/dry_r across a block and run the amp stage once per
+    // block instead of once per sample (see run_nam / NamStage::process_block).
     fn tick_pre_nam (&mut self) -> (f32, f32, f32) {
         let signal = SignalState {
             bend: self.bend.value(), width: self.width.value(), thump: self.thump_amt.value(),
@@ -507,8 +484,7 @@ impl Engine {
 
         let env = self.envelope.filter_mono(self.gate.value());
 
-        // dry_sub: hardcoded one octave below base_freq, bypasses amp/reverb/
-        // limiter entirely -- same as before this refactor.
+        // dry_sub: one octave below base_freq, bypasses amp/reverb/limiter entirely.
         let dry_sub = self.dry_sub.filter_mono(base_freq * 0.5) * self.dry_sub_lvl.value() * env;
 
         let dry_l = (voice_l + main_sub) * env;
@@ -517,38 +493,26 @@ impl Engine {
         (dry_l, dry_r, dry_sub)
     }
 
-    // amp_bypass/blend/boost read once per block (not per sample), right
-    // before the batched amp call -- see run_nam. These are slow knob-rate
-    // values, so block-rate resolution costs nothing audible.
+    // Knob-rate values, read once per block rather than per sample.
     fn nam_block_params (&self) -> (f32, f32, f32, f32) {
         let level = if self.amp_bypass.value() >= 1.0 { 0.0 } else { 1.0 };
         (level, self.amp_blend.value(), self.amp_boost.value(), self.amp_crossover.value())
     }
 
-    // Runs both amp instances over a whole block in place -- see
-    // NamStage::process_block for why this must be a block call, not a
-    // per-sample one.
     fn run_nam (&mut self, block_l: &mut [f32], block_r: &mut [f32]) {
         let (level, blend, boost, crossover_hz) = self.nam_block_params();
         self.amp_l.process_block(block_l, level, blend, boost, crossover_hz);
         self.amp_r.process_block(block_r, level, blend, boost, crossover_hz);
     }
 
-    // Everything after the amp stage: reverb, limiter, final mix with
-    // dry_sub (which bypassed amp entirely). dry_l/dry_r are this sample's
-    // already-batched amp output (see run_nam).
+    // Reverb, limiter, then final mix with dry_sub (which bypassed amp entirely).
     fn tick_post_nam (&mut self, dry_l: f32, dry_r: f32, dry_sub: f32) -> (f32, f32) {
-        // Soft-clip instead of a hard wall so rare transient peaks
-        // saturate instead of digitally clipping.
+        // Soft-clip rather than a hard wall so transient peaks saturate instead of clipping.
         let mut l = dry_l.tanh();
         let mut r = dry_r.tanh();
 
-        // Bypass skips the call entirely (rather than driving ReverbFx's
-        // own level=0 path) so a bypassed reverb preserves whatever stereo
-        // width the voice produced -- ReverbFx itself mono-sums its input
-        // before the tail (untouched from before this refactor, when
-        // everything upstream really was mono), so stereo width is only
-        // preserved through this stage while it's off.
+        // Skip the call entirely rather than driving level=0 -- ReverbFx mono-sums
+        // its input, so this is the only way to preserve stereo width while bypassed.
         if self.reverb_bypass.value() < 1.0 {
             let out = self.reverb.tick(&Frame::from([l, r, 1.0, self.reverb_dry.value(), 0.0, 0.0, 0.0]));
             l = out[0];
@@ -580,10 +544,8 @@ where
 {
     let channels = config.channels as usize;
 
-    // Scratch for the pre-amp dry signal (L, R, and the dry_sub that
-    // bypasses amp entirely) -- sized once here, never reallocated on the
-    // audio thread. Chunking by NAM_BLOCK_CAP is just a fixed-size-scratch
-    // safety net; real cpal callback sizes are always far smaller.
+    // Pre-amp dry signal scratch (L, R, dry_sub) -- sized once, never
+    // reallocated on the audio thread.
     let mut dryl_scratch:   Vec<f32> = vec![0.0; NAM_BLOCK_CAP];
     let mut dryr_scratch:   Vec<f32> = vec![0.0; NAM_BLOCK_CAP];
     let mut drysub_scratch: Vec<f32> = vec![0.0; NAM_BLOCK_CAP];
@@ -612,7 +574,6 @@ where
                     drysub_block[i] = dry_sub;
                 }
 
-                // Batched, not per-sample -- see NamStage::process_block.
                 engine.run_nam(dryl_block, dryr_block);
 
                 for i in 0..n {
@@ -659,10 +620,7 @@ impl DeltaConsumer for AudioOutput {
                 self.gate.set_value(GATE_ON);
             },
             DeltaEvent::NoteEnd(_) => self.gate.set_value(GATE_OFF),
-            // Rocking button / keyboard 'a'/'s' relative cycle, or MIDI
-            // Program Change absolute select (see hydra/mock.rs) -- either
-            // way, just apply the resulting Voice's index (matches
-            // VOICE_NAMES order in gui.rs).
+            // Index must match VOICE_NAMES order in gui.rs.
             DeltaEvent::VoiceChange(voice) => self.voice_selected.set_value(*voice as u8 as f32),
             DeltaEvent::Panic()    => self.gate.set_value(GATE_OFF),
             _ => {},

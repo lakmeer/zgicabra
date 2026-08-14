@@ -3,24 +3,17 @@
 // Mock Hydra backend
 //
 // Generates synthetic wand motion via steady sine waves, so the rest of the
-// app can be developed and tested without real Hydra hardware attached. The
-// analog triggers and buttons are simulated from the keyboard/gui, toggled
-// on/off (rather than held) since terminals don't deliver real key-up events:
+// app can be developed and tested without real Hydra hardware attached.
+// Triggers/buttons are simulated from the keyboard/gui, toggled on/off
+// (rather than held) since terminals don't deliver real key-up events:
 //
-//   'z' - toggle the left trigger
-//   '.' - toggle the right trigger
-//   'a' - cycle to the previous Voice (dev stand-in for the physical Rocking button)
-//   's' - cycle to the next Voice
-//   '-' - tune down 1 semitone (dev stand-in for the physical Tune button)
-//   '=' - tune up 1 semitone
-//   arrow keys - drive the left wand's joystick to a full deflection
-//     up/down/left/right; held combinations (e.g. Up+Right still toggled on
-//     together) give the correct diagonal, same toggle-since-no-key-up
-//     reasoning as the triggers above
+//   'z' / '.' - toggle left/right trigger
+//   'a' / 's' - cycle voice (dev stand-in for the physical Rocking button)
+//   '-' / '=' - tune down/up 1 semitone (stand-in for the Tune button)
+//   arrow keys - toggle the left wand's joystick to full deflection
 //
 // The right wand's joystick and every wand's 4 buttons have no keyboard
-// mapping (there's no physical control for them) -- they're gui.rs-only,
-// driven straight through MockControls.
+// mapping -- gui.rs-only, driven straight through MockControls.
 //
 
 use std::f32::consts::{PI, TAU};
@@ -94,23 +87,18 @@ pub struct MockControls {
     voice_cycle: Arc<AtomicI8>,
     tune_cycle:  Arc<AtomicI8>,
 
-    // Latest CC 1-4 / pitch-bend values from the MIDI listener (see
-    // connect_midi), read fresh each tick -- unlike voice/tune_cycle these
-    // aren't drain-on-read, they're a live "current value" the engine loop
-    // pushes onto ZgicabraBridge's SignalOverride each frame. See hydra::midi
-    // -- inert (stays at 0.0/false) on targets with no MIDI support.
+    // See hydra::midi -- inert (0.0/false) on targets with no MIDI support.
     pub midi: midi::MidiState,
 
     // Audition sequence player toggle (see step_sequence) and its published
-    // filter sweep -- same "live current value" reasoning as the midi_*
-    // fields above, just sourced from the canned loop instead of a CC.
+    // filter sweep.
     pub seq_playing: Arc<AtomicBool>,
     pub seq_filter:  Arc<AtomicF32>,
 }
 
 impl MockControls {
-    // Same accumulate-since-last-read semantics as MockBackend::take_voice_cycle/
-    // take_tune_cycle -- bump() adds a step, the background loop drains it.
+    // Accumulate-since-last-read: bump() adds a step, the background loop
+    // drains it (see MockBackend::take_voice_cycle/take_tune_cycle).
     pub fn bump_voice_cycle (&self, delta: i8) {
         self.voice_cycle.fetch_add(delta, Ordering::Relaxed);
     }
@@ -123,9 +111,7 @@ impl MockControls {
         flag.fetch_xor(true, Ordering::Relaxed);
     }
 
-    // Snaps an analog trigger to fully released/fully pulled -- keyboard
-    // 'z'/'.' don't have an analog range to report, so they just toggle
-    // between the two ends of it.
+    // Snaps an analog trigger between fully released and fully pulled.
     pub fn toggle_trigger (trigger: &Arc<AtomicF32>) {
         trigger.store(if trigger.load() > 0.5 { 0.0 } else { 1.0 });
     }
@@ -154,11 +140,9 @@ pub struct MockBackend {
     sequence: u8,
     _cbreak_guard: CbreakGuard, // restores the terminal on drop
 
-    // See hydra::midi -- inert on targets with no MIDI support. rot_left/
-    // rot_right feed straight into wand_frame's rot_quat twist slot (see
-    // wand_frame) rather than through a SignalOverride like the other
-    // midi.* fields -- they need to drive zgicabra's own rotation->bend
-    // math, not bypass it the way midi.bend does.
+    // rot_left/rot_right feed straight into wand_frame's rot_quat twist slot
+    // rather than through a SignalOverride -- they drive zgicabra's own
+    // rotation->bend math, not bypass it the way midi.bend does.
     midi: midi::MidiState,
     notes: Arc<Mutex<VecDeque<DeltaEvent>>>, // Note On/Off/PC events, MIDI or audition-sequence sourced
     _midi_connection: midi::Connection, // held to keep the callback alive; disconnects on drop
@@ -211,17 +195,16 @@ impl MockBackend {
 
     // Note On/Off/PC DeltaEvents accumulated since the last call (MIDI input
     // and/or the audition sequence player, see step_sequence below); drains
-    // the queue. See connect_midi's doc comment for the monophonic mapping.
+    // the queue.
     pub fn take_midi_notes (&mut self) -> Vec<DeltaEvent> {
         self.notes.lock().unwrap().drain(..).collect()
     }
 
-    // Steps the audition sequence loop (see SEQ_NOTES) if seq_playing is
-    // toggled on, pushing NoteStart/NoteChange/NoteEnd DeltaEvents onto the
-    // same queue take_midi_notes drains, and publishing the filter sweep in
-    // seq_filter for hydra::mock_controls callers (main.rs) to feed onto
-    // SignalState via bridge.filter.set -- same SignalOverride path the MIDI
-    // CCs use. Resets to the top of the loop each time playback is (re)started.
+    // Steps the audition sequence loop (see SEQ_NOTES) if seq_playing is on,
+    // pushing NoteStart/NoteChange/NoteEnd onto the queue take_midi_notes
+    // drains, and publishing the filter sweep in seq_filter (fed onto
+    // SignalState via bridge.filter.set in main.rs). Resets to the top of
+    // the loop each time playback is (re)started.
     fn step_sequence (&mut self) {
         let now = Instant::now();
         let dt  = now.duration_since(self.seq_last_tick).as_secs_f32();
@@ -250,8 +233,7 @@ impl MockBackend {
         }
         self.seq_note = Some(note);
 
-        // Slow sine drift independent of the melody's rhythm (period = 1.5x
-        // the loop length), same as the old gui.rs sequence player.
+        // Slow sine drift independent of the melody's rhythm.
         let period = seq_total_seconds() * 1.0;
         let filter = (self.seq_elapsed / period * TAU).sin() * 0.5 + 0.5;
         self.seq_filter.store(filter);
@@ -282,14 +264,12 @@ impl MockBackend {
         self.quit
     }
 
-    // Net voice-cycle direction accumulated since the last call; resets to
-    // zero on read. See hydra::take_voice_cycle.
+    // Net voice-cycle direction since the last call; resets to zero on read.
     pub fn take_voice_cycle (&mut self) -> i8 {
         self.voice_cycle.swap(0, Ordering::Relaxed)
     }
 
-    // Net tune direction accumulated since the last call; resets to zero on
-    // read. See hydra::take_tune_cycle.
+    // Net tune direction since the last call; resets to zero on read.
     pub fn take_tune_cycle (&mut self) -> i8 {
         self.tune_cycle.swap(0, Ordering::Relaxed)
     }
@@ -307,9 +287,8 @@ impl MockBackend {
     }
 
     fn poll_keys (&mut self) {
-        // Arrow keys toggle the left stick to a full deflection on that axis;
-        // opposite-direction pairs cancel to 0, e.g. Up then Down returns to
-        // 0 rather than -1, matching the old boolean-toggle behaviour.
+        // Arrow keys toggle the left stick to full deflection on that axis;
+        // opposite-direction pairs cancel back to 0.
         let toggle_axis = |axis: &AtomicF32, delta: f32| {
             let v = axis.load();
             axis.store(if v == 0.0 { delta } else { 0.0 });
@@ -343,9 +322,7 @@ impl MockBackend {
         frame.joystick_x      = stick_x.clamp(-1.0, 1.0);
         frame.joystick_y      = stick_y.clamp(-1.0, 1.0);
 
-        // rot_quat[2] (twist) is CC7/8-driven regardless of sine_drift --
-        // see copy_frame_to_wand/wand.twist in zgicabra.rs, which is what
-        // actually turns this into bend.
+        // rot_quat[2] (twist) is CC7/8-driven regardless of sine_drift.
         frame.rot_quat[2] = twist.clamp(-1.0, 1.0);
 
         if self.sine_drift.load(Ordering::Relaxed) {

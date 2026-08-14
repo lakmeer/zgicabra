@@ -1,11 +1,8 @@
 
 //
-// Compressor: plain downward-only peak compressor, for the safety-limiter
-// stage ("limiter" in mod.rs) -- distinct from Crusher's OTT-style
-// simultaneous up+down squash (crusher.rs), which this does not reuse.
-// Stereo-linked: one AFollow envelope tracks max(|l|,|r|) and the same
-// gain reduction applies to both channels, so it doesn't shift the stereo
-// image the way two independent per-channel followers would.
+// Downward-only peak compressor (safety limiter). Stereo-linked: one
+// envelope tracks max(|l|,|r|) and the same gain reduction applies to
+// both channels, so it doesn't shift the stereo image.
 //
 
 use fundsp::prelude64::*;

@@ -1,17 +1,10 @@
 
 //
-// 3-operator FM generator, as a GenNode (6 in, 2 out). Classic 2-operator-
-// modulating-1 FM stack: op_c modulates op_b modulates op_a. Each operator
-// gets its own vibrato LFO (sine, additive in Hz, before it's used as a
-// modulator for the next operator down the chain) driven by one shared
-// depth knob, for movement instead of a static tone.
-//
-// p1 = ratio_b (op_b's frequency ratio against the base), p2 = index_b
-// (op_b's modulation depth on op_a), p3 = detune (0..1, rescaled to cents),
-// p4 = vibrato depth (0..1, rescaled to Hz, shared rate/depth across all
-// three operators). ratio_a/ratio_c/index_c are fixed constants -- this is
-// a real reduction from the original 12-knob custom-voice version, trading
-// character range for fitting the 4-param GenNode contract.
+// 3-operator FM generator, as a GenNode (6 in, 2 out). Not currently
+// wired into Engine (see mod.rs). Classic op_c-modulates-op_b-modulates-
+// op_a FM stack; each operator gets an additive-Hz vibrato LFO from one
+// shared depth knob. Params: ratio_b, index_b, detune (cents), vibrato
+// depth (Hz); ratio_a/ratio_c/index_c are fixed constants.
 //
 
 use fundsp::prelude64::*;

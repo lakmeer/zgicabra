@@ -1,21 +1,11 @@
 
-//
-// GUI
-//
-// An SDL2 + glow + Dear ImGui window for live-tuning the audio engine's
-// globals and the currently-selected Voice's params, and driving the mock
-// Hydra backend's inputs without a keyboard.
-//
-// SDL2/AppKit requires window creation and the event loop to run on the
-// process's main thread on macOS, so this owns main() when --gui is passed;
-// main.rs moves the rest of the app (hydra/zgicabra/audio loop) onto a
-// background thread instead. See main.rs.
-//
-// SDL2 (unlike winit) has a native KMSDRM video driver alongside x11/wayland,
-// selectable at runtime via SDL_VIDEODRIVER -- this is what lets the same
-// binary run windowed under X11 on the dev machine and boot straight to the
-// performance box's panel with no X server at all.
-//
+// SDL2 + glow + Dear ImGui window for live-tuning the audio engine's
+// globals/voice params and driving the mock Hydra backend without a
+// keyboard. SDL2/AppKit requires the window + event loop on the main thread
+// on macOS, so this owns main() when --gui is passed (see main.rs). SDL2's
+// native KMSDRM video driver (selectable via SDL_VIDEODRIVER) is what lets
+// the same binary run windowed on the dev machine and boot straight to the
+// performance box's panel with no X server.
 
 use std::env;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,15 +15,13 @@ use fundsp::shared::Shared;
 use sdl2::event::{Event, WindowEvent};
 
 use crate::hydra::MockControls;
-use crate::audio::{AudioHandles, GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, snapshot, GorgleHandle, GorgleParams, ReeseHandle, ReeseParams};
+use crate::audio::{AudioHandles, GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, snapshot, ReeseHandle, ReeseParams};
 use crate::tools::AtomicF32;
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
 
-const VOICE_NAMES: [&str; 4] = ["Growl", "Gorgle", "Reese", "Basic"];
+const VOICE_NAMES: [&str; 4] = ["Reese", "Growl", "Basic", "Blank"];
 
-// Local (GUI-thread-only) browser state for saved voice-param snapshots --
-// save/load are one-off file actions the GUI thread can just do directly on
-// the same Shared cells the knobs already write to.
+// GUI-thread-local browser state for saved voice-param snapshots.
 struct SnapshotBrowser {
     names: Vec<String>,
     index: usize,
@@ -78,15 +66,10 @@ fn level_checkbox (ui: &imgui::Ui, label: &str, level: &Shared) {
 }
 
 // A draggable 2D pad: click/drag anywhere inside to set (x, y) in [-1, 1],
-// y flipped so up (top of the pad) is positive -- matches joystick_y
-// convention elsewhere (ControllerFrame, Joystick). `twist` is the wand's
-// raw rot_quat[2] component (see draw_hydra_panel) -- not itself an angle,
-// since rot is a quaternion (see ui.rs's draw_wand: `wand.twist`, i.e.
-// rot_quat[2]*2.0, is what that already-working TUI view uses as its
-// facing angle), so it's doubled here the same way before being handed to
-// cos/sin to spin the crosshair. The background is already a circle so it
-// doesn't need rotating, and imgui has no built-in rotated-primitive
-// support anyway, so this rotates the two line endpoints by hand.
+// y flipped so up is positive (matches joystick_y convention elsewhere).
+// `twist` is the wand's raw rot_quat[2] (not an angle -- doubled here the
+// same way ui.rs's draw_wand does, to spin the crosshair) -- imgui has no
+// rotated-primitive support, so the line endpoints are rotated by hand.
 fn xy_pad (ui: &imgui::Ui, id: &str, size: f32, twist: f32, x: &Arc<AtomicF32>, y: &Arc<AtomicF32>) {
     let origin = ui.cursor_screen_pos();
     ui.invisible_button(id, [size, size]);
@@ -115,21 +98,16 @@ fn xy_pad (ui: &imgui::Ui, id: &str, size: f32, twist: f32, x: &Arc<AtomicF32>, 
     draw_list.add_line(spoke(-half, 0.0), spoke(half, 0.0), [0.4, 0.4, 0.45, 1.0]).build();
     draw_list.add_line(spoke(0.0, -half), spoke(0.0, half), [0.4, 0.4, 0.45, 1.0]).build();
 
-    // Joystick offset is expressed in the wand's own (rotated) frame too --
-    // the stick sits on the wand, so twisting the wand carries it around
-    // with the crosshair -- and a stalk from center to the dot reads as the
-    // joystick itself, not just a floating position marker.
+    // Joystick offset is in the wand's rotated frame too, so twisting the
+    // wand carries the stick around with the crosshair.
     let dot = spoke(x.load() * half, -y.load() * half);
     draw_list.add_line(center, dot, [0.95, 0.80, 0.30, 1.0]).thickness(2.0).build();
     draw_list.add_circle(dot, 5.0, [0.95, 0.80, 0.30, 1.0]).filled(true).build();
 }
 
 // A rotary knob: click and drag vertically to change value within [lo, hi]
-// (drag up = increase). Vertical drag *delta*, not absolute mouse position,
-// drives the value -- same convention as most DAW/synth knobs, since an
-// absolute-angle knob (angle = mouse angle from center) makes fine
-// adjustment impossible. speed comes from the same drag_speed() the Drag
-// boxes use, so a knob and a drag box on the same range feel identical.
+// (drag up = increase). Uses drag *delta*, not absolute mouse position --
+// an absolute-angle knob would make fine adjustment impossible.
 fn knob (ui: &imgui::Ui, id: &str, label: &str, radius: f32, lo: f32, hi: f32, value: &mut f32) -> bool {
     let origin = ui.cursor_screen_pos();
     let center = [origin[0] + radius, origin[1] + radius];
@@ -163,9 +141,7 @@ fn knob (ui: &imgui::Ui, id: &str, label: &str, radius: f32, lo: f32, hi: f32, v
     changed
 }
 
-// Reads/writes a bare Shared through a knob, ranged to (lo, hi) -- every
-// global/voice param control is just this against whichever Shared cell it
-// owns, now that there's no ModMatrix row to pull lo/hi from.
+// Reads/writes a bare Shared through a knob, ranged to (lo, hi).
 fn draw_shared_knob (ui: &imgui::Ui, id: &str, label: &str, lo: f32, hi: f32, cell: &Shared) {
     let mut value = cell.value();
     if knob(ui, id, label, KNOB_RADIUS, lo, hi, &mut value) {
@@ -174,12 +150,10 @@ fn draw_shared_knob (ui: &imgui::Ui, id: &str, label: &str, lo: f32, hi: f32, ce
 }
 
 // A vertical fader: click/drag anywhere inside to set value directly off the
-// mouse's absolute height in the track (top = hi, bottom = lo) -- unlike
-// knob()'s relative-drag feel, a fader's whole point is that its handle
-// height *is* the value, so absolute positioning is what reads correctly.
-// `origin` is where the filled bar starts from (lo, for a plain 0..hi
-// fader; the range's midpoint, for a signed one like bend, so the fill
-// grows from the center instead of the bottom).
+// mouse's absolute height in the track (top = hi, bottom = lo) -- a fader's
+// handle height *is* the value, unlike knob()'s relative drag. `origin` is
+// where the fill starts from (lo, or a signed range's midpoint so it grows
+// from center, e.g. bend).
 fn vslider (ui: &imgui::Ui, id: &str, label: &str, size: [f32; 2], lo: f32, hi: f32, origin: f32, value: &mut f32) -> bool {
     let [w, h] = size;
     let p_min = ui.cursor_screen_pos();
@@ -219,18 +193,13 @@ fn vslider (ui: &imgui::Ui, id: &str, label: &str, size: [f32; 2], lo: f32, hi: 
 
 const KNOB_RADIUS: f32 = 8.0;
 const VSLIDER_SIZE: [f32; 2] = [24.0, 90.0];
-// Same width as the trigger hslider (see draw_wand_mock) so the width
-// double-slider lines up with them when it sits atop the signal column,
-// between the two wands' trigger rows.
+// Same width as the trigger hslider (see draw_wand_mock) so it lines up
+// atop the signal column between the two wands' trigger rows.
 const HCENTER_SIZE: [f32; 2] = [120.0, 18.0];
 
-// A horizontal fader for the analog trigger (0..1, hardware reports a real
-// depth via TRIG_SCALE -- see hydra/hid.rs -- so the mock side needs a
-// continuous control too, not just an on/off toggle). Absolute drag
-// positioning, same reasoning as vslider(). `mirrored` flips which edge is
-// "pulled": the two wands sit mirrored on screen, so without it the right
-// wand's fill would grow away from center while the left one grows toward
-// it -- mirrored makes both read as "pulled = toward the middle".
+// A horizontal fader for the analog trigger (continuous, matching the
+// hardware's real depth reading -- see hydra/hid.rs's TRIG_SCALE). `mirrored`
+// flips which edge is "pulled" so both wands' fills grow toward the middle.
 fn hslider (ui: &imgui::Ui, id: &str, size: [f32; 2], mirrored: bool, value: &Arc<AtomicF32>) -> bool {
     let [w, h] = size;
     let p_min = ui.cursor_screen_pos();
@@ -263,11 +232,8 @@ fn hslider (ui: &imgui::Ui, id: &str, size: [f32; 2], mirrored: bool, value: &Ar
     changed
 }
 
-// A double-ended horizontal fader: still a single 0..1 value, but it fills
-// outward from the center in both directions at once rather than from an
-// edge -- width's "spread" reads more naturally as a distance from center
-// than as a left-to-right quantity. Drag position maps to distance from
-// center, so dragging toward either edge drives the value the same way.
+// A double-ended horizontal fader: fills outward from center in both
+// directions -- drag position maps to distance from center either way.
 fn hslider_center (ui: &imgui::Ui, id: &str, size: [f32; 2], value: &mut f32) -> bool {
     let [w, h] = size;
     let p_min = ui.cursor_screen_pos();
@@ -299,25 +265,18 @@ fn hslider_center (ui: &imgui::Ui, id: &str, size: [f32; 2], value: &mut f32) ->
     draw_list.add_line([center_x, p_min[1]], [center_x, p_max[1]], [1.0, 1.0, 1.0, 1.0]).build();
     changed
 }
-// Simple cards (fixed knob set) vs. the voice card, which needs extra width
-// for the voice selector row plus up to 4 param knobs.
+// Simple cards (fixed knob set) vs. the voice card, sized for a selector
+// row plus up to 4 param knobs.
 const CARD_SIZE:       [f32; 2] = [140.0, 66.0];
-// One per-voice card (4 knobs, plus Growl's extra NAM cycler row) -- all 4
-// now drawn side by side (see draw_voice_card), not just the selected one.
 const VOICE_CARD_SIZE: [f32; 2] = [160.0, 140.0];
-// Reese exposes 8 knobs (2 rows of 4) instead of the usual single row --
-// same height as VOICE_CARD_SIZE, extra room isn't needed since knobs wrap
-// to a second row rather than widening.
+// Reese exposes 8 knobs (2 rows of 4) instead of the usual single row.
 const REESE_CARD_SIZE: [f32; 2] = [160.0, 190.0];
 
-// Dark blue background tint for whichever voice card is currently active --
-// see draw_voice_card.
 const ACTIVE_VOICE_BG: [f32; 4] = [0.10, 0.16, 0.42, 1.0];
 
 // Bordered box with a title and an optional top-right bypass checkbox --
-// the Engine panel's one repeated "module card" shape. `active` tints the
-// card's background (used by draw_voice_card to mark the selected voice;
-// every other caller passes false, which leaves imgui's default ChildBg).
+// the Engine panel's repeated "module card" shape. `active` tints the
+// background (used by draw_voice_card to mark the selected voice).
 fn draw_module_card (ui: &imgui::Ui, title: &str, bypass: Option<&Shared>, size: [f32; 2], active: bool, body: impl FnOnce(&imgui::Ui)) {
     let _bg = active.then(|| ui.push_style_color(imgui::StyleColor::ChildBg, ACTIVE_VOICE_BG));
     ui.child_window(format!("##card_{title}")).size(size).border(true).build(|| {
@@ -331,11 +290,8 @@ fn draw_module_card (ui: &imgui::Ui, title: &str, bypass: Option<&Shared>, size:
     });
 }
 
-// One row of knobs laid out side by side -- knob() ends with a text label,
-// which (like any imgui item) advances the cursor to a new line, so knobs
-// placed side by side need to be wrapped in their own group() with
-// same_line() between groups, not called bare in sequence (that would
-// stack them vertically against the previous knob's label instead).
+// One row of knobs laid out side by side -- each wrapped in its own group()
+// since knob()'s trailing label would otherwise stack them vertically.
 fn draw_knob_row (ui: &imgui::Ui, knobs: &[(&str, &str, f32, f32, &Shared)]) {
     for (i, (id, label, lo, hi, cell)) in knobs.iter().enumerate() {
         if i > 0 { ui.same_line(); }
@@ -343,8 +299,7 @@ fn draw_knob_row (ui: &imgui::Ui, knobs: &[(&str, &str, f32, f32, &Shared)]) {
     }
 }
 
-// Voice selector: cycles voice_selected between VOICE_NAMES by index, same
-// "< label >" idiom the old gen/fx slot cyclers used.
+// Cycles voice_selected between VOICE_NAMES by index.
 fn draw_voice_selector (ui: &imgui::Ui, selected: &Shared) {
     let index = selected.value() as i32;
     let name = VOICE_NAMES.get(index as usize).copied().unwrap_or("?");
@@ -358,9 +313,7 @@ fn draw_voice_selector (ui: &imgui::Ui, selected: &Shared) {
     }
 }
 
-// Growl's 4 macro knobs -- see wavetable_gen.rs for what each does -- plus
-// its bolted-on NAM amp stage's model cycler ("< Model / name / Model >",
-// same idiom as draw_voice_selector).
+// Growl's 4 macro knobs, plus its NAM amp model cycler.
 fn draw_voice_growl (ui: &imgui::Ui, growl: &GrowlHandle) {
     draw_knob_row(ui, &[
         ("growl_bass_drive", "bass drive", 0.0, 1.0, &growl.bass_drive),
@@ -387,16 +340,6 @@ fn draw_voice_basic (ui: &imgui::Ui, basic: &BasicHandle) {
     ]);
 }
 
-// Gorgle's 4 macro knobs -- see gorgle.rs for what each does.
-fn draw_voice_gorgle (ui: &imgui::Ui, gorgle: &GorgleHandle) {
-    draw_knob_row(ui, &[
-        ("gorgle_wobble",   "wobble",   0.0, 1.0, &gorgle.wobble),
-        ("gorgle_ambience", "ambience", 0.0, 1.0, &gorgle.ambience),
-        ("gorgle_girgle",   "girgle",   0.0, 1.0, &gorgle.girgle),
-        ("gorgle_grind",    "grind",    0.0, 1.0, &gorgle.grind),
-    ]);
-}
-
 // Reese's 8 macro knobs -- see reese.rs for what each does. Two rows of 4
 // since it's twice the knob count of the other voices' single row.
 fn draw_voice_reese (ui: &imgui::Ui, reese: &ReeseHandle) {
@@ -414,29 +357,28 @@ fn draw_voice_reese (ui: &imgui::Ui, reese: &ReeseHandle) {
     ]);
 }
 
-// All 4 voices drawn side by side, always -- the active one (voice_selected)
-// gets a dark blue card background instead of only the selected voice's
-// controls being shown.
+// All 4 voices drawn side by side; the active one (voice_selected) gets a
+// dark blue card background.
 fn draw_voice_card (ui: &imgui::Ui, audio: &AudioHandles) {
     draw_voice_selector(ui, &audio.voice_selected);
     ui.separator();
 
     let selected = audio.voice_selected.value() as i32;
 
-    draw_module_card(ui, "Growl", None, VOICE_CARD_SIZE, selected == 0, |ui| {
-        draw_voice_growl(ui, &audio.voice_a);
+    draw_module_card(ui, "Reese", None, REESE_CARD_SIZE, selected == 0, |ui| {
+        draw_voice_reese(ui, &audio.voice_a);
     });
     ui.same_line();
-    draw_module_card(ui, "Gorgle", None, VOICE_CARD_SIZE, selected == 1, |ui| {
-        draw_voice_gorgle(ui, &audio.voice_b);
+    draw_module_card(ui, "Growl", None, VOICE_CARD_SIZE, selected == 1, |ui| {
+        draw_voice_growl(ui, &audio.voice_b);
     });
     ui.same_line();
-    draw_module_card(ui, "Reese", None, REESE_CARD_SIZE, selected == 2, |ui| {
-        draw_voice_reese(ui, &audio.voice_c);
+    draw_module_card(ui, "Basic", None, VOICE_CARD_SIZE, selected == 2, |ui| {
+        draw_voice_basic(ui, &audio.voice_c);
     });
     ui.same_line();
-    draw_module_card(ui, "Basic D", None, VOICE_CARD_SIZE, selected == 3, |ui| {
-        draw_voice_basic(ui, &audio.voice_d);
+    draw_module_card(ui, "Blank", None, VOICE_CARD_SIZE, selected == 3, |ui| {
+        ui.text("(no patch -- silent)");
     });
 }
 
@@ -447,10 +389,9 @@ fn draw_voice_card (ui: &imgui::Ui, audio: &AudioHandles) {
 fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut SnapshotBrowser) {
     if ui.button("Save Snapshot") {
         let result = match audio.voice_selected.value() as i32 {
-            0 => snapshot::save_snapshot(GrowlParams::voice_name(), &audio.voice_a.params().fields()),
-            1 => snapshot::save_snapshot(GorgleParams::voice_name(), &audio.voice_b.params().fields()),
-            2 => snapshot::save_snapshot(ReeseParams::voice_name(), &audio.voice_c.params().fields()),
-            3 => snapshot::save_snapshot(BasicParams::voice_name(), &audio.voice_d.params().fields()),
+            0 => snapshot::save_snapshot(ReeseParams::voice_name(), &audio.voice_a.params().fields()),
+            1 => snapshot::save_snapshot(GrowlParams::voice_name(), &audio.voice_b.params().fields()),
+            2 => snapshot::save_snapshot(BasicParams::voice_name(), &audio.voice_c.params().fields()),
             _ => Ok(std::path::PathBuf::new()),
         };
         if let Err(e) = result {
@@ -480,20 +421,18 @@ fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut Sn
             match snapshot::load_snapshot(&path) {
                 Ok((voice_name, fields)) => {
                     let expected = match audio.voice_selected.value() as i32 {
-                        0 => GrowlParams::voice_name(),
-                        1 => GorgleParams::voice_name(),
-                        2 => ReeseParams::voice_name(),
-                        3 => BasicParams::voice_name(),
+                        0 => ReeseParams::voice_name(),
+                        1 => GrowlParams::voice_name(),
+                        2 => BasicParams::voice_name(),
                         _ => "",
                     };
                     if voice_name != expected {
                         eprintln!("║ 🟥 Snapshot '{name}' is for voice '{voice_name}', not the selected voice");
                     } else {
                         match audio.voice_selected.value() as i32 {
-                            0 => audio.voice_a.load(&GrowlParams::from_fields(&fields)),
-                            1 => audio.voice_b.load(&GorgleParams::from_fields(&fields)),
-                            2 => audio.voice_c.load(&ReeseParams::from_fields(&fields)),
-                            3 => audio.voice_d.load(&BasicParams::from_fields(&fields)),
+                            0 => audio.voice_a.load(&ReeseParams::from_fields(&fields)),
+                            1 => audio.voice_b.load(&GrowlParams::from_fields(&fields)),
+                            2 => audio.voice_c.load(&BasicParams::from_fields(&fields)),
                             _ => {},
                         }
                     }
@@ -506,9 +445,7 @@ fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut Sn
 
 // One draggable row for a SignalState field: dragging the fader takes the
 // field over from whatever normally computes it (field.set() flips
-// `enabled` -- see ZgicabraBridge::sync) -- same "just drive it" convention
-// MIDI input already uses, so there's no separate override switch to flip
-// first.
+// `enabled` -- see ZgicabraBridge::sync), no separate override switch needed.
 fn signal_override_row (ui: &imgui::Ui, label: &str, lo: f32, hi: f32, origin: f32, field: &SignalOverride) {
     ui.group(|| {
         let mut value = field.value.load();
@@ -518,8 +455,8 @@ fn signal_override_row (ui: &imgui::Ui, label: &str, lo: f32, hi: f32, origin: f
     });
 }
 
-// W's own row: same "drag takes it over" convention as signal_override_row,
-// just driving the center-out hslider instead of a vslider.
+// Same "drag takes it over" convention as signal_override_row, driving a
+// center-out hslider instead of a vslider.
 fn signal_override_row_center (ui: &imgui::Ui, label: &str, size: [f32; 2], field: &SignalOverride) {
     ui.group(|| {
         let mut value = field.value.load();
@@ -529,10 +466,8 @@ fn signal_override_row_center (ui: &imgui::Ui, label: &str, size: [f32; 2], fiel
     });
 }
 
-// W (double-ended, center-out) sits above the remaining 4 vertical faders
-// (F/B/Z/T) -- the Hydra panel's answer to the layout mockup's central knob
-// column. velocity/acceleration/jerk dropped: they're readouts, not
-// something you'd ride by hand mid-performance.
+// W (double-ended, center-out) sits above 4 vertical faders (F/B/Z/T).
+// velocity/acceleration/jerk are readouts, not hand-ridden, so dropped.
 fn draw_signal_state (ui: &imgui::Ui, bridge: &ZgicabraBridge) {
     signal_override_row_center(ui, "W", HCENTER_SIZE, &bridge.width);
 
@@ -577,9 +512,8 @@ fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, snapshot_browser: &m
         ]);
     });
     ui.same_line();
-    // reverb_decay/damp/size are baked into the reverb tail at engine
-    // construction time -- editing them here only takes effect on the next
-    // process restart, same documented caveat this project has always had.
+    // reverb_decay/damp/size are baked into the reverb tail at construction
+    // time -- editing them here only takes effect on the next restart.
     draw_module_card(ui, "Reverb", Some(&audio.reverb_bypass), CARD_SIZE, false, |ui| {
         draw_knob_row(ui, &[
             ("reverb_size",  "size",  10.0, 30.0, &audio.reverb_size),
@@ -616,10 +550,8 @@ fn draw_wand_rotation (ui: &imgui::Ui, rot: &[Arc<AtomicF32>; 4]) {
     ));
 }
 
-// Hydra: the physical/mock wand controller. Left wand | signal-override
-// knob grid | right wand, side by side (mirroring the layout mockup's two
-// octagon wand pads flanking a center knob column), with the sine-drift/
-// tune/thump/fuzz toggles as one bottom row instead of scattered separately.
+// Hydra: left wand | signal-override knob grid | right wand, with the
+// sine-drift/tune toggles as one bottom row.
 fn draw_hydra_panel (ui: &imgui::Ui, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge) {
     ui.text("Hydra");
     ui.same_line_with_pos(ui.window_size()[0] - 90.0);

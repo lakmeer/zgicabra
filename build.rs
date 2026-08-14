@@ -28,16 +28,11 @@ fn main() {
     // (target/<profile>/), not the source repo's libs/ dir, so the vendored
     // Sixense blob needs a copy to live there too.
     //
-    // Deliberately NOT vendoring libstdc++.so.6 here anymore: it used to be
-    // copied alongside libsixense_x64.so, but a stale copy ended up shadowing
-    // the real system libstdc++ (since $ORIGIN/libs sits first on our
-    // RUNPATH), which broke anything transitively needing a newer symbol
-    // version than the vendored snapshot had (e.g. libjack.so.0, pulled in
-    // by SDL3, wanting CXXABI_1.3.15). The old Sixense SDK blob only needs
-    // GLIBCXX_3.4.11-vintage symbols, which the nix C++ toolchain's own
-    // libstdc++ (linked in automatically alongside libgcc_s, independent of
-    // anything project-specific) already covers -- so there's nothing left
-    // for a vendored copy to fix, only stuff for it to break.
+    // Don't also vendor libstdc++.so.6 here: since $ORIGIN/libs sits first
+    // on our RUNPATH, a stale copy shadows the real system libstdc++ and
+    // breaks anything needing a newer symbol version (e.g. libjack.so.0's
+    // CXXABI_1.3.15). The nix toolchain's own libstdc++ already covers the
+    // old Sixense blob's GLIBCXX_3.4.11-vintage needs.
     let vendored_dir = target_dir.join("libs");
     fs::create_dir_all(&vendored_dir).unwrap();
 

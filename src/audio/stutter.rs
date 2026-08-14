@@ -1,9 +1,9 @@
 
 //
-// Stutter generator: triangle sub-oscillator at base_freq ring-modulated by
-// white noise -- gates the noise on/off with the pitch instead of sitting
-// at a fixed-frequency hiss. GenNode (6 in, 2 out); no live params beyond
-// freq/level.
+// Stutter generator: triangle sub-oscillator ring-modulated by white
+// noise, gating the noise on/off with pitch instead of a fixed-frequency
+// hiss. GenNode (6 in, 2 out), no params beyond freq/level. Not currently
+// wired into Engine (see mod.rs).
 //
 
 use fundsp::prelude64::*;

@@ -19,12 +19,9 @@ copied to the build target folder during build. Additionally, `libsixense_x64`
 has been `patchelf`'d to modify it's rpath to `$ORIGIN`, rather than using the
 system default. An unpatched copy is retained as reference.
 
-`libstdc++.so.6` is *not* vendored alongside it (a stale copy used to be, and
-briefly caused a runtime crash once SDL3 pulled in a JACK dependency needing
-a newer symbol version than the vendored copy had — see the SDL2 section
-below). The Sixense blob only needs `GLIBCXX_3.4.11`-vintage symbols, which
-the nix C++ toolchain's own libstdc++ (linked in automatically alongside
-`libgcc_s`, independent of anything project-specific) already covers.
+`libstdc++.so.6` is *not* vendored alongside it — the nix C++ toolchain's own
+libstdc++ already covers the `GLIBCXX_3.4.11`-vintage symbols the Sixense blob
+needs. Don't vendor a copy; a mismatched version has caused runtime crashes.
 
 `libsixense.so`, and `sixense.h` are not used but are retained for reference.
 

@@ -1,9 +1,5 @@
 
-//
-// Zgicabra
-//
-// Turns raw Hyrda state into the more-complex Zgicabra state.
-//
+// Turns raw Hydra state into the more-complex Zgicabra state.
 
 use std::fmt;
 use std::sync::Arc;
@@ -41,9 +37,7 @@ impl Voice {
         Self::from_index(next)
     }
 
-    // Absolute select by index (wraps mod COUNT) -- e.g. a MIDI Program
-    // Change picking a voice directly, unlike the rocking button's relative
-    // cycle() above.
+    // Absolute select by index (wraps mod COUNT), e.g. MIDI Program Change.
     pub fn from_index(index: u8) -> Self {
         match index % Self::COUNT {
             0 => Voice::Classic,
@@ -277,19 +271,14 @@ impl Zgicabra {
 }
 
 
-//
-// GUI Bridge
-//
-// A shared handle between the engine loop (which owns the real Zgicabra
-// state) and gui.rs, running on separate threads. One SignalOverride per
-// SignalState field: every engine tick publishes the just-computed value
-// into `value` for the gui to display, unless `enabled` says the gui has
-// taken that field over, in which case the engine instead pulls `value`
-// back onto the live SignalState -- so a UI can freely drive raw signal
-// values for testing without needing to fight whatever normally computes
-// them. Rotation is read-only telemetry (no live wand hardware/mock signal
-// meaningfully maps onto a "gui override" for it), just published for
-// display.
+// GUI Bridge: shared handle between the engine loop (owns the real Zgicabra
+// state) and gui.rs, on separate threads. One SignalOverride per
+// SignalState field: each engine tick publishes the computed value into
+// `value` for the gui to display, unless `enabled` says the gui has taken
+// the field over, in which case the engine pulls `value` back onto the live
+// SignalState instead -- so a UI can drive raw signal values without
+// fighting whatever normally computes them. Rotation is read-only telemetry
+// (no override), just published for display.
 #[derive(Clone)]
 pub struct SignalOverride {
     pub value:   Arc<AtomicF32>,
@@ -356,9 +345,8 @@ impl ZgicabraBridge {
         }
     }
 
-    // Called once per engine-loop tick, right after zgicabra::update(). Pulls
-    // any gui overrides onto `state.signal`, and publishes read-only
-    // telemetry (rotation) for the gui to display.
+    // Called once per engine-loop tick, right after zgicabra::update():
+    // pulls gui overrides onto `state.signal`, publishes rotation telemetry.
     pub fn sync (&self, state: &mut Zgicabra) {
         self.bend.sync(&mut state.signal.bend);
         self.filter.sync(&mut state.signal.filter);
@@ -383,20 +371,12 @@ impl ZgicabraBridge {
 
 pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &HydraState, voice_cycle: i8, tune_cycle: i8, deltas: &mut Vec<DeltaEvent>) {
 
-    // Sequence number happens always
-
     curr_state.sequence_number = hydra_state.controllers[0].sequence_number;
     curr_state.docked = hydra_state.controllers[0].is_docked != 0
                      || hydra_state.controllers[1].is_docked != 0;
 
-
-    // Map immediately updated values (and avg position with previous frame)
-
     copy_frame_to_wand(&hydra_state.controllers[0], &mut curr_state.left,  &prev_state.left);
     copy_frame_to_wand(&hydra_state.controllers[1], &mut curr_state.right, &prev_state.right);
-
-
-    // Time derivatives
 
     let dt:f32 = hydra_state.timedelta.as_millis() as f32;
 
@@ -415,8 +395,6 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     curr_state.right.scalar_jerk = (hyp(&curr_state.right.jerk) + &prev_state.right.scalar_jerk) / 2.0;
 
 
-    // Two-handed values
-
     curr_state.separation = (curr_state.left.pos[0] - curr_state.right.pos[0]).abs();
     curr_state.note.bend  = curr_state.left.twist - curr_state.right.twist;
     curr_state.note.bend  = curr_state.note.bend.powf(3.0).clamp(-2.0, 2.0) * 0.5;
@@ -425,39 +403,32 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     curr_state.level  = smoothstep(0.0, 1.0, trigger_total.clamp(0.0, 1.0));
 
 
-    // Triggers and notes
-
     let left_trigger_start  = curr_state.left.trigger  > prev_state.left.trigger  && prev_state.left.trigger  == 0.0;
     let left_trigger_end    = prev_state.left.trigger  > curr_state.left.trigger  && curr_state.left.trigger  == 0.0;
     let right_trigger_start = curr_state.right.trigger > prev_state.right.trigger && prev_state.right.trigger == 0.0;
     let right_trigger_end   = prev_state.right.trigger > curr_state.right.trigger && curr_state.right.trigger == 0.0;
 
-    // Track most recent wand
     if left_trigger_start { curr_state.most_recent_wand = Hand::Left; }
     if right_trigger_start { curr_state.most_recent_wand = Hand::Right; }
     if left_trigger_end && curr_state.right.trigger > 0.0 { curr_state.most_recent_wand = Hand::Right; }
     if right_trigger_end && curr_state.left.trigger > 0.0 { curr_state.most_recent_wand = Hand::Left; }
     if curr_state.level == 0.0 { curr_state.most_recent_wand = Hand::Neither; }
 
-    // If note is note currently on and either trigger begins to be pressed
     if (left_trigger_start || right_trigger_start) && !curr_state.note.on {
         deltas.push(DeltaEvent::NoteStart(curr_state.note.current));
         curr_state.note.on = true;
     }
 
-    // If note is currently on and left trigger is released and right trigger is not pressed at all
     if curr_state.note.on && (left_trigger_end && curr_state.right.trigger == 0.0) {
         deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
         curr_state.note.on = false;
     }
 
-    // If note is currently on and right trigger is released and left trigger is not pressed at all
     if curr_state.note.on && (right_trigger_end && curr_state.left.trigger == 0.0) {
         deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
         curr_state.note.on = false;
     }
 
-    // Update note to stick position
     let new_note = (curr_state.note.root as i8
         + stick_to_note_offset(&curr_state.left)
         + stick_to_note_modifier(&curr_state.right)) as u8;
@@ -468,14 +439,9 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     }
 
 
-    // Double-stick-click for panic
-
     if curr_state.left.stick.clicked && curr_state.right.stick.clicked {
         deltas.push(DeltaEvent::Panic());
     }
-
-
-    // Button Events
 
     fn each_wand (prev: Wand, curr: Wand, deltas: &mut Vec<DeltaEvent>) {
         if curr.bumper && !prev.bumper {
@@ -495,9 +461,6 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     each_wand(prev_state.left,  curr_state.left,  deltas);
     each_wand(prev_state.right, curr_state.right, deltas);
 
-
-    // Buttons
-
     //                       ╭─────[ - Tune + ]─────╮
     //           ┏━━━┓     ┏━┷━┓                  ┏━┷━┓     ┏━━━┓
     //         ╭─┨ 4 ┃     ┃ 1 ┃                  ┃ 1 ┃     ┃ 4 ┠─╮
@@ -508,15 +471,11 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     //             ┗━━━┛ ┗━┯━┛                      ┗━┯━┛ ┗━━━┛
     //                     ╰──────[ - Voices + ]──────╯
 
-    // Rocking
+    // Rocking triggers on button release, direction from which hand let go last.
     for i in 0..4 {
-
-        // Rocking triggers on button release
         if curr_state.left.buttons[i] && curr_state.right.buttons[i] &&
             (!prev_state.left.buttons[i] || !prev_state.right.buttons[i]) {
 
-            // Rocking left-or-right
-            // Delta is negative if left hand button was most recently unpressed, positive otherwise
             let rock_direction:i8 = if !prev_state.left.buttons[i] { -1 } else { 1 };
 
             match i {
@@ -537,24 +496,20 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
         }
     }
 
-    // Keyboard voice-cycle (mock hydra backend dev shortcut, 'a'/'s' -- see
-    // hydra::take_voice_cycle). Same effect as the physical Rocking button's
-    // voice change above, just reachable from the keyboard for dev/testing
-    // without real hardware.
+    // Keyboard dev shortcuts ('a'/'s'), same effect as the physical Rocking
+    // voice button -- see hydra::take_voice_cycle.
     if voice_cycle != 0 {
         curr_state.voice = curr_state.voice.cycle(voice_cycle);
         deltas.push(DeltaEvent::VoiceChange(curr_state.voice));
     }
 
-    // Keyboard tune-cycle (mock hydra backend dev shortcut, '-'/'=' -- see
-    // hydra::take_tune_cycle). Same effect as the physical Tune button
-    // (Rocking button 0) above, just reachable from the keyboard.
+    // Keyboard dev shortcuts ('-'/'='), same effect as the physical Rocking
+    // tune button -- see hydra::take_tune_cycle.
     if tune_cycle != 0 {
         curr_state.note.root = ((curr_state.note.root as i8) + tune_cycle) as u8;
         deltas.push(DeltaEvent::RootChange(curr_state.note.root));
     }
 
-    // Thumbsmashes
     for hand in [Hand::Left, Hand::Right].iter() {
         let curr = if *hand == Hand::Left { &curr_state.left } else { &curr_state.right };
         let prev = if *hand == Hand::Left { &prev_state.left } else { &prev_state.right };
@@ -575,14 +530,10 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     }
 
 
-    //
-    // Signal Values
-    //
-
-    // Proxy bend value
     curr_state.signal.bend = curr_state.note.bend;
 
-    // Filter is rot[0] of whichever wand was triggered most recently TODO: Tune lower bound
+    // Filter is rot[0] of whichever wand was triggered most recently.
+    // TODO: tune lower bound
     let mut filter: f32 = 0.0;
     if curr_state.level > 0.0 {
         filter = match curr_state.most_recent_wand {
@@ -593,14 +544,11 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     }
     curr_state.signal.filter = 0.3 + 0.7 * filter;
 
-    // Width
-    // Actual physical distance is empirically from abour 50 including fingers, to about 1500 at
-    // full arm span. Tune that to get a normalised range, then vias down slightly to avoid DC hum.
-    //
+    // Physical hand separation ranges ~50 (fingers touching) to ~1500 (full
+    // arm span); normalized and biased down slightly to avoid DC hum.
     curr_state.signal.width = curr_state.level * (curr_state.separation - 500.0) / 1500.0;
 
-    // Velocity/acceleration: whichever wand is moving/accelerating harder,
-    // not just whichever was triggered most recently
+    // Whichever wand is moving/accelerating harder, not just most-recently-triggered.
     let mut velocity: f32 = 0.0;
     let mut acceleration: f32 = 0.0;
     if curr_state.level > 0.0 {
@@ -696,11 +644,6 @@ fn stick_to_note_modifier(&wand: &Wand) -> i8 {
         _ => 0,
     }
 }
-
-
-//
-// Other Helpers
-//
 
 fn joystick_quadrant (stick: &Joystick) -> Direction {
     if stick.r < JOYSTICK_DEADZONE { return Direction::None; }

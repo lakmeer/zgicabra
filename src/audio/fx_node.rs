@@ -1,16 +1,12 @@
 
 //
-// FxNode: shape shared by this file's individual effect impls (kept for
-// potential reuse inside a future Voice -- see voice.rs). Every impl is a
-// self-contained fundsp AudioNode, 7 in / 2 out:
+// FxNode: shared shape for this file's effect impls (kept for potential
+// reuse inside a future Voice -- see voice.rs). Not currently wired into
+// Engine. Each impl is a self-contained fundsp AudioNode, 7 in / 2 out:
 //   in:  [in_l, in_r, level, p1, p2, p3, p4]
 //   out: [left, right]
-// `level` (0..1) is a dry/wet crossfade against the node's own input.
-// p1-p4 (0..1) are free for each impl to interpret and rescale as it likes.
-//
-// The old FxSlot/FxCycler hot-swap-pool machinery that used to cycle
-// through these at runtime (fx1-4 slots) is gone -- see the Voice trait in
-// voice.rs, and Compressor (compressor.rs) for the new fixed limiter stage.
+// `level` (0..1) is a dry/wet crossfade; p1-p4 (0..1) are free for each
+// impl to interpret and rescale.
 //
 
 use fundsp::prelude64::*;

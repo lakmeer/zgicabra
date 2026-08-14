@@ -1,16 +1,13 @@
 
 //
-// GenNode: shape shared by this file's individual generator impls (kept for
-// potential reuse inside a future Voice -- see voice.rs). Every impl is a
-// self-contained fundsp AudioNode, 6 in / 2 out:
+// GenNode: shared shape for this file's generator impls (kept for
+// potential reuse inside a future Voice -- see voice.rs). Not currently
+// wired into Engine. Each impl is a self-contained fundsp AudioNode, 6 in
+// / 2 out:
 //   in:  [freq, level, p1, p2, p3, p4]
 //   out: [left, right] -- mono impls duplicate to both channels
-// `level` (0..1) always directly multiplies the output (fader/bypass). p1-p4
-// (0..1) are free for each impl to interpret and rescale as it likes. `name`/
-// `param_names` label the node and its 4 params.
-//
-// The old GenSlot/GenCycler hot-swap-pool machinery that used to cycle
-// through these at runtime is gone -- see the Voice trait in voice.rs.
+// `level` (0..1) directly multiplies the output. p1-p4 (0..1) are free
+// for each impl to interpret and rescale.
 //
 
 use fundsp::prelude64::*;
@@ -95,9 +92,3 @@ impl GenNode for BasicOscGen {
     fn name (&self) -> &'static str { "Basic Osc" }
     fn param_names (&self) -> [&'static str; 4] { ["wave_param", "", "", ""] }
 }
-
-// The GenSlot/GenCycler swap-pool orchestration (cycle-by-index warm pool,
-// GUI cycler handle) that used to live here is gone -- see the Voice trait
-// in voice.rs, which replaced the whole hot-swap system. ReeseGen, FmGen,
-// StutterGen, and WavetableGen (used directly by GrowlVoice) stay as
-// GenNode impls for potential reuse inside a future Voice.

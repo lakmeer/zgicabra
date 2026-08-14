@@ -60,9 +60,6 @@ fn main() {
 
     let mut hydra_state = HydraState::new();
 
-
-    // Setup
-
     let mut audio: Option<audio::AudioHandles> = None;
 
     let mut output: Box<dyn DeltaConsumer + Send> = match args.consumer {
@@ -77,20 +74,17 @@ fn main() {
 
     hydra::start(&mut hydra_state);
 
-    // Only the mock backend (no real Hydra attached) has keyboard-driven
-    // inputs a gui panel can also drive; None on real hardware.
+    // None on real hardware -- only the mock backend has keyboard-driven
+    // inputs a gui panel can also drive.
     let mock_controls = hydra::mock_controls(&hydra_state);
 
-    // Shared handle between the engine loop and the gui for the Zgicabra
-    // section (per-wand rotation telemetry, signal-state overrides). Cheap
-    // to keep alive even without --gui.
+    // Shared between the engine loop and the gui (wand telemetry, signal
+    // overrides); cheap to keep alive even without --gui.
     let bridge = ZgicabraBridge::new();
 
     if args.gui {
-        // SDL2/AppKit requires the window + event loop on the main thread
-        // on macOS, so the gui owns main() here and the rest of the app
-        // (hydra/zgicabra/audio loop, previously all of main()) moves to a
-        // background thread instead.
+        // SDL2/AppKit requires the window + event loop on the main thread on
+        // macOS, so gui owns main() here and the engine loop runs in the background.
         let quit = Arc::new(AtomicBool::new(false));
         let engine_quit = quit.clone();
         let engine_bridge = bridge.clone();
@@ -117,20 +111,15 @@ fn main() {
     }
 }
 
-// Self-test seam (--gui --test): launches the real gui-mode code path, holds
-// a test note directly on the audio graph's gate (bypassing DeltaEvent/hydra
-// entirely -- see TestTone in audio/mod.rs), then taps ~0.1s of the raw cpal
-// output buffer (see AudioCapture in audio/mod.rs) and checks it's non-zero.
-// Diagnoses "no audio output" independent of the OS/device layer -- if this reports
-// non-zero, the engine is producing signal and the bug is downstream (cpal
-// device selection, OS routing, etc); if it reports all-zero, the bug is in
-// the graph itself (note/gate wiring, envelope, a stuck bypass level, etc).
+// --gui --test: holds a test note directly on the audio graph's gate
+// (bypassing DeltaEvent/hydra) and checks the raw cpal output is non-zero --
+// isolates "no audio output" to either the graph itself or the OS/device layer.
 fn run_self_test (audio: audio::AudioHandles, quit: Arc<AtomicBool>) {
     println!("║ [selftest] waiting for audio stream to settle...");
     sleep(Duration::from_millis(300));
 
     println!("║ [selftest] holding test note (A4, 440Hz)...");
-    audio.test_tone.start(69); // A4 -- clearly audible on any speaker/headphone
+    audio.test_tone.start(69);
     sleep(Duration::from_millis(50)); // let the envelope attack
 
     audio.capture.start();
@@ -151,9 +140,6 @@ fn run_self_test (audio: audio::AudioHandles, quit: Arc<AtomicBool>) {
         println!("║ [selftest] 🟥 FAIL: cpal output buffer is silent (all zero).");
     }
 
-    // Rules out "too short/too quiet to notice" -- if the capture above
-    // passed but nothing is audible for these 3 real seconds either, the
-    // break is downstream of this process entirely (OS/device routing).
     println!("║ [selftest] 🔊 LISTEN NOW: holding an audible A4 tone for 3 seconds...");
     sleep(Duration::from_secs(3));
     audio.test_tone.stop();
@@ -162,11 +148,9 @@ fn run_self_test (audio: audio::AudioHandles, quit: Arc<AtomicBool>) {
     quit.store(true, Ordering::Relaxed);
 }
 
-// The hydra/zgicabra/audio loop that used to be all of main(). Runs on the
-// main thread normally; runs on a background thread when --gui is set, since
-// gui::run() then needs the main thread for itself (see main() above).
-// `quit` is polled every frame in addition to hydra::should_quit() so
-// closing the gui window (which sets it) stops this loop too.
+// Runs on the main thread normally, or a background thread when --gui needs
+// the main thread for itself. `quit` (set by closing the gui window) is
+// polled alongside hydra::should_quit() to stop the loop either way.
 fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: Box<dyn DeltaConsumer + Send>, bridge: ZgicabraBridge, quit: Arc<AtomicBool>, mock_controls: Option<MockControls>) {
     let no_ui = args.no_ui || args.gui;
 
@@ -176,9 +160,6 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
     let mut delta_history: Vec<DeltaEvent> = Vec::new();
 
     history.push(zgicabra.clone()); // Fill first frame to allow initial derivatives
-
-    // NOTE: Not required?
-    //sleep(Duration::from_millis(1000));
 
     if !no_ui {
         print!("{}{}", termion::cursor::Hide, termion::clear::All);
@@ -199,16 +180,11 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
                 bridge.width.set(mc.midi.width.load());
                 bridge.fuzz.set(mc.midi.fuzz.load());
                 bridge.thump.set(mc.midi.thump.load());
-                // Only an actual pitch-bend gesture (wheel off center) takes
-                // bend over -- unlike filter/width/fuzz/thump, bend also has
-                // a live source (CC7/8-driven wand twist, computed in
-                // zgicabra::update from rot_quat -- see hydra/mock.rs).
-                // Forwarding midi.bend unconditionally every tick would pin
-                // signal.bend to its last value forever once any MIDI
-                // controller is connected (SignalOverride has no other way
-                // to release `enabled`), masking twist entirely; centering
-                // the wheel now hands control back to twist instead, same
-                // as a real pitch wheel's spring return.
+                // Bend also has a live source (wand twist), so only an actual
+                // off-center wheel gesture takes it over; forwarding 0 every
+                // tick would pin it there forever (SignalOverride has no
+                // other way to release `enabled`) -- centering the wheel
+                // hands control back to twist, like a spring-return wheel.
                 if mc.midi.bend.load() != 0.0 {
                     bridge.bend.set(mc.midi.bend.load());
                 } else {
@@ -222,7 +198,6 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
 
         bridge.sync(&mut zgicabra);
 
-        // Draw UI
         if !no_ui {
             ui::draw_all(&zgicabra, &history, &delta_events, &delta_history);
             ui::draw_events(&delta_events, &delta_history);

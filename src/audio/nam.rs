@@ -1,12 +1,9 @@
 
 //
-// NAM amp model stage, as an FxNode (7 in, 2 out). The node's model
-// selector (an ordinary discovered-model index -- "lowgain" is just another
-// *.nam file in NAM_DIR now, not a hardcoded second instance) picks which
-// model runs. p1 = amp_blend, the dry/wet blend against the selected
-// model's output (this is the old standalone `fuzz` knob, renamed). p2 =
-// amp_boost, a simple pre-model input gain for driving a model harder
-// without touching upstream levels.
+// NAM amp model stage, as an FxNode (7 in, 2 out). The model selector is an
+// ordinary discovered-model index into NAM_DIR. p1 = amp_blend, the dry/wet
+// blend against the selected model's output. p2 = amp_boost, a pre-model
+// input gain for driving a model harder without touching upstream levels.
 //
 
 use std::fs;
@@ -76,12 +73,9 @@ pub fn load_nam_models () -> io::Result<(Vec<Option<NamModelSlot>>, Vec<String>)
 
     let mut slots: Vec<Option<NamModelSlot>> = vec![None];
     let mut names: Vec<String>               = vec!["Bypass".to_string()];
-    // Relative input calibration: every model's input_gain is trimmed toward
-    // this model's input_level_dbu (falls back to the first model that has
-    // one), so switching models doesn't over/under-drive one relative to how
-    // it was captured. There's no absolute hardware calibration reference
-    // here (no calibrated interface input), so "relative to the default
-    // model" is the best available anchor.
+    // Every model's input_gain is trimmed toward this model's input_level_dbu
+    // (falls back to the first model that has one), so switching models
+    // doesn't over/under-drive one relative to how it was captured.
     let mut target_input_dbu: Option<f32> = None;
 
     let mut loaded: Vec<(String, Model, Option<f32>, f32)> = Vec::new();
@@ -96,9 +90,8 @@ pub fn load_nam_models () -> io::Result<(Vec<Option<NamModelSlot>>, Vec<String>)
 
         let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or(&path_str).to_string();
 
-        // Output gain: normalize toward TARGET_LOUDNESS_DB using the file's
-        // own loudness metadata, same reference TONE3000's A2 recipe trains
-        // against. Models without loudness metadata pass through unscaled.
+        // Normalize toward TARGET_LOUDNESS_DB using the file's own loudness
+        // metadata. Models without it pass through unscaled.
         let output_gain = nam_model.loudness()
             .map(|loudness| db_amp(TARGET_LOUDNESS_DB - loudness))
             .unwrap_or(1.0);
@@ -131,12 +124,9 @@ pub fn default_model_index (names: &[String]) -> usize {
     names.iter().position(|n| n == DEFAULT_NAM_MODEL).unwrap_or(0)
 }
 
-// Loads exactly one named model by itself (nam/{name}.nam), no Bypass slot
-// and no relative input-gain calibration against other models (there are
-// none in play) -- just this model's own loudness-metadata output
-// normalization. Used for the fixed "amp" stage (see mod.rs), which needs
-// two fully independent instances (one per channel, each with its own
-// WaveNet dilation state) rather than one shared/cycled slot.
+// Loads exactly one named model by itself (nam/{name}.nam) -- no Bypass slot,
+// no relative input-gain calibration, just loudness-metadata output
+// normalization. Used for the fixed "amp" stage (see mod.rs).
 pub fn load_named_model (name: &str) -> io::Result<NamModelSlot> {
     let path_str = format!("{NAM_DIR}/{name}.nam");
 
@@ -213,33 +203,22 @@ impl NamStage {
     // doesn't need a special case for this one field.
     pub fn set_sample_rate (&mut self, _sr: f64) {}
 
-    // Runs the selected model over a whole block in place, batched instead
-    // of one sample at a time. nam-rs's process_buffer is a block kernel
-    // (see wavenet.rs: "keeping each weight matrix hot across the whole
-    // chunk"); calling it with a length-1 slice every sample (the previous
-    // shape of this code) defeats that entirely and was the primary source
-    // of audible stutter -- an earlier version of this engine already
-    // learned this lesson (see git history) before a refactor lost it.
+    // Must run over a whole block, not one sample at a time -- nam-rs's
+    // process_buffer is a block kernel and per-sample calls defeat it,
+    // causing audible stutter.
     //
-    // Always runs the selected model, even at blend=0, so its internal
-    // state (WaveNet dilation history) stays warm -- otherwise every blend
-    // sweep from 0 restarts the model cold and its first receptive_field()
-    // samples are a startup transient (see nam_rs::Model::receptive_field
-    // docs) mixed straight into the output. The dry/wet blend below already
-    // reduces to 100% dry at blend=0, so behavior at the output is
-    // unchanged.
+    // Always runs the selected model, even at blend=0, so its WaveNet
+    // dilation state stays warm -- otherwise every blend sweep from 0
+    // restarts the model cold and its startup transient (receptive_field()
+    // samples) mixes into the output. The dry/wet blend below already
+    // reduces to 100% dry at blend=0.
     //
-    // level/blend/boost/crossover_hz are read once for the whole block by
-    // the caller (see Engine::run_nam in mod.rs) rather than per sample --
-    // these are slow knob-rate values, not audio-rate signals, so this
-    // costs no audible resolution.
+    // level/blend/boost/crossover_hz are read once per block by the caller
+    // (Engine::run_nam) since these are knob-rate, not audio-rate.
     //
     // crossover_hz splits the block into a low band that stays dry (never
-    // touches the model, always summed back in full below, not subject to
-    // level/blend/bypass) and a high band that goes through the usual
-    // model/blend/level pipeline -- default 0Hz makes the lowpass a no-op
-    // (see xover_alpha), so the high band is the full signal and behavior
-    // is unchanged from before this split existed.
+    // touches the model, summed back in full) and a high band that goes
+    // through the model/blend/level pipeline -- 0Hz makes the split a no-op.
     pub(crate) fn process_block (&mut self, block: &mut [f32], level: f32, blend: f32, boost: f32, crossover_hz: f32) {
         let Some(slot) = self.models.get(self.selected.value() as usize).and_then(Option::as_ref) else {
             return; // Bypass (or an out-of-range index): leave `block` untouched (dry).

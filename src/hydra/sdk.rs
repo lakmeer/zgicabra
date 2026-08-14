@@ -2,10 +2,9 @@
 //
 // SDK Hydra backend
 //
-// Talks to actual Hydra hardware via the Sixense SDK. Only compiled on linux
-// x86_64, since libsixense_x64.so is a Linux ELF binary -- and the same
-// closed, unmaintained SDK is fatally broken against modern macOS anyway
-// (see hid.rs's doc comment for why macOS gets a different backend entirely).
+// Talks to Hydra hardware via the Sixense SDK. Only compiled on linux
+// x86_64 -- libsixense_x64.so is a Linux ELF binary, and the same SDK is
+// fatally broken on modern macOS (see hid.rs).
 //
 
 use std::time::{Instant,Duration};
@@ -76,10 +75,8 @@ impl Backend for SdkBackend {
         controllers[(frame.which_hand - 1) as usize] = frame;
     }
 
-    // Trait default blocks on a canonical-mode stdin read (waits for Enter);
-    // this backend puts stdin in cbreak mode via CbreakGuard so a
-    // non-blocking check works instead (see hid.rs, which has the same fix
-    // for the same reason).
+    // Trait default blocks on a canonical-mode stdin read; CbreakGuard puts
+    // stdin in cbreak mode so this can poll non-blocking instead.
     fn should_quit (&mut self) -> bool {
         self.keys.next().is_some()
     }

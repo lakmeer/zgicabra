@@ -1,13 +1,7 @@
 
-//
-// DeltaConsumer
-//
-// Common interface for anything that turns Zgicabra's continuous signal
-// state and discrete DeltaEvents into sound. OscOutput and audio::AudioOutput both
-// implement this, so main.rs can pick either one behind a single trait
-// object rather than branching on which backend is active at every call
-// site.
-//
+// Common interface for anything that turns Zgicabra's signal state and
+// DeltaEvents into sound (OscOutput, audio::AudioOutput) -- lets main.rs
+// pick either backend behind one trait object.
 
 use crate::zgicabra::{DeltaEvent,SignalState};
 

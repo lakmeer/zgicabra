@@ -33,25 +33,17 @@ const GREEN_2:RGB8 = RGB8 { r:  60, g: 155, b: 80 };
 const GREEN_3:RGB8 = RGB8 { r: 180, g: 180, b: 180 };
 
 
-//
-// Main Drawing Functions
-//
-
 pub fn draw_all (zgicabra: &Zgicabra, history: &Vec<Zgicabra>, delta_events: &Vec<DeltaEvent>, delta_history: &Vec<DeltaEvent>) {
 
-    // Text dimensions
     const TEXT_WIDTH  : u16 = 76;
     const TEXT_HEIGHT : u16 = TEXT_WIDTH / 4;
 
-    // Pixel dimensions
     const CANVAS_WIDTH  : u16 = TEXT_WIDTH * 2;
     const CANVAS_HEIGHT : u16 = TEXT_HEIGHT * 4;
 
-    // Vector dimensions
     const WIDTH  : f32 = CANVAS_WIDTH  as f32;
     const HEIGHT : f32 = CANVAS_HEIGHT as f32;
 
-    // Canvas
     let mut canvas = Canvas::new(CANVAS_WIDTH as u32, CANVAS_HEIGHT as u32);
 
     draw_banner(TEXT_WIDTH, 1, zgicabra.level == 0.0);
@@ -74,14 +66,8 @@ pub fn draw_all (zgicabra: &Zgicabra, history: &Vec<Zgicabra>, delta_events: &Ve
         draw_wand_fixed(&mut canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/2.0, WIDTH/6.0);
     }
 
-    // Output canvas
     print!("{}{}", termion::cursor::Goto(1, 2), &mut canvas.frame());
     print!("{}{}", termion::cursor::Goto(1, TEXT_HEIGHT + 4), barcode_string(TEXT_WIDTH.into(), zgicabra.level == 0.0));
-
-    //print!("{}", history[0].sequence_number);
-
-
-    // Wand debug values
 
     print!("{}{:^40}", termion::cursor::Goto(0, 19), format!("[{:.3} {:.3} {:.3} {:.3}]",
         zgicabra.left.rot[0],
@@ -108,10 +94,6 @@ pub fn draw_all (zgicabra: &Zgicabra, history: &Vec<Zgicabra>, delta_events: &Ve
 }
 
 
-//
-// Sub-drawing Functions
-//
-
 fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32) {
 
     let color = electric(wand.trigger * rand_uniform(1.0));
@@ -121,14 +103,9 @@ fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32) {
         _ => facing - PI*3.0/4.0 + PI/4.0 * wand.stick.octant as i32 as f32
     };
 
-    // Joystick Spokes
     draw_joystick_spokes(canvas, wand, x, y, radius, facing, color);
     draw_joystick_position(canvas, wand, x, y, radius, facing, stick_facing);
-
-    // Trigger
     draw_trigger_fx(canvas, wand, x, y, radius, stick_facing);
-
-    // Buttons
     draw_buttons(canvas, &wand, x, y, radius, facing);
     if wand.home { draw_home_button(canvas, x, y, radius, facing); }
     if wand.bumper { draw_bumper(canvas, x, y, radius, facing); }
@@ -289,11 +266,6 @@ fn draw_bend (canvas: &mut Canvas, sep: f32, left_angle: f32, right_angle: f32, 
 }
 
 
-
-//
-// Drawille Wrappers
-//
-
 fn pset (canvas: &mut Canvas, x1: f32, y1: f32, color: PixelColor) {
     canvas.set_colored(
         x1.round() as u32,
@@ -362,11 +334,6 @@ fn drawille_paste (rows: &mut Vec<String>, x: u16, y: u16) {
     }
 }
 
-
-//
-// Lil' Helpers
-//
-
 fn lerp (a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
@@ -390,11 +357,6 @@ fn rand_barcode_char_as_str (solid: bool) -> char {
         "█".chars().nth(0).unwrap()
     }
 }
-
-
-//
-// Plots and Readouts
-//
 
 pub fn draw_graph (history: &Vec<Zgicabra>) {
 
@@ -480,9 +442,5 @@ pub fn draw_note_state (state: &Zgicabra) {
     println!("{}Fuzz:    {:>17.4}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 8), state.signal.fuzz);
     println!("{}Width:   {:>17.4}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 9), state.signal.width);
     println!("{}Thump:   {:>17.4}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 10), state.signal.thump);
-
-    //println!("{}- |vel|:  {}", termion::cursor::Goto(58, 38), signal_state.velocity);
-    //println!("{}- |acc|:  {}", termion::cursor::Goto(58, 39), signal_state.acceleration);
-    //println!("{}- |jrk|:  {}", termion::cursor::Goto(58, 40), signal_state.jerk);
 }
 

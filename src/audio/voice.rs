@@ -1,19 +1,15 @@
 
 //
-// Voice: the currently-selected sound generator, hardcoded and baked --
-// replaces the old GenNode/FxNode swap-pool + mod matrix. Every Voice is
-// wired in parallel into the graph and ticked every sample (see
-// Engine in mod.rs); each one silences itself when the live selector
-// doesn't match its own INDEX, so only the selected voice actually burns
-// CPU despite the whole graph "remaining wired in".
+// Voice: the currently-selected sound generator. Every Voice is wired in
+// parallel into Engine and ticked every sample; each one silences itself
+// when the live selector doesn't match its own INDEX, so only the selected
+// voice burns CPU despite the whole graph staying wired.
 //
-// Each concrete Voice owns whatever Shared params it needs -- there's no
-// fixed p1-p4 shape in the trait itself (contrast the old GenNode). A
-// paired lightweight *Handle struct (just the Shared cells, no DSP state)
-// is what AudioHandles/gui.rs hold, so the GUI thread can read/write live
-// params without needing mutable access to the audio thread's own copy.
-// A plain *Params struct (just f32s) is the snapshot/performance-default
-// shape -- see VoiceParams and snapshot.rs.
+// Each concrete Voice owns whatever Shared params it needs. A paired
+// lightweight *Handle struct (just the Shared cells, no DSP state) is what
+// AudioHandles/gui.rs hold, so the GUI thread can read/write live params
+// without touching the audio thread's own copy. A plain *Params struct
+// (just f32s) is the snapshot/performance-default shape -- see VoiceParams.
 //
 
 use fundsp::prelude64::*;
@@ -21,26 +17,19 @@ use fundsp::prelude64::*;
 pub trait Voice: AudioNode<Inputs = U2, Outputs = U2> {
     const INDEX: usize;
     fn name (&self) -> &'static str;
-    // The 5 hand-riddable performance signals (see gui.rs draw_signal_state --
-    // W/F/B/Z/T; velocity/acceleration/jerk/lfo are readouts, not something a
-    // voice modulates on), always passed in full so no voice can silently
-    // drop one -- a voice that doesn't care about a given signal just ignores
-    // the argument. See ThumpMod below for the one every voice currently uses.
+    // The 5 hand-riddable performance signals (W/F/B/Z/T, see gui.rs
+    // draw_signal_state), always passed in full so a voice that doesn't
+    // care about one just ignores the argument.
     fn set_signal (&mut self, bend: f32, filter: f32, fuzz: f32, width: f32, thump: f32);
-    // Extension point for a future voice wrapping a NamStage internally:
-    // NamStage::process_block needs a real block, so such a voice would
-    // fill a scratch buffer across its own tick() calls and run inference
-    // here, mirroring Engine's pre_nam/run_nam/post_nam split for the
-    // global amp stage. Called once per cpal callback chunk on every voice.
+    // Called once per cpal callback chunk, before that block's tick()
+    // calls -- extension point for a voice that needs block-driven
+    // inference (a NamStage internally, say): fill a scratch buffer across
+    // tick() calls, run it here.
     fn on_block_start (&mut self, _block_len: usize) {}
 }
 
-// Pitch-thump envelope: was a single instance computed centrally in Engine
-// and baked into the freq handed to every voice; now each voice owns its
-// own copy so the "thump" signal is something a voice reacts to (a signal
-// of intent) rather than a pre-bent freq it's just handed. Every voice
-// below uses an identical clone of the technique -- a future voice is free
-// to do something else with signal.thump instead of embedding this.
+// Pitch-thump envelope: each voice owns its own copy so `thump` is a signal
+// a voice reacts to, not a pre-bent freq it's handed.
 #[derive(Clone)]
 pub(super) struct ThumpMod {
     trigger: Shared,

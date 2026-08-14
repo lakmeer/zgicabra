@@ -5,9 +5,7 @@
 // (two Smear-morphed oscillators, their internal LFO/noise modulation,
 // and its four macro-gated effects), with only the patch's 4 macros
 // exposed as p1-p4. Read from growl.vital (JSON) and cross-checked
-// against Vital's own source (github.com/mtytel/vital, GPLv3) -- see
-// /Users/lakmeer/.claude/plans/whimsical-plotting-pearl.md for the full
-// derivation and every approximation this makes.
+// against Vital's own source (github.com/mtytel/vital, GPLv3).
 //
 // osc_a: 1 voice, octave down, static saw-ish spectrum, its Smear amount
 //        wobbled 0..0.14 by smoothed noise (stand-in for Vital's Perlin
@@ -297,8 +295,8 @@ pub struct GrowlParams {
     pub filter:        f32,
     pub space:         f32,
     pub warp:          f32,
-    // NAM crossover split freq (Hz) -- see NamStage::xover_alpha. 0.0 keeps
-    // the prior no-op default (full signal into the model, no dry low band).
+    // NAM crossover split freq (Hz) -- see NamStage::xover_alpha. 0.0 = no-op
+    // (full signal into the model, no dry low band).
     pub nam_crossover: f32,
 }
 
@@ -348,9 +346,7 @@ pub struct GrowlHandle {
     // NAM crossover split freq (Hz), read by GrowlVoice::on_block_start --
     // see GrowlParams::nam_crossover.
     pub nam_crossover: Shared,
-    // Post-oscillator NAM amp stage bolted onto Growl -- "extra" model-select
-    // cell, same idiom as gen_node's BasicOscGen (see extra there). Bypass
-    // (index 0) keeps Growl exactly as it sounded before this existed.
+    // Post-oscillator NAM amp stage bolted onto Growl. Bypass = model index 0.
     pub nam: NamModelCycler,
 }
 
@@ -387,10 +383,8 @@ impl GrowlHandle {
 }
 
 // Audio-thread owner: the real WavetableGen plus the same Shared cells the
-// handle above holds (cloned in, same underlying Arc -- edits sync).
-// AudioNode requires Self: Clone -- WavetableGen's own Clone impl resets to
-// a fresh, un-warmed-up instance (see above), same as it always has; the
-// handle's Shared cells clone cheap (Arc bump) and stay live.
+// handle above holds (same underlying Arc -- edits sync). Note WavetableGen's
+// Clone impl resets to a fresh, un-warmed-up instance (see above).
 #[derive(Clone)]
 pub struct GrowlVoice {
     inner:  WavetableGen,
@@ -471,7 +465,7 @@ impl AudioNode for GrowlVoice {
 }
 
 impl Voice for GrowlVoice {
-    const INDEX: usize = 0;
+    const INDEX: usize = 1;
     fn name (&self) -> &'static str { "Growl" }
     fn set_signal (&mut self, _bend: f32, filter: f32, fuzz: f32, width: f32, thump: f32) {
         self.thump_signal  = thump;
@@ -480,12 +474,9 @@ impl Voice for GrowlVoice {
         self.width_signal  = width;
     }
 
-    // Runs the NAM model over last block's buffered raw output (see
-    // `scratch` above) before this block's tick() calls start reading it.
-    // Fixed level=1/boost=1 -- Bypass (model index 0, GrowlHandle::new's
-    // default) already gives dry passthrough, so there's no separate on/off
-    // knob to wire here. blend tracks live fuzz_signal; crossover tracks the
-    // handle's nam_crossover knob.
+    // Runs the NAM model over last block's buffered raw output (`scratch`
+    // above) before this block's tick() calls start reading it. Fixed
+    // level=1/boost=1 -- Bypass (model index 0) already gives dry passthrough.
     fn on_block_start (&mut self, block_len: usize) {
         let n = std::cmp::min(block_len, self.scratch.len());
         let crossover_hz = self.handle.nam_crossover.value();

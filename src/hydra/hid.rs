@@ -2,17 +2,14 @@
 //
 // HID Hydra backend
 //
-// Talks to actual Hydra hardware directly over USB HID, bypassing the
-// Sixense SDK entirely. That closed, unmaintained SDK segfaults on modern
-// macOS -- its frozen ~2013 copy of hidapi mishandles a failed IOHIDManager
-// creation, confirmed independent of hardware presence or permissions (a
-// long-fixed upstream hidapi bug the dead SDK never got rebuilt against).
+// Talks to Hydra hardware directly over USB HID, bypassing the Sixense SDK
+// (a closed, unmaintained SDK that segfaults on modern macOS -- its frozen
+// hidapi copy mishandles a failed IOHIDManager creation).
 //
-// The mode-switch handshake and 52-byte report layout below are ported from
+// The mode-switch handshake and 52-byte report layout are ported from
 // Monado's drv_hydra (src/xrt/drivers/hydra/hydra_driver.c, BSL-1.0), the
-// only known working reimplementation of this device's protocol outside the
-// Sixense SDK. Validated against real hardware via the hid_test/ scratch
-// tool before landing here. Only compiled on macOS x86_64.
+// only known working reimplementation of this device's protocol. Only
+// compiled on macOS x86_64.
 //
 
 use std::time::{Duration, Instant};
@@ -67,9 +64,8 @@ fn convert_buttons(raw: u8) -> u32 {
 // buf is the 22-byte per-controller slice at offset 8 or 30 in the 52-byte
 // motion report.
 fn parse_controller(buf: &[u8], which_hand: u8, sequence: u8) -> ControllerFrame {
-    // Raw wire units are millimeters (Monado divides by 1000 for OpenXR's
-    // meters; this codebase's convention -- mock's amplitude, sdk.rs's raw
-    // passthrough, ui.rs's graph range -- is millimeters, so no scaling here).
+    // Raw wire units are millimeters, matching this codebase's convention
+    // (Monado itself divides by 1000 for OpenXR's meters) -- no scaling here.
     const POS_SCALE:  f32 = 1.0;
     const ROT_SCALE:  f32 = 1.0 / 32768.0;  // int16 -> [-1, 1]
     const TRIG_SCALE: f32 = 1.0 / 255.0;
@@ -80,10 +76,8 @@ fn parse_controller(buf: &[u8], which_hand: u8, sequence: u8) -> ControllerFrame
     frame.enabled          = 1;
     frame.sequence_number  = sequence;
 
-    // Wire order is (x, z, y) with y negated -- and quat (w, x, y, z) with y/z
-    // negated -- per Monado's axis fixup (hydra_driver.c), which hid_test's
-    // raw probe deliberately skips (see its "axis fixup not applied" comment).
-    // Applied here since this is the production path.
+    // Wire order is (x, z, y) with y negated, quat (w, x, y, z) with y/z
+    // negated -- per Monado's axis fixup (hydra_driver.c).
     frame.pos = [
         read_i16_le(buf, 0)  as f32 * POS_SCALE,
         read_i16_le(buf, 4)  as f32 * -POS_SCALE,
@@ -93,7 +87,7 @@ fn parse_controller(buf: &[u8], which_hand: u8, sequence: u8) -> ControllerFrame
         read_i16_le(buf, 6)  as f32 * -ROT_SCALE,
         read_i16_le(buf, 8)  as f32 * ROT_SCALE,
         read_i16_le(buf, 12) as f32 * -ROT_SCALE, // swap q[2] and q[3]
-        read_i16_le(buf, 10) as f32 * ROT_SCALE, // this seems to match the SDK output better
+        read_i16_le(buf, 10) as f32 * ROT_SCALE,
     ];
     frame.buttons     = convert_buttons(buf[14]);
     frame.joystick_x  = read_i16_le(buf, 15) as f32 * ROT_SCALE;
@@ -167,12 +161,9 @@ impl HidBackend {
 
 impl Backend for HidBackend {
     fn update (&mut self, controllers: &mut [ ControllerFrame; 2 ]) {
-        // A single read per tick with a small positive timeout -- the
-        // 0ms/"purely non-blocking" path hung indefinitely in testing
-        // despite matching the (correctly-implemented) C source, so stick
-        // to the timeout style actually validated during development.
-        // hidapi's own queue self-caps at 30 reports, so staleness stays
-        // bounded without needing to drain it ourselves.
+        // A single read per tick with a small positive timeout (0ms/purely
+        // non-blocking hangs indefinitely). hidapi's queue self-caps at 30
+        // reports, so staleness stays bounded without draining it ourselves.
         let mut buf = [0u8; 64];
         match self.data_hid.read_timeout(&mut buf, 5) {
             Ok(52) => {

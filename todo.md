@@ -39,6 +39,12 @@
   - Test KMSDRM mode in an alternate tty?
 
 - System
-  - test fbterm with `video` userGroup
-  - KMSCON?
+  - KMSCON
+    - Works well, requires Terminus font to render TUI correctly:
+
+      fonts.packages = with pkgs; [
+        terminus_font_ttf
+      ];
+
+    - Specify font as "Terminus (TTF)" exactly
 
