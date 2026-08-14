@@ -595,8 +595,9 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
 
     // Width
     // Actual physical distance is empirically from abour 50 including fingers, to about 1500 at
-    // full arm span. Tune that to get a normalised range
-    curr_state.signal.width = (curr_state.separation - 50.0) / 1500.0;
+    // full arm span. Tune that to get a normalised range, then vias down slightly to avoid DC hum.
+    //
+    curr_state.signal.width = curr_state.level * (curr_state.separation - 500.0) / 1500.0;
 
     // Velocity/acceleration: whichever wand is moving/accelerating harder,
     // not just whichever was triggered most recently

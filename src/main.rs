@@ -32,10 +32,7 @@ const DEVICE_NAME: &str = "Zgicabra";
 // TODOs
 //
 // - Represent stick click on UI
-// - CLI args:
-//   - no-ui mode
-//   - self-test mode
-// - Double stickclick -> Panic
+// - self-test mode
 // - Proxy OSC heartbeat status to UI
 //
 // INVESTIGATE
@@ -46,6 +43,7 @@ const DEVICE_NAME: &str = "Zgicabra";
 // - Small LCD display
 //
 // BUGS
+// - Bend downwards
 // - Fix pitchbend accuracy
 //
 
@@ -189,7 +187,6 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
     println!("║ Running...");
 
     loop {
-        // Collect and process new frame
         hydra::update(&mut hydra_state);
         let voice_cycle = hydra::take_voice_cycle(&mut hydra_state);
         let tune_cycle  = hydra::take_tune_cycle(&mut hydra_state);
@@ -233,15 +230,14 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
             ui::draw_graph(&history);
         }
 
-        // Send continuous OSC commands
         output.handle_signal(&zgicabra.signal);
 
-        // Copy current frame's deltas to history.
         for delta in delta_events.drain(..) {
             if no_ui { println!("- {:?}", delta); }
             output.handle_event(&delta);
             delta_history.push(delta);
         }
+
         delta_events.clear();
 
         if history.len() >= HISTORY_WINDOW {

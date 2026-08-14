@@ -37,7 +37,7 @@ const GREEN_3:RGB8 = RGB8 { r: 180, g: 180, b: 180 };
 // Main Drawing Functions
 //
 
-pub fn draw_all (zgicabra: &Zgicabra, history: &Vec<Zgicabra>) {
+pub fn draw_all (zgicabra: &Zgicabra, history: &Vec<Zgicabra>, delta_events: &Vec<DeltaEvent>, delta_history: &Vec<DeltaEvent>) {
 
     // Text dimensions
     const TEXT_WIDTH  : u16 = 76;
@@ -102,6 +102,9 @@ pub fn draw_all (zgicabra: &Zgicabra, history: &Vec<Zgicabra>) {
         print!("{}{}{:^40}", termion::cursor::Goto(40, 21), termion::color::Fg(termion::color::LightBlue), format!("X"));
     }
 
+    draw_events(&delta_events, &delta_history);
+    draw_note_state(&zgicabra);
+    draw_graph(&history);
 }
 
 

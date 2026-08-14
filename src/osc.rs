@@ -10,12 +10,14 @@ use crate::zgicabra::{DeltaEvent,SignalState};
 use crate::hydra::HydraState;
 use crate::output::DeltaConsumer;
 
-const HOST_ADDR:&str = "127.0.0.1:0"; // Port 0 = arbitrary free port
+const HOST_ADDR:&str = "127.0.0.1:0";    // Port 0 = arbitrary free port
 const TO_ADDR:&str   = "127.0.0.1:8000"; // Default port for OSC Bitwig plugin (DrivenByMoss)
+const MAX_VALUE:i32  = 16384;            // DrivenByMoss Settings -> Protocol -> Value Resolution
 
-// DrivenByMoss Extension must be set accordingly:
-// Settings -> Controllers -> OSC -> Protocol -> Value Resolution
-const MAX_VALUE:i32 = 16384;
+
+//
+// Helpers
+//
 
 fn midi_max (val: f32) -> i32 {
     (val.clamp(0.0, 1.0) * 127 as f32) as i32
@@ -25,6 +27,10 @@ fn osc_max (val: f32) -> i32 {
     (val.clamp(0.0, 1.0) * MAX_VALUE as f32) as i32
 }
 
+
+//
+// Main
+//
 
 pub struct OscOutput {
     socket: UdpSocket,
@@ -84,15 +90,7 @@ impl OscOutput {
     }
 
 
-    //
     // Event functions
-    //
-
-    pub fn note_on (&self, note: u8){
-    }
-
-    pub fn note_off (&self, note: u8){
-    }
 
     pub fn panic (&self) {
         for i in 0..128 {
