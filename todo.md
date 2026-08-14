@@ -38,3 +38,7 @@
       - Probably need it for raw boot mode anyway
   - Test KMSDRM mode in an alternate tty?
 
+- System
+  - test fbterm with `video` userGroup
+  - KMSCON?
+

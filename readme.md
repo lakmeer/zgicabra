@@ -14,11 +14,17 @@
 
 ## Sixense SDK Linking
 
-`src/hydra.rs` depends on `libsixense_x64.so` which in turn depends on
-`libstdc++.so.6`. Both of these are kept in the `libs` folder and copied to 
-the build target folder during build. Additionally, `libsixense_x64` has been
-`patchelf`'d to modify it's rpath to `$ORIGIN`, rather than using the system
-default. An unpatched copy is retained as reference.
+`src/hydra.rs` depends on `libsixense_x64.so`, kept in the `libs` folder and
+copied to the build target folder during build. Additionally, `libsixense_x64`
+has been `patchelf`'d to modify it's rpath to `$ORIGIN`, rather than using the
+system default. An unpatched copy is retained as reference.
+
+`libstdc++.so.6` is *not* vendored alongside it (a stale copy used to be, and
+briefly caused a runtime crash once SDL3 pulled in a JACK dependency needing
+a newer symbol version than the vendored copy had — see the SDL2 section
+below). The Sixense blob only needs `GLIBCXX_3.4.11`-vintage symbols, which
+the nix C++ toolchain's own libstdc++ (linked in automatically alongside
+`libgcc_s`, independent of anything project-specific) already covers.
 
 `libsixense.so`, and `sixense.h` are not used but are retained for reference.
 
@@ -38,37 +44,40 @@ default. An unpatched copy is retained as reference.
   `alsa.pc` via pkg-config to link `libasound`; that file lives in
   `alsa-lib`'s `dev` output, which the default `alsa-lib` output does not
   include.
+- `SDL2.dev` (not plain `SDL2`) must be in `environment.systemPackages` too,
+  same reasoning — `SDL.h`/`sdl2.pc` live in the `dev` output. `sdl3` (plain,
+  it's a single-output derivation) must also be present: `SDL2` on modern
+  nixpkgs is `sdl2-compat`, a shim that `dlopen()`s `libSDL3.so` at runtime.
+  See "SDL2 / shell.nix" below for the full story.
 - `environment.variables.PKG_CONFIG_PATH = "/run/current-system/sw/lib/pkgconfig";`
   must be set system-wide. Unlike `nix-shell -p`, `environment.systemPackages`
   does not add installed packages' pkgconfig dirs to `PKG_CONFIG_PATH`
-  automatically — without this, pkg-config can't find `alsa.pc` even once
-  it's symlinked into the system profile. Takes a fresh shell/login after
-  `nixos-rebuild switch` to pick up.
+  automatically — without this, pkg-config can't find `alsa.pc`/`sdl2.pc`
+  even once they're symlinked into the system profile. Takes a fresh
+  shell/login after `nixos-rebuild switch` to pick up.
 - `midir` (MIDI controller input for the mock Hydra backend, see
   `src/hydra/midi.rs`) is scoped to macOS-only in `Cargo.toml`
   (`target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies`).
   The Linux performance machine always has real Hydra hardware and this
   MusNix-based audio setup has no ALSA dev headers by default, so `midir`
   (which needs `alsa-sys` on Linux) must never be a plain dependency here.
+- user needs these usergroups:
+  ```nix
+    extraGroups = [ "plugdev" "networkmanager" "wheel" "audio" "input" ];
+  ```
 
-### shell.nix
+### Required system packages
 
-The GUI (`--gui`) uses SDL2 + glow + Dear ImGui for windowing/rendering.
-`sdl2` is built with the `bundled` + `static-link` features. `cpal` also
-depends on ALSA. These deps are captured in `shell.nix`.
+```nix
 
-If `direnv` is available, normal `cargo` build commands will work. If not,
-use `nix-shell --run 'cargo ...'` instead.
+  cargo         # from nixpkgs-unstable, not the stable channel
+  rustc         # from nixpkgs-unstable, not the stable channel
+  alsa-lib.dev
+  SDL2.dev
+  sdl3
 
-`shell.nix` also sets two env vars the SDL2 source build needs, so they
-don't need to be exported by hand:
-- `CMAKE_POLICY_VERSION_MINIMUM=3.5` — CMake 4 dropped support for the
-  old-style `cmake_minimum_required()` SDL2's vendored source declares.
-- `CFLAGS=-std=gnu17` — GCC 15 defaults to C23, where `bool`/`true`/`false`
-  are keywords; SDL2's `src/joystick/hidapi/SDL_hidapi_steam.c` (written
-  for the pre-C99-`stdbool.h` era) redeclares them as an enum, which only
-  compiles under an older C standard.
 
+```
 ### `snd-virmidi`
 
 - Kernel module `snd-virmidi` is enabled in nix config as:

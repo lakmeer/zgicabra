@@ -19,42 +19,33 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", libs_dir.display());
     println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/libs");
 
-    // winit dlopens libX11/libXcursor/libXi/libXrandr/libxkbcommon/libGL at
-    // runtime rather than linking them, so they never make it onto the
-    // RUNPATH via normal linking. On NixOS these live in the nix-ld library
-    // dir (programs.nix-ld.libraries) instead of a standard search path, so
-    // dlopen can't find them unless we add that dir to our own RUNPATH too
-    // (glibc's dlopen does consult the caller's RUNPATH).
-    println!("cargo:rerun-if-env-changed=NIX_LD_LIBRARY_PATH");
-    if let Ok(nix_ld_lib_path) = env::var("NIX_LD_LIBRARY_PATH") {
-        for dir in env::split_paths(&nix_ld_lib_path) {
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
-        }
-    }
-
     // OUT_DIR looks like target/<profile>/build/<crate>-<hash>/out
     // walk up 3 levels to reach target/<profile>/
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let target_dir = out_dir.ancestors().nth(3).expect("bad OUT_DIR layout");
 
-    // Cargo puts target/<profile> (and .../deps) on LD_LIBRARY_PATH for
-    // every build script it runs, which takes precedence over a binary's
-    // own RUNPATH. Dropping our vendored libstdc++.so.6 straight into
-    // target/<profile> therefore shadows the real system libstdc++ for
-    // *any* build-script subprocess -- notably sdl2-sys's cmake invocation,
-    // which then fails to load with a missing CXXABI symbol. Keeping the
-    // vendored libs in a subdirectory (and pointing our rpath at it above)
-    // keeps them off that search path.
+    // $ORIGIN/libs at runtime resolves relative to the final binary
+    // (target/<profile>/), not the source repo's libs/ dir, so the vendored
+    // Sixense blob needs a copy to live there too.
+    //
+    // Deliberately NOT vendoring libstdc++.so.6 here anymore: it used to be
+    // copied alongside libsixense_x64.so, but a stale copy ended up shadowing
+    // the real system libstdc++ (since $ORIGIN/libs sits first on our
+    // RUNPATH), which broke anything transitively needing a newer symbol
+    // version than the vendored snapshot had (e.g. libjack.so.0, pulled in
+    // by SDL3, wanting CXXABI_1.3.15). The old Sixense SDK blob only needs
+    // GLIBCXX_3.4.11-vintage symbols, which the nix C++ toolchain's own
+    // libstdc++ (linked in automatically alongside libgcc_s, independent of
+    // anything project-specific) already covers -- so there's nothing left
+    // for a vendored copy to fix, only stuff for it to break.
     let vendored_dir = target_dir.join("libs");
     fs::create_dir_all(&vendored_dir).unwrap();
 
-    for file in ["libsixense_x64.so", "libstdc++.so.6"] {
-        let src = libs_dir.join(file);
-        let dst = vendored_dir.join(file);
-        // The vendored libs are read-only, and fs::copy can't overwrite an
-        // existing read-only destination, so clear it first.
-        let _ = fs::remove_file(&dst);
-        fs::copy(&src, &dst).unwrap_or_else(|e| panic!("copy {:?} -> {:?}: {}", src, dst, e));
-        println!("cargo:rerun-if-changed={}", src.display());
-    }
+    let src = libs_dir.join("libsixense_x64.so");
+    let dst = vendored_dir.join("libsixense_x64.so");
+    // The vendored lib is read-only, and fs::copy can't overwrite an
+    // existing read-only destination, so clear it first.
+    let _ = fs::remove_file(&dst);
+    fs::copy(&src, &dst).unwrap_or_else(|e| panic!("copy {:?} -> {:?}: {}", src, dst, e));
+    println!("cargo:rerun-if-changed={}", src.display());
 }
