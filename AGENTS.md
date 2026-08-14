@@ -44,6 +44,7 @@ hardware profiles. Confirm which environment you are running in when working.
 ### The Performance Box
 
 - A MusNix (NixOS distro) linux
+- Does NOT use flakes, anywhere
 - running on a small Lenovo NUC in an Intel i5
 - X86_64
 - very limited CPU
@@ -58,6 +59,11 @@ cold start so that it works on stage without user intervention.
 | When working on this machine, do not attempt to read or write the
 | /etc/nixos/configuration.nix file. Show the user the necessary commands
 | and wait for them to do it themselves.
+
+| ⚠️ Important:
+| One of the architectural goals of this project is complete static
+| linking. It should produce a single binary that can be run without
+| any external dependencies.
 
 ### The Testing Box
 

@@ -87,7 +87,7 @@ fn main() {
     let bridge = ZgicabraBridge::new();
 
     if args.gui {
-        // winit/AppKit requires the window + event loop on the main thread
+        // SDL2/AppKit requires the window + event loop on the main thread
         // on macOS, so the gui owns main() here and the rest of the app
         // (hydra/zgicabra/audio loop, previously all of main()) moves to a
         // background thread instead.

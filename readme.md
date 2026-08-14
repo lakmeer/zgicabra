@@ -51,6 +51,24 @@ default. An unpatched copy is retained as reference.
   MusNix-based audio setup has no ALSA dev headers by default, so `midir`
   (which needs `alsa-sys` on Linux) must never be a plain dependency here.
 
+### shell.nix
+
+The GUI (`--gui`) uses SDL2 + glow + Dear ImGui for windowing/rendering.
+`sdl2` is built with the `bundled` + `static-link` features. `cpal` also
+depends on ALSA. These deps are captured in `shell.nix`.
+
+If `direnv` is available, normal `cargo` build commands will work. If not,
+use `nix-shell --run 'cargo ...'` instead.
+
+`shell.nix` also sets two env vars the SDL2 source build needs, so they
+don't need to be exported by hand:
+- `CMAKE_POLICY_VERSION_MINIMUM=3.5` — CMake 4 dropped support for the
+  old-style `cmake_minimum_required()` SDL2's vendored source declares.
+- `CFLAGS=-std=gnu17` — GCC 15 defaults to C23, where `bool`/`true`/`false`
+  are keywords; SDL2's `src/joystick/hidapi/SDL_hidapi_steam.c` (written
+  for the pre-C99-`stdbool.h` era) redeclares them as an enum, which only
+  compiles under an older C standard.
+
 ### `snd-virmidi`
 
 - Kernel module `snd-virmidi` is enabled in nix config as:

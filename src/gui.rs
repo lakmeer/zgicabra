@@ -2,34 +2,27 @@
 //
 // GUI
 //
-// A winit + glow + Dear ImGui window for live-tuning the audio engine's
+// An SDL2 + glow + Dear ImGui window for live-tuning the audio engine's
 // globals and the currently-selected Voice's params, and driving the mock
 // Hydra backend's inputs without a keyboard.
 //
-// winit/AppKit requires window creation and the event loop to run on the
+// SDL2/AppKit requires window creation and the event loop to run on the
 // process's main thread on macOS, so this owns main() when --gui is passed;
 // main.rs moves the rest of the app (hydra/zgicabra/audio loop) onto a
 // background thread instead. See main.rs.
 //
+// SDL2 (unlike winit) has a native KMSDRM video driver alongside x11/wayland,
+// selectable at runtime via SDL_VIDEODRIVER -- this is what lets the same
+// binary run windowed under X11 on the dev machine and boot straight to the
+// performance box's panel with no X server at all.
+//
 
 use std::env;
-use std::ffi::CString;
-use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
 use fundsp::shared::Shared;
-use glutin::config::ConfigTemplateBuilder;
-use glutin::context::{ContextAttributesBuilder, NotCurrentGlContext};
-use glutin::display::GetGlDisplay;
-use glutin::prelude::*;
-use glutin::surface::{SurfaceAttributesBuilder, WindowSurface};
-use glutin_winit::DisplayBuilder;
-use raw_window_handle::HasWindowHandle;
-use winit::event::{Event, WindowEvent};
-use winit::event_loop::EventLoop;
-use winit::window::{Fullscreen, WindowAttributes};
+use sdl2::event::{Event, WindowEvent};
 
 use crate::hydra::MockControls;
 use crate::audio::{AudioHandles, GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, snapshot, GorgleHandle, GorgleParams, ReeseHandle, ReeseParams};
@@ -735,124 +728,83 @@ pub fn run (audio: Option<AudioHandles>, mock_controls: Option<MockControls>, br
     let screenshot_path = env::var("ZGICABRA_GUI_SCREENSHOT").ok();
     let mut frame_count: u32 = 0;
     let mut snapshot_browser = SnapshotBrowser::new();
-    let event_loop = EventLoop::new().expect("failed to create winit event loop");
 
-    let window_attributes = WindowAttributes::default()
-        .with_title("zgicabra")
-        .with_position(winit::dpi::LogicalPosition::new(0.0, 0.0))
-        .with_inner_size(winit::dpi::LogicalSize::new(720.0, 920.0));
+    let sdl_context = sdl2::init().expect("failed to init SDL2");
+    let video_subsystem = sdl_context.video().expect("failed to init SDL2 video subsystem");
 
-    let template = ConfigTemplateBuilder::new();
-    let display_builder = DisplayBuilder::new().with_window_attributes(Some(window_attributes));
+    let window = video_subsystem
+        .window("zgicabra", 720, 920)
+        .position(0, 0)
+        .opengl()
+        .resizable()
+        .build()
+        .expect("failed to create window");
 
-    let (window, gl_config) = display_builder
-        .build(&event_loop, template, |mut configs| configs.next().unwrap())
-        .expect("failed to create window/GL config");
-    let window = window.expect("display builder returned no window");
-
-    let raw_window_handle = window.window_handle().unwrap().as_raw();
-    let gl_display = gl_config.display();
-
-    let context_attributes = ContextAttributesBuilder::new().build(Some(raw_window_handle));
-    let not_current_context = unsafe {
-        gl_display.create_context(&gl_config, &context_attributes).expect("failed to create GL context")
-    };
-
-    let size = window.inner_size();
-    let width  = NonZeroU32::new(size.width).unwrap_or(NonZeroU32::new(1).unwrap());
-    let height = NonZeroU32::new(size.height).unwrap_or(NonZeroU32::new(1).unwrap());
-    let surface_attributes = SurfaceAttributesBuilder::<WindowSurface>::new()
-        .build(raw_window_handle, width, height);
-    let surface = unsafe {
-        gl_display.create_window_surface(&gl_config, &surface_attributes).expect("failed to create GL surface")
-    };
-
-    let gl_context = not_current_context.make_current(&surface).expect("failed to make GL context current");
+    // Kept alive for the duration of run() -- dropping it destroys the GL
+    // context out from under the renderer.
+    let gl_context = window.gl_create_context().expect("failed to create GL context");
+    window.gl_make_current(&gl_context).expect("failed to make GL context current");
 
     let glow_context = unsafe {
-        glow::Context::from_loader_function(|s| {
-            let s = CString::new(s).unwrap();
-            gl_display.get_proc_address(&s) as *const _
-        })
+        glow::Context::from_loader_function(|s| video_subsystem.gl_get_proc_address(s) as *const _)
     };
 
     let mut imgui_context = imgui::Context::create();
     imgui_context.set_ini_filename(None);
 
-    let mut winit_platform = imgui_winit_support::WinitPlatform::new(&mut imgui_context);
-    winit_platform.attach_window(imgui_context.io_mut(), &window, imgui_winit_support::HiDpiMode::Rounded);
+    let mut sdl_platform = imgui_sdl2_support::SdlPlatform::new(&mut imgui_context);
 
     imgui_context.fonts().add_font(&[imgui::FontSource::DefaultFontData { config: None }]);
-    imgui_context.io_mut().font_global_scale = (1.3 / winit_platform.hidpi_factor()) as f32;
+    imgui_context.io_mut().font_global_scale = 1.3;
 
     let mut renderer = imgui_glow_renderer::AutoRenderer::new(glow_context, &mut imgui_context)
         .expect("failed to create imgui renderer");
 
-    let mut last_frame = Instant::now();
+    let mut event_pump = sdl_context.event_pump().expect("failed to create SDL event pump");
     let quit_watch = quit.clone();
 
-    #[allow(deprecated)]
-    event_loop.run(move |event, window_target| {
-        match event {
-            Event::NewEvents(_) => {
-                let now = Instant::now();
-                imgui_context.io_mut().update_delta_time(now.duration_since(last_frame));
-                last_frame = now;
-            }
-            Event::AboutToWait => {
-                // Lets an external thread (e.g. main.rs's --test self-test)
-                // request a close the same way the OS window-close button
-                // does, instead of only ever setting `quit` on the way out.
-                if quit_watch.load(Ordering::Relaxed) {
-                    window_target.exit();
-                    return;
-                }
-                winit_platform.prepare_frame(imgui_context.io_mut(), &window).unwrap();
-                window.request_redraw();
-            }
-            Event::WindowEvent { event: WindowEvent::RedrawRequested, .. } => {
-                let ui = imgui_context.frame();
-                draw_ui(ui, audio.as_ref(), mock_controls.as_ref(), &bridge, &mut snapshot_browser);
+    'main: loop {
+        // Lets an external thread (e.g. main.rs's --test self-test) request
+        // a close the same way the OS window-close button does, instead of
+        // only ever setting `quit` on the way out.
+        if quit_watch.load(Ordering::Relaxed) {
+            break 'main;
+        }
 
-                winit_platform.prepare_render(ui, &window);
-                let draw_data = imgui_context.render();
-
-                unsafe {
-                    use glow::HasContext;
-                    renderer.gl_context().clear_color(0.08, 0.08, 0.09, 1.0);
-                    renderer.gl_context().clear(glow::COLOR_BUFFER_BIT);
-                }
-                renderer.render(draw_data).expect("imgui render failed");
-
-                frame_count += 1;
-                if let Some(path) = &screenshot_path {
-                    if frame_count == 10 {
-                        let size = window.inner_size();
-                        save_screenshot(renderer.gl_context(), size.width, size.height, path);
-                        window_target.exit();
-                    }
-                }
-
-                surface.swap_buffers(&gl_context).expect("failed to swap buffers");
-            }
-            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
-                window_target.exit();
-            }
-            Event::WindowEvent { event: WindowEvent::Resized(new_size), .. } => {
-                if new_size.width > 0 && new_size.height > 0 {
-                    surface.resize(
-                        &gl_context,
-                        NonZeroU32::new(new_size.width).unwrap(),
-                        NonZeroU32::new(new_size.height).unwrap(),
-                    );
-                }
-                winit_platform.handle_event(imgui_context.io_mut(), &window, &event);
-            }
-            event => {
-                winit_platform.handle_event(imgui_context.io_mut(), &window, &event);
+        for event in event_pump.poll_iter() {
+            sdl_platform.handle_event(&mut imgui_context, &event);
+            match event {
+                Event::Quit { .. } => break 'main,
+                Event::Window { win_event: WindowEvent::Close, .. } => break 'main,
+                _ => {}
             }
         }
-    }).expect("event loop error");
+
+        sdl_platform.prepare_frame(&mut imgui_context, &window, &event_pump);
+
+        let ui = imgui_context.frame();
+        draw_ui(ui, audio.as_ref(), mock_controls.as_ref(), &bridge, &mut snapshot_browser);
+
+        let draw_data = imgui_context.render();
+
+        unsafe {
+            use glow::HasContext;
+            renderer.gl_context().clear_color(0.08, 0.08, 0.09, 1.0);
+            renderer.gl_context().clear(glow::COLOR_BUFFER_BIT);
+        }
+        renderer.render(draw_data).expect("imgui render failed");
+
+        frame_count += 1;
+        if let Some(path) = &screenshot_path {
+            if frame_count == 10 {
+                let (width, height) = window.drawable_size();
+                save_screenshot(renderer.gl_context(), width, height, path);
+                break 'main;
+            }
+        }
+
+        window.gl_swap_window();
+    }
 
     quit.store(true, Ordering::Relaxed);
 }

@@ -7,6 +7,7 @@
   - raylib
   - gpui
 - Performance audit
+- Static linking audit
 
 - Voices
   - Basic
@@ -35,3 +36,5 @@
   - Simpler stack than imgui?
     - Can we do it without a compositor at all? raw FB?
       - Probably need it for raw boot mode anyway
+  - Test KMSDRM mode in an alternate tty?
+

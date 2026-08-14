@@ -19,13 +19,10 @@ num-complex = { version = "0.4.6", default-features = false, features = ["libm"]
 cpal = "0.18.1"
 nam-rs = "0.4.0"
 imgui = { version = "0.12", features = ["tables-api"] }
-imgui-winit-support = "0.13"
+imgui-sdl2-support = "0.13"
 imgui-glow-renderer = "0.13"
-winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11"] }
-glutin = { version = "0.32", default-features = false, features = ["egl", "glx"] }
-glutin-winit = { version = "0.5", default-features = false, features = ["egl", "glx", "x11"] }
+sdl2 = { version = "0.37", default-features = false, features = ["bundled", "static-link"] }
 glow = "0.14"
-raw-window-handle = "0.6"
 png = "0.18"
 
 # Native USB HID backend for the Hydra on macOS (see src/hydra/hid.rs) -- the
