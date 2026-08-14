@@ -428,20 +428,31 @@ the audio thread reads, so there's nothing to keep in sync — the widget
   (`None` on real hardware), `take_midi_notes() -> Vec<DeltaEvent>`
   (drained MIDI note on/off events, default no-op — only `MockBackend`
   actually implements it).
-- **`MockBackend`** (`mock.rs`) now also owns an **optional MIDI input
-  connection** (`midir`): on construction it grabs the first available
-  MIDI input port, if any (quietly proceeds without one otherwise — same
-  "works fine with nothing plugged in" ethos as everything else here).
-  CC 1-4 (filter/width/fuzz/thump) and pitch-bend feed straight into
-  `AtomicF32` cells that `main.rs::run_engine_loop` pushes onto
-  `ZgicabraBridge`'s `SignalOverride`s each tick (`mc.midi_connected`
+- **`MockBackend`** (`mock.rs`) owns an **optional MIDI input connection**
+  via `hydra::midi` (`midi.rs`), a small platform-split module rather than
+  inline `#[cfg]`s in `mock.rs`/`main.rs`: `midi::connect(notes) ->
+  (MidiState, Connection)` has a `real` implementation (behind
+  `#[cfg(all(target_os = "macos", target_arch = "x86_64"))]`, backed by
+  `midir`) and a `stub` implementation for every other target that returns
+  an inert `MidiState` (all-zero atomics, `connected: false`) and a
+  zero-sized `Connection` — so `mock.rs` and `main.rs` call the same API
+  unconditionally and never need their own `#[cfg]`. `midir` itself is
+  scoped macOS-only in `Cargo.toml` (see readme.md's Build Toolchain
+  section) — the Linux performance machine always has real Hydra hardware
+  and this MusNix audio setup has no ALSA dev headers, so `midir`
+  (`alsa-sys` on Linux) must never be a plain dependency.
+  On construction `midi::connect` grabs the first available MIDI input
+  port, if any (quietly proceeds without one otherwise — same "works fine
+  with nothing plugged in" ethos as everything else here). CC 1-4
+  (filter/width/fuzz/thump) and pitch-bend feed straight into `AtomicF32`
+  cells in `MidiState` that `main.rs::run_engine_loop` pushes onto
+  `ZgicabraBridge`'s `SignalOverride`s each tick (`mc.midi.connected`
   guards this — see the block right after `zgicabra::update` in
   `run_engine_loop`); Note On/Off go through the normal `DeltaEvent`
   pipeline instead (`hydra::take_midi_notes`), monophonic/last-note-
   priority same as a single wand trigger. `MockControls` (the GUI-facing
-  handle) exposes the same `midi_*` cells read-only plus
-  `midi_connected`, so `gui.rs` *could* show MIDI state, though nothing
-  currently renders it.
+  handle) exposes the same `midi: MidiState` read-only, so `gui.rs` *could*
+  show MIDI state, though nothing currently renders it.
 - Keyboard mapping unchanged from before: `z`/`.` toggle wand triggers,
   `a`/`s` cycle voice, `-`/`=` cycle tune, arrow keys drive the left
   stick to full deflection (toggle, not held — terminals don't deliver

@@ -27,13 +27,16 @@ glutin-winit = "0.5"
 glow = "0.14"
 raw-window-handle = "0.6"
 image = { version = "0.25", default-features = false, features = ["png"] }
-midir = "0.11.0"
 
 # Native USB HID backend for the Hydra on macOS (see src/hydra/hid.rs) -- the
 # vendored Sixense SDK is Linux-only and dead anyway, so this never needs to
-# exist on other targets.
+# exist on other targets. midir supplements missing real hardware with MIDI
+# controller input on the macOS dev machine (see src/hydra/mock.rs) -- the
+# Linux performance machine always has the real Hydra and a MusNix audio
+# setup with no ALSA, so it can't build midir at all.
 [target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
 hidapi = "2"
+midir = "0.11.0"
 
 # imgui-rs 0.12's DrawData::cmd_lists() calls slice::from_raw_parts on a
 # possibly-null pointer when a draw list is empty; harmless in Dear ImGui's C++

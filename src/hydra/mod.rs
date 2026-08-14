@@ -25,6 +25,7 @@ use crate::zgicabra::DeltaEvent;
 mod sdk;
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 mod hid;
+mod midi;
 mod mock;
 
 pub use mock::MockControls;

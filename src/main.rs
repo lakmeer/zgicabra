@@ -194,23 +194,23 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
         delta_events.extend(hydra::take_midi_notes(&mut hydra_state));
 
         if let Some(mc) = &mock_controls {
-            if mc.midi_connected {
-                bridge.filter.set(mc.midi_filter.load());
-                bridge.width.set(mc.midi_width.load());
-                bridge.fuzz.set(mc.midi_fuzz.load());
-                bridge.thump.set(mc.midi_thump.load());
+            if mc.midi.connected {
+                bridge.filter.set(mc.midi.filter.load());
+                bridge.width.set(mc.midi.width.load());
+                bridge.fuzz.set(mc.midi.fuzz.load());
+                bridge.thump.set(mc.midi.thump.load());
                 // Only an actual pitch-bend gesture (wheel off center) takes
                 // bend over -- unlike filter/width/fuzz/thump, bend also has
                 // a live source (CC7/8-driven wand twist, computed in
                 // zgicabra::update from rot_quat -- see hydra/mock.rs).
-                // Forwarding midi_bend unconditionally every tick would pin
+                // Forwarding midi.bend unconditionally every tick would pin
                 // signal.bend to its last value forever once any MIDI
                 // controller is connected (SignalOverride has no other way
                 // to release `enabled`), masking twist entirely; centering
                 // the wheel now hands control back to twist instead, same
                 // as a real pitch wheel's spring return.
-                if mc.midi_bend.load() != 0.0 {
-                    bridge.bend.set(mc.midi_bend.load());
+                if mc.midi.bend.load() != 0.0 {
+                    bridge.bend.set(mc.midi.bend.load());
                 } else {
                     bridge.bend.enabled.store(false, Ordering::Relaxed);
                 }
@@ -224,7 +224,7 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
 
         // Draw UI
         if !no_ui {
-            ui::draw_all(&zgicabra, &history);
+            ui::draw_all(&zgicabra, &history, &delta_events, &delta_history);
             ui::draw_events(&delta_events, &delta_history);
             ui::draw_note_state(&zgicabra);
             ui::draw_graph(&history);

@@ -25,6 +25,32 @@ default. An unpatched copy is retained as reference.
 
 ## System Dependencies
 
+### Build toolchain (NixOS / Linux performance machine)
+
+- Nixpkgs' stable-channel `rustc`/`cargo` (e.g. 24.05's 1.77) is too old for
+  this project's `Cargo.lock` — a transitive dep (`moxcms`, via `image`)
+  requires `edition2024`, unsupported before rustc ~1.85. Pull `cargo`/
+  `rustc` from `nixpkgs-unstable` instead of `environment.systemPackages`'
+  plain `pkgs.cargo`/`pkgs.rustc` — see the `unstable` overlay in
+  `configuration.nix`.
+- `alsa-lib.dev` (not plain `alsa-lib`) must be in
+  `environment.systemPackages`. `cpal`'s `alsa-sys` build script needs
+  `alsa.pc` via pkg-config to link `libasound`; that file lives in
+  `alsa-lib`'s `dev` output, which the default `alsa-lib` output does not
+  include.
+- `environment.variables.PKG_CONFIG_PATH = "/run/current-system/sw/lib/pkgconfig";`
+  must be set system-wide. Unlike `nix-shell -p`, `environment.systemPackages`
+  does not add installed packages' pkgconfig dirs to `PKG_CONFIG_PATH`
+  automatically — without this, pkg-config can't find `alsa.pc` even once
+  it's symlinked into the system profile. Takes a fresh shell/login after
+  `nixos-rebuild switch` to pick up.
+- `midir` (MIDI controller input for the mock Hydra backend, see
+  `src/hydra/midi.rs`) is scoped to macOS-only in `Cargo.toml`
+  (`target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies`).
+  The Linux performance machine always has real Hydra hardware and this
+  MusNix-based audio setup has no ALSA dev headers by default, so `midir`
+  (which needs `alsa-sys` on Linux) must never be a plain dependency here.
+
 ### `snd-virmidi`
 
 - Kernel module `snd-virmidi` is enabled in nix config as:

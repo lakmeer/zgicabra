@@ -33,109 +33,11 @@ use termion::AsyncReader;
 use termion::event::Key;
 use termion::input::{Keys,TermRead};
 
-use midir::{MidiInput,MidiInputConnection,Ignore};
-
 use crate::tools::{sin, AtomicF32};
-use crate::zgicabra::{DeltaEvent, Voice};
+use crate::zgicabra::DeltaEvent;
 
 use super::{Backend,ControllerFrame,LEFT_HAND,RIGHT_HAND,BUTTON_1,BUTTON_2,BUTTON_3,BUTTON_4};
-
-// Optional MIDI controller support: on boot, take the first available MIDI
-// input port (if any) and feed its CC/pitch-bend messages straight into
-// atomics that main.rs's engine loop pushes onto ZgicabraBridge's existing
-// SignalOverride mechanism each tick (see MockControls::midi_* below and
-// SignalOverride::set in zgicabra.rs) -- same override path the gui already
-// uses to drive signal state, just fed from MIDI instead of imgui widgets.
-// No controller present -> quietly skip, same as the rest of mock.rs's
-// "works fine with nothing plugged in" ethos.
-const CC_FILTER:    u8 = 1;
-const CC_WIDTH:     u8 = 2;
-const CC_FUZZ:      u8 = 3;
-const CC_THUMP:     u8 = 4;
-const CC_ROT_LEFT:  u8 = 7;
-const CC_ROT_RIGHT: u8 = 8;
-// CC7/8's full sweep maxes out at a quarter turn (90 degrees) in either
-// direction, not a full -1..1 twist -- keeps the knob from being wildly
-// oversensitive vs. an actual wand twist.
-const TWIST_ANGLE_RANGE: f32 = PI / 2.0;
-
-// rot_quat[2] is a quaternion component (sin(angle/2) for rotation about
-// the twist axis), not the angle itself -- storing a fraction-of-a-turn
-// straight into it (the old TWIST_RANGE approach) made the low end of the
-// knob's travel undersensitive and the high end oversensitive, since sin()
-// isn't linear. Converting the target angle through sin(angle/2) here is
-// what draw_hydra_panel's xy_pad has to invert (via asin) to get the angle
-// back for display -- see gui.rs.
-fn twist_component (level: f32) -> f32 {
-    let angle = (1.0 - level * 2.0) * TWIST_ANGLE_RANGE;
-    (angle * 0.5).sin()
-}
-
-// Connects to the first available MIDI input port, if any, and stores
-// incoming CC 1-4/7-8 / pitch-bend values straight into the given atomics, and
-// pushes Note On/Off as DeltaEvents onto `notes` (drained each tick by
-// hydra::take_midi_notes -- discrete events, so unlike the CC/bend atomics
-// above they go through the normal DeltaEvent pipeline rather than the
-// SignalOverride mechanism). Monophonic, last-note-priority, same as a
-// single wand trigger: a second Note On while one is already held emits
-// NoteChange rather than a second NoteStart; Note Off only ends the note if
-// it matches the currently-held one. Returns None (without panicking) if no
-// MIDI backend/port is available -- the caller just proceeds without MIDI
-// input, same as running with no Hydra hardware attached.
-fn connect_midi (filter: Arc<AtomicF32>, width: Arc<AtomicF32>, fuzz: Arc<AtomicF32>, thump: Arc<AtomicF32>, bend: Arc<AtomicF32>, rot_left: Arc<AtomicF32>, rot_right: Arc<AtomicF32>, notes: Arc<Mutex<VecDeque<DeltaEvent>>>) -> Option<MidiInputConnection<()>> {
-    let mut midi_in = MidiInput::new("zgicabra").ok()?;
-    midi_in.ignore(Ignore::None);
-
-    let ports = midi_in.ports();
-    let port = ports.first()?;
-    let name = midi_in.port_name(port).unwrap_or_default();
-
-    println!("Hydra::start - MIDI controller found: {name}");
-
-    let mut held_note: Option<u8> = None;
-
-    midi_in.connect(port, "zgicabra-midi-in", move |_stamp, message, _| {
-        match message {
-            [status, cc, value] if status & 0xF0 == 0xB0 => {
-                let level = *value as f32 / 127.0;
-                match *cc {
-                    CC_FILTER => filter.store(level),
-                    CC_WIDTH  => width.store(level),
-                    CC_FUZZ   => fuzz.store(level),
-                    CC_THUMP  => thump.store(level),
-                    CC_ROT_LEFT  => rot_left.store(twist_component(level)),
-                    CC_ROT_RIGHT => rot_right.store(twist_component(level)),
-                    _ => {},
-                }
-            },
-            [status, lsb, msb] if status & 0xF0 == 0xE0 => {
-                let raw = ((*msb as u16) << 7) | *lsb as u16;
-                bend.store((raw as f32 - 8192.0) / 8192.0);
-            },
-            [status, note, velocity] if status & 0xF0 == 0x90 && *velocity > 0 => {
-                let event = match held_note {
-                    Some(prev) => DeltaEvent::NoteChange(prev, *note),
-                    None       => DeltaEvent::NoteStart(*note),
-                };
-                held_note = Some(*note);
-                notes.lock().unwrap().push_back(event);
-            },
-            [status, note, _] if status & 0xF0 == 0x80 || (status & 0xF0 == 0x90) => {
-                if held_note == Some(*note) {
-                    held_note = None;
-                    notes.lock().unwrap().push_back(DeltaEvent::NoteEnd(*note));
-                }
-            },
-            // Program Change: absolute voice select (PC 0-3, one per voice
-            // slot -- see VOICE_NAMES in gui.rs) instead of the rocking
-            // button/keyboard's relative cycle().
-            [status, program] if status & 0xF0 == 0xC0 => {
-                notes.lock().unwrap().push_back(DeltaEvent::VoiceChange(Voice::from_index(*program)));
-            },
-            _ => {},
-        }
-    }, ()).ok()
-}
+use super::midi;
 
 // Audition sequence: One 16-beat loop at 120bpm.
 const SEQ_BPM: f32 = 120.0;
@@ -195,14 +97,9 @@ pub struct MockControls {
     // Latest CC 1-4 / pitch-bend values from the MIDI listener (see
     // connect_midi), read fresh each tick -- unlike voice/tune_cycle these
     // aren't drain-on-read, they're a live "current value" the engine loop
-    // pushes onto ZgicabraBridge's SignalOverride each frame. Stay at 0.0
-    // untouched if `midi_connected` is false.
-    pub midi_filter: Arc<AtomicF32>,
-    pub midi_width:  Arc<AtomicF32>,
-    pub midi_fuzz:   Arc<AtomicF32>,
-    pub midi_thump:  Arc<AtomicF32>,
-    pub midi_bend:   Arc<AtomicF32>,
-    pub midi_connected: bool,
+    // pushes onto ZgicabraBridge's SignalOverride each frame. See hydra::midi
+    // -- inert (stays at 0.0/false) on targets with no MIDI support.
+    pub midi: midi::MidiState,
 
     // Audition sequence player toggle (see step_sequence) and its published
     // filter sweep -- same "live current value" reasoning as the midi_*
@@ -257,20 +154,14 @@ pub struct MockBackend {
     sequence: u8,
     _cbreak_guard: CbreakGuard, // restores the terminal on drop
 
-    midi_filter:    Arc<AtomicF32>,
-    midi_width:     Arc<AtomicF32>,
-    midi_fuzz:      Arc<AtomicF32>,
-    midi_thump:     Arc<AtomicF32>,
-    midi_bend:      Arc<AtomicF32>,
-    // CC7/8: fed straight into wand_frame's rot_quat twist slot (see
+    // See hydra::midi -- inert on targets with no MIDI support. rot_left/
+    // rot_right feed straight into wand_frame's rot_quat twist slot (see
     // wand_frame) rather than through a SignalOverride like the other
-    // midi_* atomics -- these need to drive zgicabra's own rotation->bend
-    // math, not bypass it the way midi_bend does.
-    midi_rot_left:  Arc<AtomicF32>,
-    midi_rot_right: Arc<AtomicF32>,
-    midi_connected: bool,
+    // midi.* fields -- they need to drive zgicabra's own rotation->bend
+    // math, not bypass it the way midi.bend does.
+    midi: midi::MidiState,
     notes: Arc<Mutex<VecDeque<DeltaEvent>>>, // Note On/Off/PC events, MIDI or audition-sequence sourced
-    _midi_connection: Option<MidiInputConnection<()>>, // held to keep the callback alive; disconnects on drop
+    _midi_connection: midi::Connection, // held to keep the callback alive; disconnects on drop
 
     // Audition sequence player (see SEQ_NOTES above): seq_playing is the
     // GUI-driven toggle, seq_filter is the published filter sweep, the rest
@@ -288,21 +179,8 @@ impl MockBackend {
 
         println!("Hydra::start - mock backend active. 'z'/'.' toggle triggers, 'a'/'s' cycle voice, '-'/'=' tune, arrows steer left stick, 'q' quits.");
 
-        let midi_filter    = Arc::new(AtomicF32::new(0.0));
-        let midi_width     = Arc::new(AtomicF32::new(0.0));
-        let midi_fuzz      = Arc::new(AtomicF32::new(0.0));
-        let midi_thump     = Arc::new(AtomicF32::new(0.0));
-        let midi_bend      = Arc::new(AtomicF32::new(0.0));
-        let midi_rot_left  = Arc::new(AtomicF32::new(0.0));
-        let midi_rot_right = Arc::new(AtomicF32::new(0.0));
-
         let notes: Arc<Mutex<VecDeque<DeltaEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
-
-        let midi_connection = connect_midi(midi_filter.clone(), midi_width.clone(), midi_fuzz.clone(), midi_thump.clone(), midi_bend.clone(), midi_rot_left.clone(), midi_rot_right.clone(), notes.clone());
-        let midi_connected = midi_connection.is_some();
-        if !midi_connected {
-            println!("Hydra::start - no MIDI controller found, proceeding without MIDI input.");
-        }
+        let (midi, _midi_connection) = midi::connect(notes.clone());
 
         MockBackend {
             keys: termion::async_stdin().keys(),
@@ -320,16 +198,9 @@ impl MockBackend {
             quit: false,
             sequence: 0,
             _cbreak_guard: cbreak_guard,
-            midi_filter,
-            midi_width,
-            midi_fuzz,
-            midi_thump,
-            midi_bend,
-            midi_rot_left,
-            midi_rot_right,
-            midi_connected,
+            midi,
             notes,
-            _midi_connection: midi_connection,
+            _midi_connection,
             seq_playing: Arc::new(AtomicBool::new(false)),
             seq_filter:  Arc::new(AtomicF32::new(0.0)),
             seq_elapsed: 0.0,
@@ -400,12 +271,7 @@ impl MockBackend {
             sine_drift: self.sine_drift.clone(),
             voice_cycle: self.voice_cycle.clone(),
             tune_cycle:  self.tune_cycle.clone(),
-            midi_filter: self.midi_filter.clone(),
-            midi_width:  self.midi_width.clone(),
-            midi_fuzz:   self.midi_fuzz.clone(),
-            midi_thump:  self.midi_thump.clone(),
-            midi_bend:   self.midi_bend.clone(),
-            midi_connected: self.midi_connected,
+            midi: self.midi.clone(),
             seq_playing: self.seq_playing.clone(),
             seq_filter:  self.seq_filter.clone(),
         }
@@ -434,9 +300,9 @@ impl MockBackend {
 
         self.sequence = self.sequence.wrapping_add(1);
 
-        controllers[0] = self.wand_frame(LEFT_HAND,  0.0, self.left_trigger.load(), self.midi_rot_left.load(),
+        controllers[0] = self.wand_frame(LEFT_HAND,  0.0, self.left_trigger.load(), self.midi.rot_left.load(),
             self.left_stick_x.load(), self.left_stick_y.load(), &self.left_buttons);
-        controllers[1] = self.wand_frame(RIGHT_HAND, PI,  self.right_trigger.load(), self.midi_rot_right.load(),
+        controllers[1] = self.wand_frame(RIGHT_HAND, PI,  self.right_trigger.load(), self.midi.rot_right.load(),
             self.right_stick_x.load(), self.right_stick_y.load(), &self.right_buttons);
     }
 
