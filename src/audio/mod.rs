@@ -254,7 +254,7 @@ impl AudioOutput {
         let main_sub_lvl  = shared(0.35);
         let dry_sub_lvl   = shared(0.35);
         let thump_peak    = shared(1.5);
-        let thump_decay   = shared(0.18);
+        let thump_decay   = shared(0.10);
 
         let amp_bypass    = shared(0.0);
         let amp_boost     = shared(1.0);

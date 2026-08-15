@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-BINARY="target/debug/zgicabra"
+BINARY="target/release/zgicabra"
 
 # Kill everything this script spawned when it exits (Ctrl+C, etc.)
 trap 'kill 0' EXIT INT TERM

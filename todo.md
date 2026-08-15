@@ -3,8 +3,6 @@
 
 - Filter audibly snaps back to neutral when note released
   - Still?
-- Fix twist range
-  - Flatter bend curve
 - restore panic btn -> notes can get stuck
 - Add DeltaEvent::NoteRetrig -> voices can decide what it means
 
@@ -47,4 +45,4 @@
       ];
 
     - Specify font as "Terminus (TTF)" exactly
-
+  - 6 NAMs might be too much - test in bare env
