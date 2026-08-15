@@ -171,7 +171,7 @@ impl NoteState {
     pub fn new() -> NoteState {
         NoteState {
             on: false,
-            root: 42,
+            root: 35,
             bend: 0.0,
             current: 0,
         }

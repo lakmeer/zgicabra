@@ -536,6 +536,10 @@ fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, snapshot_browser: &m
     draw_module_card(ui, "Limiter", Some(&audio.limiter_bypass), CARD_SIZE, false, |ui| {
         draw_knob_row(ui, &[("limiter_thresh", "thresh", -60.0, 0.0, &audio.limiter_thresh)]);
     });
+    ui.same_line();
+    draw_module_card(ui, "Master", None, CARD_SIZE, false, |ui| {
+        draw_knob_row(ui, &[("master_vol", "volume", 0.0, 1.0, &audio.master_vol)]);
+    });
 
     ui.separator();
     draw_voice_card(ui, audio);

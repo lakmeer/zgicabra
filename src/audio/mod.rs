@@ -152,6 +152,8 @@ pub struct AudioHandles {
     pub limiter_bypass: Shared,
     pub limiter_thresh: Shared,
 
+    pub master_vol: Shared,
+
     pub capture: AudioCapture,
 }
 
@@ -192,6 +194,8 @@ pub struct AudioOutput {
     limiter_bypass: Shared,
     limiter_thresh: Shared,
 
+    master_vol: Shared,
+
     capture: AudioCapture,
     stream:  cpal::Stream,
 }
@@ -219,6 +223,7 @@ impl AudioOutput {
             reverb_size:    self.reverb_size.clone(),
             limiter_bypass: self.limiter_bypass.clone(),
             limiter_thresh: self.limiter_thresh.clone(),
+            master_vol:     self.master_vol.clone(),
             // For self-test
             test_tone: TestTone { freq: self.freq.clone(), gate: self.gate.clone() },
             capture: self.capture.clone(),
@@ -271,6 +276,8 @@ impl AudioOutput {
         let limiter_bypass = shared(0.0);
         let limiter_thresh = shared(-6.0);
 
+        let master_vol = shared(1.0);
+
         let capture = AudioCapture::new((NAM_SAMPLE_RATE as f32 * CAPTURE_SECONDS) as usize);
 
         let amp_model_l = nam::load_named_model(AMP_MODEL)?;
@@ -318,6 +325,8 @@ impl AudioOutput {
             limiter_bypass.clone(),
             limiter_thresh.clone(),
 
+            master_vol.clone(),
+
         );
 
         let host   = cpal::default_host();
@@ -338,7 +347,7 @@ impl AudioOutput {
 
         engine.set_sample_rate(config.sample_rate as f64);
 
-        let err_fn = |e| eprintln!("║ 🟥 Audio stream error: {e}");
+        let err_fn = |e| {}; // eprintln!("║ 🟥 Audio stream error: {e}");
 
         let build_result = match sample_format {
             cpal::SampleFormat::F32 => build_stream::<f32>(&device, config, engine, capture.clone(), err_fn),
@@ -362,6 +371,7 @@ impl AudioOutput {
             amp_bypass, amp_boost, amp_blend, amp_crossover,
             reverb_bypass, reverb_dry, reverb_decay, reverb_damp, reverb_size,
             limiter_bypass, limiter_thresh,
+            master_vol,
             capture, stream,
         })
     }
@@ -442,6 +452,8 @@ struct Engine {
     limiter: Compressor,
     limiter_bypass: Shared,
     limiter_thresh: Shared,
+
+    master_vol: Shared,
 }
 
 impl Engine {
@@ -487,6 +499,8 @@ impl Engine {
         limiter_bypass: Shared,
         limiter_thresh: Shared,
 
+        master_vol: Shared,
+
     ) -> Engine {
         // Each NamStage holds exactly one fixed model -- no Bypass slot, no cycling.
         let amp_l = nam::NamStage::new(vec![Some(amp_model_l)], shared(0.0));
@@ -517,6 +531,8 @@ impl Engine {
             reverb: ReverbFx::new(reverb_size, reverb_decay, reverb_damp), reverb_bypass, reverb_dry,
 
             limiter: Compressor::new(), limiter_bypass, limiter_thresh,
+
+            master_vol,
         }
     }
 
@@ -606,9 +622,12 @@ impl Engine {
             r = rr;
         }
 
+        // Master volume is the very last stage, applied after dry_sub rejoins.
+        let vol = self.master_vol.value();
+
         (
-            (l + dry_sub).clamp(-1.0, 1.0),
-            (r + dry_sub).clamp(-1.0, 1.0),
+            ((l + dry_sub) * vol).clamp(-1.0, 1.0),
+            ((r + dry_sub) * vol).clamp(-1.0, 1.0),
         )
     }
 }
