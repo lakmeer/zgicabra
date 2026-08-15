@@ -162,9 +162,9 @@ Engine::tick_pre_nam()  -->  Engine::run_nam() [NamStage L/R]  -->  Engine::tick
 
 - **`Engine`** (mod.rs, private — `AudioOutput` is the public handle)
   mixes every sound-generating piece each sample: the four `Voice` impls
-  (below, each silences itself unless selected), two `main_sub`
-  oscillators (triangle/saw, crossfaded by `main_sub_wave`), `dry_sub`
-  (fixed sine an octave down, bypasses NAM/reverb/limiter), and an
+  (below, each silences itself unless selected), a `main_sub` triangle
+  oscillator, `dry_sub` (fixed sine an octave down, bypasses
+  NAM/reverb/limiter), and an
   `adsr_live` envelope gated by `gate`. `tick_thump()` layers a percussive
   pitch-decay bump onto `base_freq` on note-on. `FmVoice`/`StutterGen`/
   `Crusher`/`MoogFilterFx`/`LowpassFx`/`BasicOscGen` (`fm.rs`, `stutter.rs`,

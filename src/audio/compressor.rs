@@ -11,6 +11,7 @@ const RATIO:   f32 = 4.0;
 const ATTACK:  f32 = 0.003;
 const RELEASE: f32 = 0.1;
 
+#[derive(Clone)]
 pub struct Compressor {
     follower: AFollow<f32>,
 }
@@ -32,3 +33,4 @@ impl Compressor {
         (l * gain, r * gain)
     }
 }
+

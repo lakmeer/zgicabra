@@ -15,11 +15,11 @@ use fundsp::shared::Shared;
 use sdl2::event::{Event, WindowEvent};
 
 use crate::hydra::MockControls;
-use crate::audio::{AudioHandles, GrowlHandle, BasicHandle, GrowlParams, BasicParams, VoiceParams, snapshot, ReeseHandle, ReeseParams};
+use crate::audio::{AudioHandles, GrowlHandle, BasicHandle, SwarmHandle, GrowlParams, BasicParams, SwarmParams, VoiceParams, snapshot, ReeseHandle, ReeseParams};
 use crate::tools::AtomicF32;
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
 
-const VOICE_NAMES: [&str; 4] = ["Reese", "Growl", "Basic", "Blank"];
+const VOICE_NAMES: [&str; 4] = ["Reese", "Growl", "Basic", "Swarm"];
 
 // GUI-thread-local browser state for saved voice-param snapshots.
 struct SnapshotBrowser {
@@ -290,8 +290,6 @@ fn draw_module_card (ui: &imgui::Ui, title: &str, bypass: Option<&Shared>, size:
     });
 }
 
-// One row of knobs laid out side by side -- each wrapped in its own group()
-// since knob()'s trailing label would otherwise stack them vertically.
 fn draw_knob_row (ui: &imgui::Ui, knobs: &[(&str, &str, f32, f32, &Shared)]) {
     for (i, (id, label, lo, hi, cell)) in knobs.iter().enumerate() {
         if i > 0 { ui.same_line(); }
@@ -299,7 +297,6 @@ fn draw_knob_row (ui: &imgui::Ui, knobs: &[(&str, &str, f32, f32, &Shared)]) {
     }
 }
 
-// Cycles voice_selected between VOICE_NAMES by index.
 fn draw_voice_selector (ui: &imgui::Ui, selected: &Shared) {
     let index = selected.value() as i32;
     let name = VOICE_NAMES.get(index as usize).copied().unwrap_or("?");
@@ -313,7 +310,6 @@ fn draw_voice_selector (ui: &imgui::Ui, selected: &Shared) {
     }
 }
 
-// Growl's 4 macro knobs, plus its NAM amp model cycler.
 fn draw_voice_growl (ui: &imgui::Ui, growl: &GrowlHandle) {
     draw_knob_row(ui, &[
         ("growl_bass_drive", "bass drive", 0.0, 1.0, &growl.bass_drive),
@@ -322,14 +318,8 @@ fn draw_voice_growl (ui: &imgui::Ui, growl: &GrowlHandle) {
         ("growl_warp",       "warp",       0.0, 1.0, &growl.warp),
         ("growl_nam_xover",  "xover",      0.0, 2000.0, &growl.nam_crossover),
     ]);
-    if ui.button("< ##growl_nam") { growl.nam.cycle(-1); }
-    ui.same_line();
-    ui.text(format!("{}", growl.nam.selected_name()));
-    ui.same_line();
-    if ui.button(">##growl_nam") { growl.nam.cycle(1); }
 }
 
-// Basic's 4 oscillator mix levels.
 fn draw_voice_basic (ui: &imgui::Ui, basic: &BasicHandle) {
     draw_knob_row(ui, &[
         ("basic_sin",    "sin",    0.0, 1.0, &basic.sin_level),
@@ -340,8 +330,6 @@ fn draw_voice_basic (ui: &imgui::Ui, basic: &BasicHandle) {
     ]);
 }
 
-// Reese's 8 macro knobs -- see reese.rs for what each does. Two rows of 4
-// since it's twice the knob count of the other voices' single row.
 fn draw_voice_reese (ui: &imgui::Ui, reese: &ReeseHandle) {
     draw_knob_row(ui, &[
         ("reese_detune",    "detune",  0.0,  50.0, &reese.detune),
@@ -355,6 +343,29 @@ fn draw_voice_reese (ui: &imgui::Ui, reese: &ReeseHandle) {
         ("reese_lfo_depth", "lfo dep", 0.0,  1.0,  &reese.lfo_depth),
         ("reese_width",     "width",   0.0,  1.0,  &reese.width),
     ]);
+}
+
+
+fn draw_voice_swarm (ui: &imgui::Ui, handle: &SwarmHandle) {
+    draw_knob_row(ui, &[
+        ("swarm_chase",  "chase",     0.5, 1.0,    &handle.chase_factor),
+        ("swarm_radius", "radius",    0.0, 5.0,    &handle.radius),
+        ("swarm_speed",  "speed",     0.0, 1.0,    &handle.orbit_speed),
+        ("swarm_warp",   "warp",      0.0, 1.0,    &handle.phaser_depth),
+        ("swarm_xover",  "xover",     0.0, 2000.0, &handle.xover_freq),
+    ]);
+
+    if ui.button("< ##swarm_nam_lo") { handle.nam_lo.cycle(-1); }
+    ui.same_line();
+    ui.text(format!("{}", handle.nam_lo.selected_name()));
+    ui.same_line();
+    if ui.button("> ##swarm_nam_lo") { handle.nam_lo.cycle(1); }
+
+    if ui.button("< ##swarm_nam_hi") { handle.nam_hi.cycle(-1); }
+    ui.same_line();
+    ui.text(format!("{}", handle.nam_hi.selected_name()));
+    ui.same_line();
+    if ui.button("> ##swarm_nam_hi") { handle.nam_hi.cycle(1); }
 }
 
 // All 4 voices drawn side by side; the active one (voice_selected) gets a
@@ -488,8 +499,7 @@ fn draw_signal_state (ui: &imgui::Ui, bridge: &ZgicabraBridge) {
 fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, snapshot_browser: &mut SnapshotBrowser) {
     draw_module_card(ui, "Main Sub", None, CARD_SIZE, false, |ui| {
         draw_knob_row(ui, &[
-            ("main_sub_wave", "wave",  0.0, 1.0, &audio.main_sub_wave),
-            ("main_sub_lvl",  "level", 0.0, 1.0, &audio.main_sub_lvl),
+            ("main_sub_lvl", "level", 0.0, 1.0, &audio.main_sub_lvl),
         ]);
     });
     ui.same_line();

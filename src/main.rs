@@ -24,6 +24,8 @@ use zgicabra::{Zgicabra, DeltaEvent, ZgicabraBridge};
 
 pub const HISTORY_WINDOW: usize = 100;
 
+const DEBUG_FRAMES: bool = false;
+
 const REFRESH_MS: Duration = Duration::from_millis(10);
 const DEVICE_NAME: &str = "Zgicabra";
 
@@ -174,12 +176,15 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
             let t = tools::millis_now();
             let l = &hydra_state.controllers[0];
             let r = &hydra_state.controllers[1];
-            println!(
-                "F t={} L seq={} pos=[{:.4},{:.4},{:.4}] quat=[{:.3},{:.3},{:.3},{:.3}] joy=[{:.3},{:.3}] trig={:.3} btn={:#011b} en={} dock={} | R seq={} pos=[{:.4},{:.4},{:.4}] quat=[{:.3},{:.3},{:.3},{:.3}] joy=[{:.3},{:.3}] trig={:.3} btn={:#011b} en={} dock={}",
-                t,
-                l.sequence_number, l.pos[0], l.pos[1], l.pos[2], l.rot_quat[0], l.rot_quat[1], l.rot_quat[2], l.rot_quat[3], l.joystick_x, l.joystick_y, l.trigger, l.buttons, l.enabled, l.is_docked,
-                r.sequence_number, r.pos[0], r.pos[1], r.pos[2], r.rot_quat[0], r.rot_quat[1], r.rot_quat[2], r.rot_quat[3], r.joystick_x, r.joystick_y, r.trigger, r.buttons, r.enabled, r.is_docked,
-            );
+
+            if DEBUG_FRAMES {
+                println!(
+                    "F t={} L seq={} pos=[{:.4},{:.4},{:.4}] quat=[{:.3},{:.3},{:.3},{:.3}] joy=[{:.3},{:.3}] trig={:.3} btn={:#011b} en={} dock={} | R seq={} pos=[{:.4},{:.4},{:.4}] quat=[{:.3},{:.3},{:.3},{:.3}] joy=[{:.3},{:.3}] trig={:.3} btn={:#011b} en={} dock={}",
+                    t,
+                    l.sequence_number, l.pos[0], l.pos[1], l.pos[2], l.rot_quat[0], l.rot_quat[1], l.rot_quat[2], l.rot_quat[3], l.joystick_x, l.joystick_y, l.trigger, l.buttons, l.enabled, l.is_docked,
+                    r.sequence_number, r.pos[0], r.pos[1], r.pos[2], r.rot_quat[0], r.rot_quat[1], r.rot_quat[2], r.rot_quat[3], r.joystick_x, r.joystick_y, r.trigger, r.buttons, r.enabled, r.is_docked,
+                );
+            }
         }
 
         let voice_cycle = hydra::take_voice_cycle(&mut hydra_state);

@@ -15,7 +15,7 @@ use crate::zgicabra::{DeltaEvent, SignalState};
 mod nam;
 mod stutter;
 mod growl;
-mod blank;
+mod swarm;
 mod basic;
 mod gen_node;
 mod fx_node;
@@ -33,12 +33,13 @@ use reverb::ReverbFx;
 use compressor::Compressor;
 use voice::Voice;
 use growl::GrowlVoice;
-use blank::BlankVoice;
+use swarm::SwarmVoice;
 use reese::ReeseVoice;
 use basic::BasicVoice;
 pub use growl::{GrowlHandle, GrowlParams};
 pub use reese::{ReeseHandle, ReeseParams};
 pub use basic::{BasicHandle, BasicParams};
+pub use swarm::{SwarmHandle, SwarmParams};
 pub use voice::VoiceParams;
 
 const GATE_ON:  f32 = 1.0;
@@ -130,9 +131,9 @@ pub struct AudioHandles {
     pub voice_a: ReeseHandle,
     pub voice_b: GrowlHandle,
     pub voice_c: BasicHandle,
+    pub voice_d: SwarmHandle,
 
     pub main_sub_lvl:  Shared,
-    pub main_sub_wave: Shared,
     pub dry_sub_lvl:   Shared,
     pub thump_peak:    Shared,
     pub thump_decay:   Shared,
@@ -170,9 +171,9 @@ pub struct AudioOutput {
     voice_a: ReeseHandle,
     voice_b: GrowlHandle,
     voice_c: BasicHandle,
+    voice_d: SwarmHandle,
 
     main_sub_lvl:  Shared,
-    main_sub_wave: Shared,
     dry_sub_lvl:   Shared,
     thump_peak:    Shared,
     thump_decay:   Shared,
@@ -198,27 +199,28 @@ pub struct AudioOutput {
 impl AudioOutput {
     pub fn handles (&self) -> AudioHandles {
         AudioHandles {
-            test_tone: TestTone { freq: self.freq.clone(), gate: self.gate.clone() },
             voice_selected: self.voice_selected.clone(),
-            voice_a: self.voice_a.clone(),
-            voice_b: self.voice_b.clone(),
-            voice_c: self.voice_c.clone(),
-            main_sub_lvl:  self.main_sub_lvl.clone(),
-            main_sub_wave: self.main_sub_wave.clone(),
-            dry_sub_lvl:   self.dry_sub_lvl.clone(),
-            thump_peak:    self.thump_peak.clone(),
-            thump_decay:   self.thump_decay.clone(),
-            amp_bypass:    self.amp_bypass.clone(),
-            amp_boost:     self.amp_boost.clone(),
-            amp_blend:     self.amp_blend.clone(),
-            amp_crossover: self.amp_crossover.clone(),
-            reverb_bypass: self.reverb_bypass.clone(),
-            reverb_dry:    self.reverb_dry.clone(),
-            reverb_decay:  self.reverb_decay.clone(),
-            reverb_damp:   self.reverb_damp.clone(),
-            reverb_size:   self.reverb_size.clone(),
+            voice_a:        self.voice_a.clone(),
+            voice_b:        self.voice_b.clone(),
+            voice_c:        self.voice_c.clone(),
+            voice_d:        self.voice_d.clone(),
+            main_sub_lvl:   self.main_sub_lvl.clone(),
+            dry_sub_lvl:    self.dry_sub_lvl.clone(),
+            thump_peak:     self.thump_peak.clone(),
+            thump_decay:    self.thump_decay.clone(),
+            amp_bypass:     self.amp_bypass.clone(),
+            amp_boost:      self.amp_boost.clone(),
+            amp_blend:      self.amp_blend.clone(),
+            amp_crossover:  self.amp_crossover.clone(),
+            reverb_bypass:  self.reverb_bypass.clone(),
+            reverb_dry:     self.reverb_dry.clone(),
+            reverb_decay:   self.reverb_decay.clone(),
+            reverb_damp:    self.reverb_damp.clone(),
+            reverb_size:    self.reverb_size.clone(),
             limiter_bypass: self.limiter_bypass.clone(),
             limiter_thresh: self.limiter_thresh.clone(),
+            // For self-test
+            test_tone: TestTone { freq: self.freq.clone(), gate: self.gate.clone() },
             capture: self.capture.clone(),
         }
     }
@@ -237,19 +239,19 @@ impl AudioOutput {
         let velocity      = shared(0.0);
         let acceleration  = shared(0.0);
 
-        println!("║ Loading NAM models for Growl... ");
-        let (growl_nam_models, growl_nam_names) = nam::load_nam_models()?;
-        let growl_nam_names = Arc::new(growl_nam_names);
-        println!("║ Growl NAM models loaded ({} found).", growl_nam_names.len().saturating_sub(1));
+        println!("║ Loading NAM models ... ");
+        let (nam_models, nam_names) = nam::load_nam_models()?;
+        let nam_names = Arc::new(nam_names);
+        println!("║ NAM models loaded ({} found).", nam_names.len().saturating_sub(1));
 
         // Defaults to Reese (index 0) so a fresh run has an audible voice.
         let voice_selected = shared(0.0);
-        let voice_a = ReeseHandle::new(&ReeseParams::default());
-        let voice_b = GrowlHandle::new(&GrowlParams::default(), growl_nam_names);
-        let voice_c = BasicHandle::new(&BasicParams::default());
+        let voice_a        = ReeseHandle::new(&ReeseParams::default());
+        let voice_b        = GrowlHandle::new(&GrowlParams::default());
+        let voice_c        = BasicHandle::new(&BasicParams::default());
+        let voice_d        = SwarmHandle::new(&SwarmParams::default(), nam_names);
 
         let main_sub_lvl  = shared(0.35);
-        let main_sub_wave = shared(0.5);
         let dry_sub_lvl   = shared(0.35);
         let thump_peak    = shared(1.5);
         let thump_decay   = shared(0.18);
@@ -271,20 +273,51 @@ impl AudioOutput {
 
         let capture = AudioCapture::new((NAM_SAMPLE_RATE as f32 * CAPTURE_SECONDS) as usize);
 
-        println!("║ Loading NAM amp model ({AMP_MODEL})... ");
         let amp_model_l = nam::load_named_model(AMP_MODEL)?;
         let amp_model_r = nam::load_named_model(AMP_MODEL)?;
-        println!("║ NAM amp model loaded.");
 
         let mut engine = Engine::new(
-            freq.clone(), gate.clone(), bend.clone(), width.clone(), filter.clone(), fuzz.clone(),
-            thump_amt.clone(), thump_trigger.clone(), velocity.clone(), acceleration.clone(),
-            voice_selected.clone(), voice_a.clone(), voice_b.clone(), growl_nam_models, voice_c.clone(),
-            main_sub_lvl.clone(), main_sub_wave.clone(), dry_sub_lvl.clone(),
-            thump_peak.clone(), thump_decay.clone(),
-            amp_model_l, amp_model_r, amp_bypass.clone(), amp_boost.clone(), amp_blend.clone(), amp_crossover.clone(),
-            reverb_bypass.clone(), reverb_dry.clone(), reverb_decay.value(), reverb_damp.value(), reverb_size.value(),
-            limiter_bypass.clone(), limiter_thresh.clone(),
+            freq.clone(),
+            gate.clone(),
+            bend.clone(),
+            width.clone(),
+            filter.clone(),
+            fuzz.clone(),
+            velocity.clone(),
+            acceleration.clone(),
+
+            thump_amt.clone(),
+            thump_trigger.clone(),
+            thump_peak.clone(),
+            thump_decay.clone(),
+
+            voice_selected.clone(),
+            voice_a.clone(),
+            voice_b.clone(),
+            voice_c.clone(),
+            voice_d.clone(),
+
+            main_sub_lvl.clone(),
+            dry_sub_lvl.clone(),
+
+            nam_models.clone(),
+            amp_model_l,
+            amp_model_r,
+
+            amp_bypass.clone(),
+            amp_boost.clone(),
+            amp_blend.clone(),
+            amp_crossover.clone(),
+
+            reverb_bypass.clone(),
+            reverb_dry.clone(),
+            reverb_decay.value(),
+            reverb_damp.value(),
+            reverb_size.value(),
+
+            limiter_bypass.clone(),
+            limiter_thresh.clone(),
+
         );
 
         let host   = cpal::default_host();
@@ -324,8 +357,8 @@ impl AudioOutput {
 
         Ok(AudioOutput {
             freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration,
-            voice_selected, voice_a, voice_b, voice_c,
-            main_sub_lvl, main_sub_wave, dry_sub_lvl, thump_peak, thump_decay,
+            voice_selected, voice_a, voice_b, voice_c, voice_d,
+            main_sub_lvl, dry_sub_lvl, thump_peak, thump_decay,
             amp_bypass, amp_boost, amp_blend, amp_crossover,
             reverb_bypass, reverb_dry, reverb_decay, reverb_damp, reverb_size,
             limiter_bypass, limiter_thresh,
@@ -370,22 +403,27 @@ fn pick_output_config (device: &cpal::Device, target_rate: u32) -> io::Result<cp
 // the fixed amp/reverb/limiter stages, combined with dry_sub at the very end
 // (dry_sub bypasses amp/reverb/limiter entirely).
 struct Engine {
-    freq: Shared, gate: Shared, bend: Shared, width: Shared, filter: Shared, fuzz: Shared,
-    thump_amt: Shared, velocity: Shared, acceleration: Shared,
+    freq: Shared,
+    gate: Shared,
+    bend: Shared,
+    width: Shared,
+    filter: Shared,
+    fuzz: Shared,
+    thump_amt: Shared,
+    velocity: Shared,
+    acceleration: Shared,
 
     main_sub_tri: An<WaveSynth<U1>>,
-    main_sub_saw: An<WaveSynth<U1>>,
     dry_sub:      An<Sine<f64>>,
     envelope:     Box<dyn AudioUnit>,
 
     voice_a: ReeseVoice,
     voice_b: GrowlVoice,
     voice_c: BasicVoice,
-    voice_d: BlankVoice,
+    voice_d: SwarmVoice,
     voice_selected: Shared,
 
     main_sub_lvl:  Shared,
-    main_sub_wave: Shared,
     dry_sub_lvl:   Shared,
 
     // Two fully independent NamStage instances -- sharing one model across
@@ -408,17 +446,47 @@ struct Engine {
 
 impl Engine {
     fn new (
-        freq: Shared, gate: Shared, bend: Shared, width: Shared, filter: Shared, fuzz: Shared,
-        thump_amt: Shared, thump_trigger: Shared, velocity: Shared, acceleration: Shared,
-        voice_selected: Shared, voice_a: ReeseHandle, voice_b: GrowlHandle,
-        growl_nam_models: Vec<Option<nam::NamModelSlot>>, voice_c: BasicHandle,
-        main_sub_lvl: Shared, main_sub_wave: Shared, dry_sub_lvl: Shared,
-        thump_peak: Shared, thump_decay: Shared,
-        amp_model_l: nam::NamModelSlot, amp_model_r: nam::NamModelSlot,
-        amp_bypass: Shared, amp_boost: Shared, amp_blend: Shared, amp_crossover: Shared,
-        reverb_bypass: Shared, reverb_dry: Shared,
-        reverb_decay: f32, reverb_damp: f32, reverb_size: f32,
-        limiter_bypass: Shared, limiter_thresh: Shared,
+        freq: Shared,
+        gate: Shared,
+        bend: Shared,
+        width: Shared,
+        filter: Shared,
+        fuzz: Shared,
+        velocity: Shared,
+        acceleration: Shared,
+
+        thump_amt: Shared,
+        thump_trigger: Shared,
+        thump_peak: Shared,
+        thump_decay: Shared,
+
+        voice_selected: Shared,
+        voice_a: ReeseHandle,
+        voice_b: GrowlHandle,
+        voice_c: BasicHandle,
+        voice_d: SwarmHandle,
+
+        main_sub_lvl: Shared,
+        dry_sub_lvl: Shared,
+
+        nam_models: Vec<Option<nam::NamModelSlot>>,
+        amp_model_l: nam::NamModelSlot,
+        amp_model_r: nam::NamModelSlot,
+
+        amp_bypass: Shared,
+        amp_boost: Shared,
+        amp_blend: Shared,
+        amp_crossover: Shared,
+
+        reverb_bypass: Shared,
+        reverb_dry: Shared,
+        reverb_decay: f32,
+        reverb_damp: f32,
+        reverb_size: f32,
+
+        limiter_bypass: Shared,
+        limiter_thresh: Shared,
+
     ) -> Engine {
         // Each NamStage holds exactly one fixed model -- no Bypass slot, no cycling.
         let amp_l = nam::NamStage::new(vec![Some(amp_model_l)], shared(0.0));
@@ -427,19 +495,24 @@ impl Engine {
         Engine {
             freq, gate, bend, width, filter, fuzz, thump_amt, velocity, acceleration,
             main_sub_tri: triangle(),
-            main_sub_saw: saw(),
             dry_sub:      sine(),
             envelope: Box::new(adsr_live(ENVELOPE_ATTACK, 0.0, 1.0, ENVELOPE_RELEASE)),
-
-            voice_a: ReeseVoice::new(voice_a, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-            voice_b: GrowlVoice::new(voice_b, growl_nam_models, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-            voice_c: BasicVoice::new(voice_c, thump_trigger, thump_peak, thump_decay),
-            voice_d: BlankVoice::new(),
             voice_selected,
 
-            main_sub_lvl, main_sub_wave, dry_sub_lvl,
+            voice_a: ReeseVoice::new(voice_a, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_b: GrowlVoice::new(voice_b, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_c: BasicVoice::new(voice_c, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_d: SwarmVoice::new(voice_d, nam_models, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
 
-            amp_l, amp_r, amp_bypass, amp_boost, amp_blend, amp_crossover,
+            main_sub_lvl,
+            dry_sub_lvl,
+
+            amp_l,
+            amp_r,
+            amp_bypass,
+            amp_boost,
+            amp_blend,
+            amp_crossover,
 
             reverb: ReverbFx::new(reverb_size, reverb_decay, reverb_damp), reverb_bypass, reverb_dry,
 
@@ -449,7 +522,6 @@ impl Engine {
 
     fn set_sample_rate (&mut self, sr: f64) {
         self.main_sub_tri.set_sample_rate(sr);
-        self.main_sub_saw.set_sample_rate(sr);
         self.dry_sub.set_sample_rate(sr);
         self.envelope.set_sample_rate(sr);
         self.voice_a.set_sample_rate(sr);
@@ -489,10 +561,7 @@ impl Engine {
         let voice_l = voice_a_out[0] + voice_b_out[0] + voice_c_out[0] + voice_d_out[0];
         let voice_r = voice_a_out[1] + voice_b_out[1] + voice_c_out[1] + voice_d_out[1];
 
-        let main_sub_wave = (self.main_sub_wave.value() * signal.filter).clamp(0.0, 1.0);
-        let tri = self.main_sub_tri.filter_mono(base_freq);
-        let saw = self.main_sub_saw.filter_mono(base_freq);
-        let main_sub = (tri * (1.0 - main_sub_wave) + saw * main_sub_wave) * self.main_sub_lvl.value();
+        let main_sub = self.main_sub_tri.filter_mono(base_freq) * self.main_sub_lvl.value();
 
         let env = self.envelope.filter_mono(self.gate.value());
 
@@ -584,7 +653,7 @@ where
                 if selected == ReeseVoice::INDEX { engine.voice_a.on_block_start(n); }
                 if selected == GrowlVoice::INDEX { engine.voice_b.on_block_start(n); }
                 if selected == BasicVoice::INDEX { engine.voice_c.on_block_start(n); }
-                if selected == BlankVoice::INDEX { engine.voice_d.on_block_start(n); }
+                if selected == SwarmVoice::INDEX { engine.voice_d.on_block_start(n); }
 
                 for i in 0..n {
                     let (dry_l, dry_r, dry_sub) = engine.tick_pre_nam();

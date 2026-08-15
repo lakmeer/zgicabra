@@ -50,6 +50,8 @@ const OSC_B_WARP_SMEAR_ADD: f32 = 0.135; // macro_control_4 (WARP) -> osc_2_spec
 const DETUNE_RANGE: f32 = 2.0;   // osc_2_detune_range
 const UNISON_DETUNE: f32 = 2.9;  // osc_2_unison_detune
 
+const NAM_MODEL: &str = "mesa";
+
 const CROSSFADE_HZ: f32 = 0.15;  // stand-in for lfo_1 (tempo-synced ~1Hz in the patch)
 const WOBBLE_HZ: f32 = 0.2;      // smoothing rate for the noise-based Perlin stand-in
 const CONTROL_RATE_DIV: usize = 64; // Smear resynthesis runs at this coarser rate, not per-sample
@@ -295,14 +297,18 @@ pub struct GrowlParams {
     pub filter:        f32,
     pub space:         f32,
     pub warp:          f32,
-    // NAM crossover split freq (Hz) -- see NamStage::xover_alpha. 0.0 = no-op
-    // (full signal into the model, no dry low band).
     pub nam_crossover: f32,
 }
 
 impl Default for GrowlParams {
     fn default () -> GrowlParams {
-        GrowlParams { bass_drive: 0.8, filter: 0.9, space: 0.25, warp: 0.3, nam_crossover: 0.0 }
+        GrowlParams {
+            bass_drive:    0.8,
+            filter:        0.9,
+            space:         0.25,
+            warp:          0.3,
+            nam_crossover: 0.0 
+        }
     }
 }
 
@@ -343,23 +349,17 @@ pub struct GrowlHandle {
     pub filter:        Shared,
     pub space:         Shared,
     pub warp:          Shared,
-    // NAM crossover split freq (Hz), read by GrowlVoice::on_block_start --
-    // see GrowlParams::nam_crossover.
     pub nam_crossover: Shared,
-    // Post-oscillator NAM amp stage bolted onto Growl. Bypass = model index 0.
-    pub nam: NamModelCycler,
 }
 
 impl GrowlHandle {
-    pub fn new (params: &GrowlParams, nam_names: Arc<Vec<String>>) -> GrowlHandle {
-        let default_nam = default_model_index(&nam_names) as f32;
+    pub fn new (params: &GrowlParams) -> GrowlHandle {
         GrowlHandle {
             bass_drive:    shared(params.bass_drive),
             filter:        shared(params.filter),
             space:         shared(params.space),
             warp:          shared(params.warp),
             nam_crossover: shared(params.nam_crossover),
-            nam: NamModelCycler::new(shared(default_nam), nam_names),
         }
     }
 
@@ -390,36 +390,32 @@ pub struct GrowlVoice {
     inner:  WavetableGen,
     handle: GrowlHandle,
     nam:    NamStage,
-    // One-block-latency in-place ring: on_block_start runs the model over
-    // whatever tick() wrote here last block (raw), turning it into this
-    // block's wet output in place; tick() then reads-then-overwrites each
-    // cell in turn (read = last block's wet, write = this block's raw) --
-    // see NamStage::process_block's block-not-per-sample requirement and
-    // the Voice::on_block_start doc.
     scratch: Vec<f32>,
     pos:     usize,
 
-    thump:        ThumpMod,
+    thump:   ThumpMod,
     thump_signal: f32,
 
-    // Live SignalState.filter (0..1), sets filter cutoff -- see set_signal.
     filter_signal: f32,
-    // Live SignalState.fuzz (0..1), sets the NamStage blend -- see
-    // set_signal/on_block_start. Block-rate resolution (last value from the
-    // block's samples), same as amp_l/amp_r's own blend knob.
     fuzz_signal: f32,
-    // Live SignalState.width (0..1), inverted onto `warp` -- wide hands
-    // close the space down, narrow hands open it up.
     width_signal: f32,
 }
 
 impl GrowlVoice {
-    pub fn new (handle: GrowlHandle, nam_models: Vec<Option<NamModelSlot>>, thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared) -> GrowlVoice {
-        let nam = NamStage::new(nam_models, handle.nam.shared());
+    pub fn new (handle: GrowlHandle, thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared) -> GrowlVoice {
+        let model = super::nam::load_named_model(NAM_MODEL).unwrap();
+        let nam = NamStage::new(vec![Some(model)], shared(0.0));
+
         GrowlVoice {
-            inner: WavetableGen::new(), handle, nam, scratch: vec![0.0; NAM_BLOCK_CAP], pos: 0,
+            inner: WavetableGen::new(),
+            handle,
+            nam,
+            scratch: vec![0.0; NAM_BLOCK_CAP],
+            pos: 0,
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay), thump_signal: 0.0,
-            filter_signal: 0.0, fuzz_signal: 0.0, width_signal: 0.0,
+            filter_signal: 0.0,
+            fuzz_signal:   0.0,
+            width_signal:  0.0,
         }
     }
 }
@@ -434,9 +430,6 @@ impl AudioNode for GrowlVoice {
         let selected = input[1] as usize;
 
         if selected != Self::INDEX {
-            // Not the active voice: skip the (expensive) oscillator, but
-            // still zero this cell so a stale raw sample from a previous
-            // active stretch can't bleed into the next block's inference.
             if let Some(cell) = self.scratch.get_mut(self.pos) { *cell = 0.0; }
             self.pos += 1;
             return Frame::from([0.0, 0.0]);
