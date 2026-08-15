@@ -22,10 +22,10 @@ const JOYSTICK_DEADZONE: f32 = 0.15;
 // Which sound engine patch to use
 #[derive(Debug, Clone, Copy)]
 pub enum Voice {
-    Classic  = 0, // Bass monotsynth
-    Eternal  = 1, // Doom-style synth
-    VoiceC   = 2,
-    VoiceD   = 3 
+    VoiceA = 0,
+    VoiceB = 1,
+    VoiceC = 2,
+    VoiceD = 3 
 }
 
 impl Voice {
@@ -40,8 +40,8 @@ impl Voice {
     // Absolute select by index (wraps mod COUNT), e.g. MIDI Program Change.
     pub fn from_index(index: u8) -> Self {
         match index % Self::COUNT {
-            0 => Voice::Classic,
-            1 => Voice::Eternal,
+            0 => Voice::VoiceA,
+            1 => Voice::VoiceB,
             2 => Voice::VoiceC,
             3 => Voice::VoiceD,
             _ => unreachable!(),
@@ -265,7 +265,7 @@ impl Zgicabra {
             most_recent_wand: Hand::Neither,
             note: NoteState::new(),
             signal: SignalState::new(),
-            voice: Voice::Classic,
+            voice: Voice::VoiceA,
         }
     }
 }
@@ -396,7 +396,7 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
 
 
     curr_state.separation = (curr_state.left.pos[0] - curr_state.right.pos[0]).abs();
-    curr_state.note.bend  = curr_state.left.twist - curr_state.right.twist;
+    curr_state.note.bend  = curr_state.left.twist/2.0 - curr_state.right.twist/2.0;
     curr_state.note.bend  = curr_state.note.bend.powf(3.0).clamp(-2.0, 2.0) * 0.5;
 
     let trigger_total = curr_state.left.trigger + curr_state.right.trigger;
