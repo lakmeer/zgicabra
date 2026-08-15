@@ -169,6 +169,19 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
 
     loop {
         hydra::update(&mut hydra_state);
+
+        if no_ui {
+            let t = tools::millis_now();
+            let l = &hydra_state.controllers[0];
+            let r = &hydra_state.controllers[1];
+            println!(
+                "F t={} L seq={} pos=[{:.4},{:.4},{:.4}] quat=[{:.3},{:.3},{:.3},{:.3}] joy=[{:.3},{:.3}] trig={:.3} btn={:#011b} en={} dock={} | R seq={} pos=[{:.4},{:.4},{:.4}] quat=[{:.3},{:.3},{:.3},{:.3}] joy=[{:.3},{:.3}] trig={:.3} btn={:#011b} en={} dock={}",
+                t,
+                l.sequence_number, l.pos[0], l.pos[1], l.pos[2], l.rot_quat[0], l.rot_quat[1], l.rot_quat[2], l.rot_quat[3], l.joystick_x, l.joystick_y, l.trigger, l.buttons, l.enabled, l.is_docked,
+                r.sequence_number, r.pos[0], r.pos[1], r.pos[2], r.rot_quat[0], r.rot_quat[1], r.rot_quat[2], r.rot_quat[3], r.joystick_x, r.joystick_y, r.trigger, r.buttons, r.enabled, r.is_docked,
+            );
+        }
+
         let voice_cycle = hydra::take_voice_cycle(&mut hydra_state);
         let tune_cycle  = hydra::take_tune_cycle(&mut hydra_state);
         zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state, voice_cycle, tune_cycle, &mut delta_events);
@@ -208,7 +221,7 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
         output.handle_signal(&zgicabra.signal);
 
         for delta in delta_events.drain(..) {
-            if no_ui { println!("- {:?}", delta); }
+            if no_ui { println!("E t={} - {:?}", tools::millis_now(), delta); }
             output.handle_event(&delta);
             delta_history.push(delta);
         }

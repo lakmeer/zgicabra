@@ -5,6 +5,8 @@
   - Still?
 - Fix twist range
   - Flatter bend curve
+- restore panic btn -> notes can get stuck
+- Add DeltaEvent::NoteRetrig -> voices can decide what it means
 
 - Voices
   - Basic
@@ -18,7 +20,8 @@
   - Reese
     - Octave layers ^ width
     - vel ^ width_param
-    - lfo_rate ^ width
+    - lfo_rate ^ pitch
+    - drive noy audible
   - SamplePlayer
   - Experiment with waveshapers
 

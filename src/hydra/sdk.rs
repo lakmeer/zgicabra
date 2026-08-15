@@ -10,7 +10,7 @@
 use std::time::{Instant,Duration};
 use std::thread::sleep;
 
-use libc::c_int;
+use libc::{c_int, c_void};
 use termion::input::{TermRead, Keys};
 use termion::AsyncReader;
 
@@ -25,6 +25,20 @@ extern "C" {
     fn sixenseInit();
     fn sixenseExit();
     fn sixenseGetNewestData(which: c_int, data: *mut ControllerFrame);
+
+    // Not part of the public sixense.h API, but exported by the .so regardless.
+    // USBDetector's background hotplug-rescan thread (find_devices() -> hid_close()
+    // -> libusb_close()) races the USB read thread's libusb_handle_events() during
+    // sixenseExit() teardown -- this is the confirmed cause of every SIGSEGV we've
+    // caught (coredumpctl backtraces always land in one of these two threads,
+    // fighting over the same libusb handle). We only ever have one Hydra plugged
+    // in for the whole session, so we don't need live hot-plug detection of new
+    // controllers -- stopping this thread right after our own detection succeeds
+    // removes one side of the race entirely.
+    #[link_name = "_ZN11USBDetector16get_instance_ptrEv"]
+    fn usb_detector_instance () -> *mut c_void;
+    #[link_name = "_ZN11USBDetector19stop_hotplug_threadEv"]
+    fn usb_detector_stop_hotplug_thread (this: *mut c_void);
 }
 
 pub struct SdkBackend {
@@ -57,6 +71,15 @@ impl SdkBackend {
         }
 
         println!("✅");
+
+        unsafe {
+            let detector = usb_detector_instance();
+            if !detector.is_null() {
+                usb_detector_stop_hotplug_thread(detector);
+                println!("Hydra::start - stopped SDK hotplug thread (avoids sixenseExit() teardown race)");
+            }
+        }
+
         Some(SdkBackend {
             keys: termion::async_stdin().keys(),
             _cbreak_guard: CbreakGuard::enable(),

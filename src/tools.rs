@@ -42,6 +42,10 @@ pub fn time_now () -> f32 {
     START_TIME.elapsed().as_millis() as f32 / 1000.0
 }
 
+pub fn millis_now () -> u128 {
+    START_TIME.elapsed().as_millis()
+}
+
 
 // Trig
 
