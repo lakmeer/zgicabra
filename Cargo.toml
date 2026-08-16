@@ -23,15 +23,20 @@ imgui-glow-renderer = "0.13"
 sdl2 = { version = "0.37", default-features = false, features = ["use-pkgconfig"] }
 glow = "0.14"
 png = "0.18"
+rtrb = "0.3"
 
 # Native USB HID backend for the Hydra on macOS (see src/hydra/hid.rs) -- the
 # vendored Sixense SDK is Linux-only and dead anyway, so this never needs to
-# exist on other targets. midir supplements missing real hardware with MIDI
-# controller input on the macOS dev machine (see src/hydra/mock.rs) -- the
-# Linux performance machine always has the real Hydra and a MusNix audio
-# setup with no ALSA, so it can't build midir at all.
+# exist on other targets, real-hardware-only.
 [target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
 hidapi = "2"
+
+# midir supplements missing real hardware with MIDI controller input on the
+# macOS dev machine (see src/hydra/mock.rs), and also backs the CC live-tuning
+# pipeline (src/audio/cc_input.rs) on both machines -- cpal (unconditional
+# dependency, see above) already requires and gets ALSA on the Linux
+# performance rig, so midir builds fine there too.
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 midir = "0.11.0"
 
 # imgui-rs 0.12's DrawData::cmd_lists() calls slice::from_raw_parts on a

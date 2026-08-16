@@ -15,32 +15,11 @@ use fundsp::shared::Shared;
 use sdl2::event::{Event, WindowEvent};
 
 use crate::hydra::MockControls;
-use crate::audio::{AudioHandles, GrowlHandle, BasicHandle, SwarmHandle, GrowlParams, BasicParams, SwarmParams, VoiceParams, snapshot, ReeseHandle, ReeseParams};
+use crate::audio::{AudioHandles, GrowlView, BasicView, SwarmView, ReeseView};
 use crate::tools::AtomicF32;
 use crate::zgicabra::{SignalOverride, ZgicabraBridge};
 
 const VOICE_NAMES: [&str; 4] = ["Reese", "Growl", "Basic", "Swarm"];
-
-// GUI-thread-local browser state for saved voice-param snapshots.
-struct SnapshotBrowser {
-    names: Vec<String>,
-    index: usize,
-}
-
-impl SnapshotBrowser {
-    fn new () -> SnapshotBrowser {
-        let mut browser = SnapshotBrowser { names: Vec::new(), index: 0 };
-        browser.refresh();
-        browser
-    }
-
-    fn refresh (&mut self) {
-        self.names = snapshot::list_snapshots().unwrap_or_default();
-        if self.index >= self.names.len() {
-            self.index = self.names.len().saturating_sub(1);
-        }
-    }
-}
 
 // Drag widgets need a step size that feels right whether the underlying
 // range is 0..1 or 100..14000 -- scale it off the row's own lo/hi span.
@@ -147,6 +126,13 @@ fn draw_shared_knob (ui: &imgui::Ui, id: &str, label: &str, lo: f32, hi: f32, ce
     if knob(ui, id, label, KNOB_RADIUS, lo, hi, &mut value) {
         cell.set_value(value);
     }
+}
+
+// Read-only display of a bare Shared -- per-voice params are tuned live via
+// MIDI CC now (see voice.rs), not GUI knob-dragging, so these just show the
+// current value as plain text instead of a drag-editable knob.
+fn draw_shared_meter (ui: &imgui::Ui, _id: &str, label: &str, cell: &Shared) {
+    ui.text(format!("{label}: {:.3}", cell.value()));
 }
 
 // A vertical fader: click/drag anywhere inside to set value directly off the
@@ -297,6 +283,15 @@ fn draw_knob_row (ui: &imgui::Ui, knobs: &[(&str, &str, f32, f32, &Shared)]) {
     }
 }
 
+// Read-only counterpart to draw_knob_row -- per-voice param cards use this
+// now (see draw_voice_growl/basic/reese/swarm below).
+fn draw_meter_row (ui: &imgui::Ui, meters: &[(&str, &Shared)]) {
+    for (i, (label, cell)) in meters.iter().enumerate() {
+        if i > 0 { ui.same_line(); }
+        ui.group(|| draw_shared_meter(ui, "", label, cell));
+    }
+}
+
 fn draw_voice_selector (ui: &imgui::Ui, selected: &Shared) {
     let index = selected.value() as i32;
     let name = VOICE_NAMES.get(index as usize).copied().unwrap_or("?");
@@ -310,62 +305,58 @@ fn draw_voice_selector (ui: &imgui::Ui, selected: &Shared) {
     }
 }
 
-fn draw_voice_growl (ui: &imgui::Ui, growl: &GrowlHandle) {
-    draw_knob_row(ui, &[
-        ("growl_bass_drive", "bass drive", 0.0, 1.0, &growl.bass_drive),
-        ("growl_filter",     "filter",     0.0, 1.0, &growl.filter),
-        ("growl_space",      "space",      0.0, 1.0, &growl.space),
-        ("growl_warp",       "warp",       0.0, 1.0, &growl.warp),
-        ("growl_nam_xover",  "xover",      0.0, 2000.0, &growl.nam_crossover),
+fn draw_voice_growl (ui: &imgui::Ui, growl: &GrowlView) {
+    draw_meter_row(ui, &[
+        ("bass drive", &growl.bass_drive_input),
+        ("filter",     &growl.filter_input),
+        ("space",      &growl.space_input),
+        ("warp",       &growl.warp_input),
+        ("xover",      &growl.nam_crossover_input),
+    ]);
+    draw_meter_row(ui, &[
+        ("filter live",    &growl.filter_live),
+        ("warp live",      &growl.warp_live),
+        ("freq mult live", &growl.freq_mult_live),
     ]);
 }
 
-fn draw_voice_basic (ui: &imgui::Ui, basic: &BasicHandle) {
-    draw_knob_row(ui, &[
-        ("basic_sin",    "sin",    0.0, 1.0, &basic.sin_level),
-        ("basic_tri",    "tri",    0.0, 1.0, &basic.tri_level),
-        ("basic_square", "square", 0.0, 1.0, &basic.square_level),
-        ("basic_saw",    "saw",    0.0, 1.0, &basic.saw_level),
-        ("basic_sat",    "sat",    1.0, 10.0, &basic.saturation),
+fn draw_voice_basic (ui: &imgui::Ui, basic: &BasicView) {
+    draw_meter_row(ui, &[
+        ("sin",    &basic.sin_level),
+        ("tri",    &basic.tri_level),
+        ("square", &basic.square_level),
+        ("saw",    &basic.saw_level),
+        ("sat",    &basic.saturation),
     ]);
 }
 
-fn draw_voice_reese (ui: &imgui::Ui, reese: &ReeseHandle) {
-    draw_knob_row(ui, &[
-        ("reese_detune",    "detune",  0.0,  50.0, &reese.detune),
-        ("reese_sub",       "sub",     0.0,  1.0,  &reese.sub_level),
-        ("reese_drive",     "drive",   1.0,  8.0,  &reese.drive),
-        ("reese_cutoff",    "cutoff",  0.0,  1.0,  &reese.cutoff),
+fn draw_voice_reese (ui: &imgui::Ui, reese: &ReeseView) {
+    draw_meter_row(ui, &[
+        ("detune", &reese.detune),
+        ("sub",    &reese.sub_level),
+        ("drive",  &reese.drive),
+        ("cutoff", &reese.cutoff),
     ]);
-    draw_knob_row(ui, &[
-        ("reese_res",       "res",     0.3,  3.0,  &reese.resonance),
-        ("reese_lfo_rate",  "lfo rate", 0.05, 3.0,  &reese.lfo_rate),
-        ("reese_lfo_depth", "lfo dep", 0.0,  1.0,  &reese.lfo_depth),
-        ("reese_width",     "width",   0.0,  1.0,  &reese.width),
+    draw_meter_row(ui, &[
+        ("res",      &reese.resonance),
+        ("lfo rate", &reese.lfo_rate),
+        ("lfo dep",  &reese.lfo_depth),
+        ("width",    &reese.width),
     ]);
 }
 
 
-fn draw_voice_swarm (ui: &imgui::Ui, handle: &SwarmHandle) {
-    draw_knob_row(ui, &[
-        ("swarm_chase",  "chase",     0.5, 1.0,    &handle.chase_factor),
-        ("swarm_radius", "radius",    0.0, 5.0,    &handle.radius),
-        ("swarm_speed",  "speed",     0.0, 1.0,    &handle.orbit_speed),
-        ("swarm_warp",   "warp",      0.0, 1.0,    &handle.phaser_depth),
-        ("swarm_xover",  "xover",     0.0, 2000.0, &handle.xover_freq),
+fn draw_voice_swarm (ui: &imgui::Ui, swarm: &SwarmView) {
+    draw_meter_row(ui, &[
+        ("chase",  &swarm.chase_factor),
+        ("radius", &swarm.radius),
+        ("speed",  &swarm.orbit_speed),
+        ("warp",   &swarm.phaser_depth),
+        ("xover",  &swarm.xover_freq),
     ]);
 
-    if ui.button("< ##swarm_nam_lo") { handle.nam_lo.cycle(-1); }
-    ui.same_line();
-    ui.text(format!("{}", handle.nam_lo.selected_name()));
-    ui.same_line();
-    if ui.button("> ##swarm_nam_lo") { handle.nam_lo.cycle(1); }
-
-    if ui.button("< ##swarm_nam_hi") { handle.nam_hi.cycle(-1); }
-    ui.same_line();
-    ui.text(format!("{}", handle.nam_hi.selected_name()));
-    ui.same_line();
-    if ui.button("> ##swarm_nam_hi") { handle.nam_hi.cycle(1); }
+    ui.text(format!("nam lo: {}", swarm.nam_lo.selected_name()));
+    ui.text(format!("nam hi: {}", swarm.nam_hi.selected_name()));
 }
 
 // All 4 voices drawn side by side; the active one (voice_selected) gets a
@@ -391,67 +382,6 @@ fn draw_voice_card (ui: &imgui::Ui, audio: &AudioHandles) {
     draw_module_card(ui, "Blank", None, VOICE_CARD_SIZE, selected == 3, |ui| {
         ui.text("(no patch -- silent)");
     });
-}
-
-// Save/load buttons for the currently-selected voice's live params, plus a
-// cycler over every snapshot found on disk -- each save writes a new
-// "{voice_name}_{index}.snap" file rather than overwriting, see
-// audio::snapshot.
-fn draw_snapshot_browser (ui: &imgui::Ui, audio: &AudioHandles, browser: &mut SnapshotBrowser) {
-    if ui.button("Save Snapshot") {
-        let result = match audio.voice_selected.value() as i32 {
-            0 => snapshot::save_snapshot(ReeseParams::voice_name(), &audio.voice_a.params().fields()),
-            1 => snapshot::save_snapshot(GrowlParams::voice_name(), &audio.voice_b.params().fields()),
-            2 => snapshot::save_snapshot(BasicParams::voice_name(), &audio.voice_c.params().fields()),
-            _ => Ok(std::path::PathBuf::new()),
-        };
-        if let Err(e) = result {
-            eprintln!("║ 🟥 Failed to save snapshot: {e}");
-        }
-        browser.refresh();
-        browser.index = browser.names.len().saturating_sub(1);
-    }
-    ui.same_line();
-
-    match browser.names.get(browser.index) {
-        Some(name) => ui.text(format!("Snapshot: {name}")),
-        None       => ui.text("Snapshot: (none saved)"),
-    }
-
-    if ui.button("< Snap") && !browser.names.is_empty() {
-        browser.index = (browser.index + browser.names.len() - 1) % browser.names.len();
-    }
-    ui.same_line();
-    if ui.button("Snap >") && !browser.names.is_empty() {
-        browser.index = (browser.index + 1) % browser.names.len();
-    }
-    ui.same_line();
-    if ui.button("Load Snapshot") {
-        if let Some(name) = browser.names.get(browser.index) {
-            let path = snapshot::snapshot_path(name);
-            match snapshot::load_snapshot(&path) {
-                Ok((voice_name, fields)) => {
-                    let expected = match audio.voice_selected.value() as i32 {
-                        0 => ReeseParams::voice_name(),
-                        1 => GrowlParams::voice_name(),
-                        2 => BasicParams::voice_name(),
-                        _ => "",
-                    };
-                    if voice_name != expected {
-                        eprintln!("║ 🟥 Snapshot '{name}' is for voice '{voice_name}', not the selected voice");
-                    } else {
-                        match audio.voice_selected.value() as i32 {
-                            0 => audio.voice_a.load(&ReeseParams::from_fields(&fields)),
-                            1 => audio.voice_b.load(&GrowlParams::from_fields(&fields)),
-                            2 => audio.voice_c.load(&BasicParams::from_fields(&fields)),
-                            _ => {},
-                        }
-                    }
-                },
-                Err(e) => eprintln!("║ 🟥 Failed to load snapshot: {e}"),
-            }
-        }
-    }
 }
 
 // One draggable row for a SignalState field: dragging the fader takes the
@@ -496,7 +426,7 @@ fn draw_signal_state (ui: &imgui::Ui, bridge: &ZgicabraBridge) {
 
 // Engine panel: globals first (main sub, dry sub, amp, reverb, limiter,
 // voice selector), then the currently-selected voice's own param card.
-fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, snapshot_browser: &mut SnapshotBrowser) {
+fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles) {
     draw_module_card(ui, "Main Sub", None, CARD_SIZE, false, |ui| {
         draw_knob_row(ui, &[
             ("main_sub_lvl", "level", 0.0, 1.0, &audio.main_sub_lvl),
@@ -543,8 +473,6 @@ fn draw_engine_panel (ui: &imgui::Ui, audio: &AudioHandles, snapshot_browser: &m
 
     ui.separator();
     draw_voice_card(ui, audio);
-    ui.separator();
-    draw_snapshot_browser(ui, audio, snapshot_browser);
 }
 
 fn draw_wand_mock (ui: &imgui::Ui, label: &str, mirrored: bool, twist: f32, trigger: &Arc<AtomicF32>, stick_x: &Arc<AtomicF32>, stick_y: &Arc<AtomicF32>, buttons: &[Arc<AtomicBool>; 4]) {
@@ -609,7 +537,7 @@ fn draw_hydra_panel (ui: &imgui::Ui, mock_controls: Option<&MockControls>, bridg
     }
 }
 
-fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge, snapshot_browser: &mut SnapshotBrowser) {
+fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<&MockControls>, bridge: &ZgicabraBridge) {
     let [screen_width, screen_height] = ui.io().display_size;
     let engine_h = screen_height * 0.63;
 
@@ -619,7 +547,7 @@ fn draw_ui (ui: &imgui::Ui, audio: Option<&AudioHandles>, mock_controls: Option<
         .size([screen_width - 20.0, engine_h], imgui::Condition::FirstUseEver)
         .build(|| {
             match audio {
-                Some(audio) => draw_engine_panel(ui, audio, snapshot_browser),
+                Some(audio) => draw_engine_panel(ui, audio),
                 None => ui.text("Engine controls only available with the --audio backend."),
             }
         });
@@ -673,7 +601,6 @@ fn save_png (path: &str, rgba: &[u8], width: u32, height: u32) -> Result<(), Box
 pub fn run (audio: Option<AudioHandles>, mock_controls: Option<MockControls>, bridge: ZgicabraBridge, quit: Arc<AtomicBool>) {
     let screenshot_path = env::var("ZGICABRA_GUI_SCREENSHOT").ok();
     let mut frame_count: u32 = 0;
-    let mut snapshot_browser = SnapshotBrowser::new();
 
     let sdl_context = sdl2::init().expect("failed to init SDL2");
     let video_subsystem = sdl_context.video().expect("failed to init SDL2 video subsystem");
@@ -729,7 +656,7 @@ pub fn run (audio: Option<AudioHandles>, mock_controls: Option<MockControls>, br
         sdl_platform.prepare_frame(&mut imgui_context, &window, &event_pump);
 
         let ui = imgui_context.frame();
-        draw_ui(ui, audio.as_ref(), mock_controls.as_ref(), &bridge, &mut snapshot_browser);
+        draw_ui(ui, audio.as_ref(), mock_controls.as_ref(), &bridge);
 
         let draw_data = imgui_context.render();
 

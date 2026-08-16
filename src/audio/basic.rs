@@ -7,90 +7,15 @@
 use fundsp::prelude64::*;
 
 use crate::zgicabra::SignalState;
-use super::voice::{Voice, VoiceParams, ThumpMod};
+use super::voice::{Voice, ThumpMod};
 
-#[derive(Clone, Copy)]
-pub struct BasicParams {
-    pub sin_level:    f32,
-    pub tri_level:    f32,
-    pub square_level: f32,
-    pub saw_level:    f32,
-    pub saturation:   f32,
-}
-
-impl Default for BasicParams {
-    fn default () -> BasicParams {
-        BasicParams { sin_level: 0.25, tri_level: 0.25, square_level: 0.25, saw_level: 0.25, saturation: 1.0 }
-    }
-}
-
-impl VoiceParams for BasicParams {
-    fn voice_name () -> &'static str { "basic" }
-
-    fn fields (&self) -> Vec<(&'static str, f32)> {
-        vec![
-            ("sin_level",    self.sin_level),
-            ("tri_level",    self.tri_level),
-            ("square_level", self.square_level),
-            ("saw_level",    self.saw_level),
-            ("saturation",   self.saturation),
-        ]
-    }
-
-    fn from_fields (fields: &[(String, f32)]) -> BasicParams {
-        let mut params = BasicParams::default();
-        for (name, value) in fields {
-            match name.as_str() {
-                "sin_level"    => params.sin_level    = *value,
-                "tri_level"    => params.tri_level    = *value,
-                "square_level" => params.square_level = *value,
-                "saw_level"    => params.saw_level    = *value,
-                "saturation"   => params.saturation   = *value,
-                _ => {},
-            }
-        }
-        params
-    }
-}
-
-#[derive(Clone)]
-pub struct BasicHandle {
-    pub sin_level:    Shared,
-    pub tri_level:    Shared,
-    pub square_level: Shared,
-    pub saw_level:    Shared,
-    pub saturation:   Shared,
-}
-
-impl BasicHandle {
-    pub fn new (params: &BasicParams) -> BasicHandle {
-        BasicHandle {
-            sin_level:    shared(params.sin_level),
-            tri_level:    shared(params.tri_level),
-            square_level: shared(params.square_level),
-            saw_level:    shared(params.saw_level),
-            saturation:   shared(params.saturation),
-        }
-    }
-
-    pub fn params (&self) -> BasicParams {
-        BasicParams {
-            sin_level:    self.sin_level.value(),
-            tri_level:    self.tri_level.value(),
-            square_level: self.square_level.value(),
-            saw_level:    self.saw_level.value(),
-            saturation:   self.saturation.value(),
-        }
-    }
-
-    pub fn load (&self, params: &BasicParams) {
-        self.sin_level.set_value(params.sin_level);
-        self.tri_level.set_value(params.tri_level);
-        self.square_level.set_value(params.square_level);
-        self.saw_level.set_value(params.saw_level);
-        self.saturation.set_value(params.saturation);
-    }
-}
+// Fixed defaults, formerly BasicParams::default() -- seeded directly into
+// the Shared cells below now that there's no separate snapshot/handle shape.
+const DEFAULT_SIN_LEVEL:    f32 = 0.25;
+const DEFAULT_TRI_LEVEL:    f32 = 0.25;
+const DEFAULT_SQUARE_LEVEL: f32 = 0.25;
+const DEFAULT_SAW_LEVEL:    f32 = 0.25;
+const DEFAULT_SATURATION:   f32 = 1.0;
 
 #[derive(Clone)]
 pub struct BasicVoice {
@@ -98,16 +23,49 @@ pub struct BasicVoice {
     tri:    An<WaveSynth<U1>>,
     square: An<WaveSynth<U1>>,
     saw:    An<WaveSynth<U1>>,
-    handle: BasicHandle,
+
+    pub sin_level:    Shared,
+    pub tri_level:    Shared,
+    pub square_level: Shared,
+    pub saw_level:    Shared,
+    pub saturation:   Shared,
 
     thump:        ThumpMod,
     thump_signal: f32,
 }
 
+// Read-only-from-outside view onto BasicVoice's Shared cells -- see
+// GrowlView's doc in growl.rs for why this exists.
+#[derive(Clone)]
+pub struct BasicView {
+    pub sin_level:    Shared,
+    pub tri_level:    Shared,
+    pub square_level: Shared,
+    pub saw_level:    Shared,
+    pub saturation:   Shared,
+}
+
 impl BasicVoice {
-    pub fn new (handle: BasicHandle, thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared) -> BasicVoice {
+    pub fn view (&self) -> BasicView {
+        BasicView {
+            sin_level:    self.sin_level.clone(),
+            tri_level:    self.tri_level.clone(),
+            square_level: self.square_level.clone(),
+            saw_level:    self.saw_level.clone(),
+            saturation:   self.saturation.clone(),
+        }
+    }
+
+    pub fn new (thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared) -> BasicVoice {
         BasicVoice {
-            sin: sine(), tri: triangle(), square: square(), saw: saw(), handle,
+            sin: sine(), tri: triangle(), square: square(), saw: saw(),
+
+            sin_level:    shared(DEFAULT_SIN_LEVEL),
+            tri_level:    shared(DEFAULT_TRI_LEVEL),
+            square_level: shared(DEFAULT_SQUARE_LEVEL),
+            saw_level:    shared(DEFAULT_SAW_LEVEL),
+            saturation:   shared(DEFAULT_SATURATION),
+
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay), thump_signal: 0.0,
         }
     }
@@ -125,11 +83,11 @@ impl AudioNode for BasicVoice {
 
         let freq = freq * self.thump.tick(self.thump_signal);
 
-        let mono = self.sin.filter_mono(freq)    * self.handle.sin_level.value()
-                 + self.tri.filter_mono(freq)    * self.handle.tri_level.value()
-                 + self.square.filter_mono(freq) * self.handle.square_level.value()
-                 + self.saw.filter_mono(freq)    * self.handle.saw_level.value();
-        let mono = (mono * self.handle.saturation.value()).tanh();
+        let mono = self.sin.filter_mono(freq)    * self.sin_level.value()
+                 + self.tri.filter_mono(freq)    * self.tri_level.value()
+                 + self.square.filter_mono(freq) * self.square_level.value()
+                 + self.saw.filter_mono(freq)    * self.saw_level.value();
+        let mono = (mono * self.saturation.value()).tanh();
         Frame::from([mono, mono])
     }
 
@@ -147,5 +105,19 @@ impl Voice for BasicVoice {
     fn name (&self) -> &'static str { "Basic" }
     fn set_signal (&mut self, _bend: f32, _filter: f32, _fuzz: f32, _width: f32, thump: f32) {
         self.thump_signal = thump;
+    }
+
+    // CC 40-44, 0..1 normalized input scaled to each param's own range
+    // (matching the ranges gui.rs's read-only meters display).
+    fn apply_cc (&mut self, cc: u8, value: f32) {
+        let value = value.clamp(0.0, 1.0);
+        match cc {
+            40 => self.sin_level.set_value(value),
+            41 => self.tri_level.set_value(value),
+            42 => self.square_level.set_value(value),
+            43 => self.saw_level.set_value(value),
+            44 => self.saturation.set_value(1.0 + value * 9.0),
+            _ => {},
+        }
     }
 }

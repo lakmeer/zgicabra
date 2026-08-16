@@ -56,7 +56,10 @@ mod real {
 
     use crate::zgicabra::Voice;
 
-    const CC_FILTER:    u8 = 1;
+    // CC1 is the Mod Wheel on every standard MIDI controller -- handy to
+    // grab for live-tweaking `filter` while testing without needing a
+    // dedicated knob mapping.
+    const CC_MOD_WHEEL: u8 = 1;
     const CC_WIDTH:     u8 = 2;
     const CC_FUZZ:      u8 = 3;
     const CC_THUMP:     u8 = 4;
@@ -105,7 +108,7 @@ mod real {
                 [status, cc, value] if status & 0xF0 == 0xB0 => {
                     let level = *value as f32 / 127.0;
                     match *cc {
-                        CC_FILTER => filter.store(level),
+                        CC_MOD_WHEEL => filter.store(level),
                         CC_WIDTH  => width.store(level),
                         CC_FUZZ   => fuzz.store(level),
                         CC_THUMP  => thump.store(level),

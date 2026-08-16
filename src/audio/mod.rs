@@ -25,6 +25,7 @@ mod reverb;
 mod crusher;
 mod compressor;
 mod voice;
+mod cc_input;
 pub mod snapshot;
 
 use nam::NAM_BLOCK_CAP;
@@ -35,38 +36,29 @@ use growl::GrowlVoice;
 use swarm::SwarmVoice;
 use reese::ReeseVoice;
 use basic::BasicVoice;
-pub use growl::{GrowlHandle, GrowlParams};
-pub use reese::{ReeseHandle, ReeseParams};
-pub use basic::{BasicHandle, BasicParams};
-pub use swarm::{SwarmHandle, SwarmParams};
-pub use voice::VoiceParams;
+use cc_input::CcInput;
+pub use growl::GrowlView;
+pub use reese::ReeseView;
+pub use basic::BasicView;
+pub use swarm::SwarmView;
 
 const GATE_ON:  f32 = 1.0;
 const GATE_OFF: f32 = -1.0;
 
 const NAM_SAMPLE_RATE: u32 = 48_000;
-
-// Requested output period, larger than ALSA's own default -- gives the
-// always-on NAM/reverb DSP more slack against scheduling jitter on the NUC's
-// limited CPU, at the cost of ~21ms extra output latency (1024 frames @
-// 48kHz). Clamped to the device's actual supported range in AudioOutput::new.
 const AUDIO_BUFFER_FRAMES: cpal::FrameCount = 1024;
 
-// Fixed envelope times -- not GUI editable.
 const ENVELOPE_ATTACK:  f32 = 0.003;
 const ENVELOPE_RELEASE: f32 = 0.1;
 
-// Debug: captures snippet of cpal output stream to check non-zero output
-const CAPTURE_SECONDS: f32 = 0.1;
-
-// Cap on buffered cpal stream error strings -- oldest dropped once full so a
-// stuck device can't grow this unbounded.
-const AUDIO_ERROR_LOG_CAP: usize = 50;
-
-// The fixed "amp" stage always runs this one model
 const AMP_MODEL: &str = "lowgain";
 
+// Debug: captures snippet of cpal output stream to check non-zero output
+const CAPTURE_SECONDS: f32 = 0.1;
+const AUDIO_ERROR_LOG_CAP: usize = 50;
+
 pub type AudioErrors = Arc<Mutex<Vec<String>>>;
+
 
 // Taps the raw cpal output stream (mono, left channel) so main.rs's --test
 // self-test can confirm audio is actually producing signal.
@@ -126,17 +118,19 @@ impl TestTone {
     }
 }
 
-// Every GUI-facing handle onto a running AudioOutput, bundled so main.rs/
-// gui.rs thread one Option through instead of per-feature.
+// Every Shared cell external code (gui.rs/ui.rs) needs to read, bundled once
+// so AudioOutput and AudioHandles don't each declare their own copy of the
+// same ~20-field list (see mod.rs's old handles()/AudioOutput duplication).
+// Per-voice fields are read-only *View types (see growl.rs's GrowlView doc)
+// -- writes are audio-thread/MIDI-CC-only now, see voice.rs's module doc.
+// The rest (mix-stage globals) stay GUI-editable Shared cells, unchanged.
 #[derive(Clone)]
-pub struct AudioHandles {
-    pub test_tone: TestTone,
-
+pub struct Handles {
     pub voice_selected: Shared,
-    pub voice_a: ReeseHandle,
-    pub voice_b: GrowlHandle,
-    pub voice_c: BasicHandle,
-    pub voice_d: SwarmHandle,
+    pub voice_a: ReeseView,
+    pub voice_b: GrowlView,
+    pub voice_c: BasicView,
+    pub voice_d: SwarmView,
 
     pub main_sub_lvl:  Shared,
     pub dry_sub_lvl:   Shared,
@@ -158,9 +152,23 @@ pub struct AudioHandles {
     pub limiter_thresh: Shared,
 
     pub master_vol: Shared,
+}
 
+// Every GUI-facing handle onto a running AudioOutput, bundled so main.rs/
+// gui.rs thread one Option through instead of per-feature. Derefs to
+// `Handles` so `audio.voice_a`/`audio.master_vol`/etc. keep working as plain
+// field access.
+#[derive(Clone)]
+pub struct AudioHandles {
+    pub test_tone: TestTone,
+    pub handles: Handles,
     pub capture: AudioCapture,
     pub errors:  AudioErrors,
+}
+
+impl std::ops::Deref for AudioHandles {
+    type Target = Handles;
+    fn deref (&self) -> &Handles { &self.handles }
 }
 
 pub struct AudioOutput {
@@ -175,32 +183,7 @@ pub struct AudioOutput {
     velocity:          Shared,
     acceleration:      Shared,
 
-    voice_selected: Shared,
-    voice_a: ReeseHandle,
-    voice_b: GrowlHandle,
-    voice_c: BasicHandle,
-    voice_d: SwarmHandle,
-
-    main_sub_lvl:  Shared,
-    dry_sub_lvl:   Shared,
-    thump_peak:    Shared,
-    thump_decay:   Shared,
-
-    amp_bypass:    Shared,
-    amp_boost:     Shared,
-    amp_blend:     Shared,
-    amp_crossover: Shared,
-
-    reverb_bypass: Shared,
-    reverb_dry:    Shared,
-    reverb_decay:  Shared,
-    reverb_damp:   Shared,
-    reverb_size:   Shared,
-
-    limiter_bypass: Shared,
-    limiter_thresh: Shared,
-
-    master_vol: Shared,
+    handles: Handles,
 
     capture: AudioCapture,
     errors:  AudioErrors,
@@ -210,29 +193,8 @@ pub struct AudioOutput {
 impl AudioOutput {
     pub fn handles (&self) -> AudioHandles {
         AudioHandles {
-            voice_selected: self.voice_selected.clone(),
-            voice_a:        self.voice_a.clone(),
-            voice_b:        self.voice_b.clone(),
-            voice_c:        self.voice_c.clone(),
-            voice_d:        self.voice_d.clone(),
-            main_sub_lvl:   self.main_sub_lvl.clone(),
-            dry_sub_lvl:    self.dry_sub_lvl.clone(),
-            thump_peak:     self.thump_peak.clone(),
-            thump_decay:    self.thump_decay.clone(),
-            amp_bypass:     self.amp_bypass.clone(),
-            amp_boost:      self.amp_boost.clone(),
-            amp_blend:      self.amp_blend.clone(),
-            amp_crossover:  self.amp_crossover.clone(),
-            reverb_bypass:  self.reverb_bypass.clone(),
-            reverb_dry:     self.reverb_dry.clone(),
-            reverb_decay:   self.reverb_decay.clone(),
-            reverb_damp:    self.reverb_damp.clone(),
-            reverb_size:    self.reverb_size.clone(),
-            limiter_bypass: self.limiter_bypass.clone(),
-            limiter_thresh: self.limiter_thresh.clone(),
-            master_vol:     self.master_vol.clone(),
-            // For self-test
             test_tone: TestTone { freq: self.freq.clone(), gate: self.gate.clone() },
+            handles: self.handles.clone(),
             capture: self.capture.clone(),
             errors:  self.errors.clone(),
         }
@@ -259,10 +221,6 @@ impl AudioOutput {
 
         // Defaults to Reese (index 0) so a fresh run has an audible voice.
         let voice_selected = shared(0.0);
-        let voice_a        = ReeseHandle::new(&ReeseParams::default());
-        let voice_b        = GrowlHandle::new(&GrowlParams::default());
-        let voice_c        = BasicHandle::new(&BasicParams::default());
-        let voice_d        = SwarmHandle::new(&SwarmParams::default(), nam_names);
 
         let main_sub_lvl  = shared(0.35);
         let dry_sub_lvl   = shared(0.35);
@@ -307,15 +265,12 @@ impl AudioOutput {
             thump_decay.clone(),
 
             voice_selected.clone(),
-            voice_a.clone(),
-            voice_b.clone(),
-            voice_c.clone(),
-            voice_d.clone(),
 
             main_sub_lvl.clone(),
             dry_sub_lvl.clone(),
 
-            nam_models.clone(),
+            nam_models,
+            nam_names,
             amp_model_l,
             amp_model_r,
 
@@ -336,6 +291,38 @@ impl AudioOutput {
             master_vol.clone(),
 
         );
+
+        // Voice *View types are built here, right after the real Voices
+        // exist (inside `engine`, same module so private fields are
+        // visible) but before `engine` moves into build_stream's closure.
+        let handles = Handles {
+            voice_selected: voice_selected.clone(),
+            voice_a: engine.voice_a.view(),
+            voice_b: engine.voice_b.view(),
+            voice_c: engine.voice_c.view(),
+            voice_d: engine.voice_d.view(),
+
+            main_sub_lvl:  main_sub_lvl.clone(),
+            dry_sub_lvl:   dry_sub_lvl.clone(),
+            thump_peak:    thump_peak.clone(),
+            thump_decay:   thump_decay.clone(),
+
+            amp_bypass:    amp_bypass.clone(),
+            amp_boost:     amp_boost.clone(),
+            amp_blend:     amp_blend.clone(),
+            amp_crossover: amp_crossover.clone(),
+
+            reverb_bypass: reverb_bypass.clone(),
+            reverb_dry:    reverb_dry.clone(),
+            reverb_decay:  reverb_decay.clone(),
+            reverb_damp:   reverb_damp.clone(),
+            reverb_size:   reverb_size.clone(),
+
+            limiter_bypass: limiter_bypass.clone(),
+            limiter_thresh: limiter_thresh.clone(),
+
+            master_vol: master_vol.clone(),
+        };
 
         let host   = cpal::default_host();
         let device = host.default_output_device()
@@ -382,12 +369,7 @@ impl AudioOutput {
 
         Ok(AudioOutput {
             freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration,
-            voice_selected, voice_a, voice_b, voice_c, voice_d,
-            main_sub_lvl, dry_sub_lvl, thump_peak, thump_decay,
-            amp_bypass, amp_boost, amp_blend, amp_crossover,
-            reverb_bypass, reverb_dry, reverb_decay, reverb_damp, reverb_size,
-            limiter_bypass, limiter_thresh,
-            master_vol,
+            handles,
             capture, errors, stream,
         })
     }
@@ -470,6 +452,11 @@ struct Engine {
     limiter_thresh: Shared,
 
     master_vol: Shared,
+
+    // Second, independent MIDI connection carrying per-voice CC live-tuning
+    // -- see cc_input.rs. Drained once per cpal callback block in
+    // build_stream, right next to the existing on_block_start dispatch.
+    cc_input: CcInput,
 }
 
 impl Engine {
@@ -489,15 +476,12 @@ impl Engine {
         thump_decay: Shared,
 
         voice_selected: Shared,
-        voice_a: ReeseHandle,
-        voice_b: GrowlHandle,
-        voice_c: BasicHandle,
-        voice_d: SwarmHandle,
 
         main_sub_lvl: Shared,
         dry_sub_lvl: Shared,
 
         nam_models: Vec<Option<nam::NamModelSlot>>,
+        nam_names: Arc<Vec<String>>,
         amp_model_l: nam::NamModelSlot,
         amp_model_r: nam::NamModelSlot,
 
@@ -529,10 +513,10 @@ impl Engine {
             envelope: Box::new(adsr_live(ENVELOPE_ATTACK, 0.0, 1.0, ENVELOPE_RELEASE)),
             voice_selected,
 
-            voice_a: ReeseVoice::new(voice_a, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-            voice_b: GrowlVoice::new(voice_b, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-            voice_c: BasicVoice::new(voice_c, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-            voice_d: SwarmVoice::new(voice_d, nam_models, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_a: ReeseVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_b: GrowlVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_c: BasicVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_d: SwarmVoice::new(nam_models, nam_names, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
 
             main_sub_lvl,
             dry_sub_lvl,
@@ -549,6 +533,8 @@ impl Engine {
             limiter: Compressor::new(), limiter_bypass, limiter_thresh,
 
             master_vol,
+
+            cc_input: CcInput::connect(),
         }
     }
 
@@ -690,6 +676,17 @@ where
                 if selected == BasicVoice::INDEX { engine.voice_c.on_block_start(n); }
                 if selected == SwarmVoice::INDEX { engine.voice_d.on_block_start(n); }
 
+                // Drain the CC ring buffer and retarget each message to
+                // whichever voice is currently selected -- switching voices
+                // mid-performance retargets subsequent CC messages, it
+                // doesn't replay queued ones onto the old voice.
+                while let Some((cc, value)) = engine.cc_input.pop() {
+                    if selected == ReeseVoice::INDEX { engine.voice_a.apply_cc(cc, value); }
+                    if selected == GrowlVoice::INDEX { engine.voice_b.apply_cc(cc, value); }
+                    if selected == BasicVoice::INDEX { engine.voice_c.apply_cc(cc, value); }
+                    if selected == SwarmVoice::INDEX { engine.voice_d.apply_cc(cc, value); }
+                }
+
                 for i in 0..n {
                     let (dry_l, dry_r, dry_sub) = engine.tick_pre_nam();
                     dryl_block[i]   = dry_l;
@@ -744,7 +741,7 @@ impl AudioOutput {
             },
             DeltaEvent::NoteEnd(_) => self.gate.set_value(GATE_OFF),
             // Index must match VOICE_NAMES order in gui.rs.
-            DeltaEvent::VoiceChange(voice) => self.voice_selected.set_value(*voice as u8 as f32),
+            DeltaEvent::VoiceChange(voice) => self.handles.voice_selected.set_value(*voice as u8 as f32),
             DeltaEvent::Panic()    => self.gate.set_value(GATE_OFF),
             _ => {},
         }

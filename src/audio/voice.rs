@@ -5,11 +5,18 @@
 // when the live selector doesn't match its own INDEX, so only the selected
 // voice burns CPU despite the whole graph staying wired.
 //
-// Each concrete Voice owns whatever Shared params it needs. A paired
-// lightweight *Handle struct (just the Shared cells, no DSP state) is what
-// AudioHandles/gui.rs hold, so the GUI thread can read/write live params
-// without touching the audio thread's own copy. A plain *Params struct
-// (just f32s) is the snapshot/performance-default shape -- see VoiceParams.
+// Each concrete Voice owns its tunable params directly, as `Shared` cells
+// (for anything outside the audio thread needs to read, e.g. gui.rs's
+// read-only meters) or plain fields (for anything nobody outside the audio
+// thread touches). The audio thread is the only writer of every per-voice
+// value -- tuning happens live via MIDI CC (apply_cc below, see
+// src/audio/cc_input.rs), not GUI knob-dragging -- so there's no separate
+// GUI-facing handle type to keep in sync.
+//
+// CC registry (per-voice, non-overlapping; distinct from the global
+// performance-signal CCs 1-4/7-8 in hydra/midi.rs): Reese 20-27, Growl
+// 30-34, Basic 40-44, Swarm 50-54. See each voice's apply_cc for the exact
+// cc -> field mapping.
 //
 
 use fundsp::prelude64::*;
@@ -26,6 +33,10 @@ pub trait Voice: AudioNode<Inputs = U2, Outputs = U2> {
     // inference (a NamStage internally, say): fill a scratch buffer across
     // tick() calls, run it here.
     fn on_block_start (&mut self, _block_len: usize) {}
+    // Applies one MIDI CC message (value pre-normalized 0..1) to whichever
+    // of this voice's params that cc number maps to; unmapped cc numbers
+    // are ignored. See the CC registry above.
+    fn apply_cc (&mut self, cc: u8, value: f32);
 }
 
 // Pitch-thump envelope: each voice owns its own copy so `thump` is a signal
@@ -67,13 +78,5 @@ impl ThumpMod {
         let decay = (-5.0 * t / decay_sec).exp();
         1.0 + decay * pitch_bump
     }
-}
-
-// (name, value) pairs for every param a voice exposes -- the shape
-// snapshot.rs needs to save/load one voice's params as flat text.
-pub trait VoiceParams: Default {
-    fn voice_name () -> &'static str;
-    fn fields (&self) -> Vec<(&'static str, f32)>;
-    fn from_fields (fields: &[(String, f32)]) -> Self;
 }
 

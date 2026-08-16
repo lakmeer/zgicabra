@@ -11,6 +11,7 @@
     - sin/tri/saw/sq select
     - multivoice
   - Growl
+    - Needs dedicated sub
     - Multiband distortion
       - low: `bass`
       - hi: `mesa`

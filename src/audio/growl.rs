@@ -1,26 +1,4 @@
 
-//
-// growl.vital, baked in. Not a general-purpose wavetable oscillator --
-// this GenNode reproduces one specific Vital patch's whole audio graph
-// (two Smear-morphed oscillators, their internal LFO/noise modulation,
-// and its four macro-gated effects), with only the patch's 4 macros
-// exposed as p1-p4. Read from growl.vital (JSON) and cross-checked
-// against Vital's own source (github.com/mtytel/vital, GPLv3).
-//
-// osc_a: 1 voice, octave down, static saw-ish spectrum, its Smear amount
-//        wobbled 0..0.14 by smoothed noise (stand-in for Vital's Perlin
-//        random_1) -- the main "growl" motion.
-// osc_b: 12-voice unison (Vital's real per-voice cents formula), static
-//        saw-ish spectrum, Smear amount 0.055 + up to +0.135 from WARP.
-// Both cross-faded in level by a slow internal sine LFO (stand-in for
-// Vital's tempo-synced lfo_1).
-//
-// p1 BASS DRIVE -- low shelf boost + extra saturation, wet-mixed
-// p2 FILTER     -- moog lowpass cutoff sweep (closed -> open)
-// p3 SPACE      -- reverb wet mix
-// p4 WARP       -- osc_b Smear boost (real ported mod-matrix effect) + chorus wet mix
-//
-
 use std::sync::Arc;
 
 use fundsp::prelude64::*;
@@ -30,8 +8,8 @@ use num_complex::Complex32;
 use crate::tools::linexp;
 use crate::zgicabra::SignalState;
 use super::gen_node::GenNode;
-use super::voice::{Voice, VoiceParams, ThumpMod};
-use super::nam::{NamStage, NamModelCycler, NamModelSlot, NAM_BLOCK_CAP, default_model_index};
+use super::voice::{Voice, ThumpMod};
+use super::nam::{NamStage, NAM_BLOCK_CAP};
 
 const FRAME_LEN: usize = 256;    // power of two, required by fundsp::fft
 const NUM_HARMONICS: usize = 32; // harmonics 1..=32 tracked per oscillator
@@ -47,6 +25,7 @@ const OSC_B_LEVEL: f32 = 0.517;
 const OSC_B_LFO_WEIGHT: f32 = 0.413;
 const OSC_B_BASE_SMEAR: f32 = 0.055;
 const OSC_B_WARP_SMEAR_ADD: f32 = 0.135; // macro_control_4 (WARP) -> osc_2_spectral_morph_amount
+//
 const DETUNE_RANGE: f32 = 2.0;   // osc_2_detune_range
 const UNISON_DETUNE: f32 = 2.9;  // osc_2_unison_detune
 
@@ -56,9 +35,6 @@ const CROSSFADE_HZ: f32 = 0.15;  // stand-in for lfo_1 (tempo-synced ~1Hz in the
 const WOBBLE_HZ: f32 = 0.2;      // smoothing rate for the noise-based Perlin stand-in
 const CONTROL_RATE_DIV: usize = 64; // Smear resynthesis runs at this coarser rate, not per-sample
 
-// filter_1 (kDirty, cutoff ~10.8kHz -> effectively just its drive) and
-// filter_2 (kAnalog, cutoff ~681Hz, blend past bandpass toward highpass)
-// baked in as always-on base character -- not macro-gated in the patch.
 const BASE_DRIVE: f32 = 3.1;
 const BASE_HIGHPASS_HZ: f32 = 681.0;
 
@@ -291,127 +267,92 @@ impl GenNode for WavetableGen {
 // as everything else in this engine, plus a bolted-on NAM amp stage.
 //
 
-#[derive(Clone, Copy)]
-pub struct GrowlParams {
-    pub bass_drive:    f32,
-    pub filter:        f32,
-    pub space:         f32,
-    pub warp:          f32,
-    pub nam_crossover: f32,
-}
+// Fixed defaults, formerly GrowlParams::default() -- seeded directly into
+// the Shared cells below now that there's no separate snapshot/handle shape.
+const DEFAULT_BASS_DRIVE:    f32 = 0.8;
+const DEFAULT_FILTER:        f32 = 0.9;
+const DEFAULT_SPACE:         f32 = 0.25;
+const DEFAULT_WARP:          f32 = 0.3;
+const DEFAULT_NAM_CROSSOVER: f32 = 0.0;
 
-impl Default for GrowlParams {
-    fn default () -> GrowlParams {
-        GrowlParams {
-            bass_drive:    0.8,
-            filter:        0.9,
-            space:         0.25,
-            warp:          0.3,
-            nam_crossover: 0.0 
-        }
-    }
-}
-
-impl VoiceParams for GrowlParams {
-    fn voice_name () -> &'static str { "growl" }
-
-    fn fields (&self) -> Vec<(&'static str, f32)> {
-        vec![
-            ("bass_drive",    self.bass_drive),
-            ("filter",        self.filter),
-            ("space",         self.space),
-            ("warp",          self.warp),
-            ("nam_crossover", self.nam_crossover),
-        ]
-    }
-
-    fn from_fields (fields: &[(String, f32)]) -> GrowlParams {
-        let mut params = GrowlParams::default();
-        for (name, value) in fields {
-            match name.as_str() {
-                "bass_drive"    => params.bass_drive    = *value,
-                "filter"        => params.filter        = *value,
-                "space"         => params.space         = *value,
-                "warp"          => params.warp          = *value,
-                "nam_crossover" => params.nam_crossover = *value,
-                _ => {},
-            }
-        }
-        params
-    }
-}
-
-// GUI/AudioHandles-facing handle: just the live Shared cells, no DSP state --
-// cheap to clone (Arc bump), safe to hand to the GUI thread.
-#[derive(Clone)]
-pub struct GrowlHandle {
-    pub bass_drive:    Shared,
-    pub filter:        Shared,
-    pub space:         Shared,
-    pub warp:          Shared,
-    pub nam_crossover: Shared,
-}
-
-impl GrowlHandle {
-    pub fn new (params: &GrowlParams) -> GrowlHandle {
-        GrowlHandle {
-            bass_drive:    shared(params.bass_drive),
-            filter:        shared(params.filter),
-            space:         shared(params.space),
-            warp:          shared(params.warp),
-            nam_crossover: shared(params.nam_crossover),
-        }
-    }
-
-    pub fn params (&self) -> GrowlParams {
-        GrowlParams {
-            bass_drive:    self.bass_drive.value(),
-            filter:        self.filter.value(),
-            space:         self.space.value(),
-            warp:          self.warp.value(),
-            nam_crossover: self.nam_crossover.value(),
-        }
-    }
-
-    pub fn load (&self, params: &GrowlParams) {
-        self.bass_drive.set_value(params.bass_drive);
-        self.filter.set_value(params.filter);
-        self.space.set_value(params.space);
-        self.warp.set_value(params.warp);
-        self.nam_crossover.set_value(params.nam_crossover);
-    }
-}
-
-// Audio-thread owner: the real WavetableGen plus the same Shared cells the
-// handle above holds (same underlying Arc -- edits sync). Note WavetableGen's
+// Audio-thread owner: the real WavetableGen plus one Shared cell per
+// externally-visible param (GUI reads these read-only; MIDI CC, via
+// apply_cc, is the only writer -- see voice.rs's module doc). `_input`
+// fields are the authored knob values; `_live` fields are read-only,
+// written by GrowlVoice each tick, and show the actual post-modulation
+// values the DSP is using -- for visualisation only. Note WavetableGen's
 // Clone impl resets to a fresh, un-warmed-up instance (see above).
 #[derive(Clone)]
 pub struct GrowlVoice {
-    inner:  WavetableGen,
-    handle: GrowlHandle,
-    nam:    NamStage,
+    inner:   WavetableGen,
+    nam:     NamStage,
     scratch: Vec<f32>,
     pos:     usize,
-
     thump:   ThumpMod,
-    thump_signal: f32,
 
+    pub bass_drive_input:    Shared,
+    pub filter_input:        Shared,
+    pub space_input:         Shared,
+    pub warp_input:          Shared,
+    pub nam_crossover_input: Shared,
+
+    pub filter_live:    Shared,
+    pub warp_live:      Shared,
+    pub freq_mult_live: Shared,
+
+    thump_signal:  f32,
     filter_signal: f32,
-    fuzz_signal: f32,
-    width_signal: f32,
+    fuzz_signal:   f32,
+    width_signal:  f32,
+}
+
+#[derive(Clone)]
+pub struct GrowlView {
+    pub bass_drive_input:    Shared,
+    pub filter_input:        Shared,
+    pub space_input:         Shared,
+    pub warp_input:          Shared,
+    pub nam_crossover_input: Shared,
+
+    pub filter_live:    Shared,
+    pub warp_live:      Shared,
+    pub freq_mult_live: Shared,
 }
 
 impl GrowlVoice {
-    pub fn new (handle: GrowlHandle, thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared) -> GrowlVoice {
+    pub fn view (&self) -> GrowlView {
+        GrowlView {
+            bass_drive_input:    self.bass_drive_input.clone(),
+            filter_input:        self.filter_input.clone(),
+            space_input:         self.space_input.clone(),
+            warp_input:          self.warp_input.clone(),
+            nam_crossover_input: self.nam_crossover_input.clone(),
+            filter_live:    self.filter_live.clone(),
+            warp_live:      self.warp_live.clone(),
+            freq_mult_live: self.freq_mult_live.clone(),
+        }
+    }
+
+    pub fn new (thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared) -> GrowlVoice {
         let model = super::nam::load_named_model(NAM_MODEL).unwrap();
         let nam = NamStage::new(vec![Some(model)], shared(0.0));
 
         GrowlVoice {
             inner: WavetableGen::new(),
-            handle,
             nam,
             scratch: vec![0.0; NAM_BLOCK_CAP],
             pos: 0,
+
+            bass_drive_input:    shared(DEFAULT_BASS_DRIVE),
+            filter_input:        shared(DEFAULT_FILTER),
+            space_input:         shared(DEFAULT_SPACE),
+            warp_input:          shared(DEFAULT_WARP),
+            nam_crossover_input: shared(DEFAULT_NAM_CROSSOVER),
+
+            filter_live:    shared(0.0),
+            warp_live:      shared(0.0),
+            freq_mult_live: shared(0.0),
+
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay), thump_signal: 0.0,
             filter_signal: 0.0,
             fuzz_signal:   0.0,
@@ -435,13 +376,19 @@ impl AudioNode for GrowlVoice {
             return Frame::from([0.0, 0.0]);
         }
 
-        let freq = freq * self.thump.tick(self.thump_signal);
-        let filter_cutoff = (self.handle.filter.value() * self.filter_signal).clamp(0.0, 1.0);
-        let drive = self.handle.bass_drive.value();
-        let space = self.handle.space.value();
-        let warp = (self.handle.warp.value() * (1.0 - self.width_signal)).clamp(0.0, 1.0);
+        let freq_mult = self.thump.tick(self.thump_signal);
+        self.freq_mult_live.set_value(freq_mult);
+        let freq = freq * freq_mult;
 
-        let raw = self.inner.tick(&Frame::from([ freq, 1.0, drive, filter_cutoff, space, warp ]))[0];
+        self.filter_live.set_value((self.filter_input.value() * self.filter_signal).clamp(0.0, 1.0));
+        self.warp_live.set_value((self.warp_input.value() * (1.0 - self.width_signal)).clamp(0.0, 1.0));
+
+        let drive = self.bass_drive_input.value();
+        let space = self.space_input.value();
+
+        let raw = self.inner.tick(&Frame::from([
+            freq, 1.0, drive, self.filter_live.value(), space, self.warp_live.value()
+        ]))[0];
 
         let wet = self.scratch.get(self.pos).copied().unwrap_or(0.0);
         if let Some(cell) = self.scratch.get_mut(self.pos) { *cell = raw; }
@@ -472,9 +419,22 @@ impl Voice for GrowlVoice {
     // level=1/boost=1 -- Bypass (model index 0) already gives dry passthrough.
     fn on_block_start (&mut self, block_len: usize) {
         let n = std::cmp::min(block_len, self.scratch.len());
-        let crossover_hz = self.handle.nam_crossover.value();
+        let crossover_hz = self.nam_crossover_input.value();
         self.nam.process_block(&mut self.scratch[..n], 1.0, self.fuzz_signal, 1.0, crossover_hz);
         self.pos = 0;
+    }
+
+    // CC 30-34, 0..1 normalized input scaled to each param's own range
+    // (matching the ranges gui.rs's read-only meters display).
+    fn apply_cc (&mut self, cc: u8, value: f32) {
+        match cc {
+            30 => self.bass_drive_input.set_value(value.clamp(0.0, 1.0)),
+            31 => self.filter_input.set_value(value.clamp(0.0, 1.0)),
+            32 => self.space_input.set_value(value.clamp(0.0, 1.0)),
+            33 => self.warp_input.set_value(value.clamp(0.0, 1.0)),
+            34 => self.nam_crossover_input.set_value(value.clamp(0.0, 1.0) * 2000.0),
+            _ => {},
+        }
     }
 }
 

@@ -24,7 +24,7 @@ use fundsp::prelude64::*;
 use num_complex::Complex32;
 
 use crate::tools::linexp;
-use super::voice::{Voice, VoiceParams, ThumpMod};
+use super::voice::{Voice, ThumpMod};
 use super::nam::{NamStage, NamModelCycler, NamModelSlot, NAM_BLOCK_CAP};
 use super::filter::MoogFilterFx;
 use super::crusher::Crusher;
@@ -32,26 +32,12 @@ use super::compressor::Compressor;
 
 const NUM_OSCS: usize = 5;
 
-// Osc 0/1 = tri, 2/3 = saw, 4 = square -- arbitrary assignment, order has
-// no functional meaning beyond matching the spec's "2 tri, 2 saw, 1 square".
 #[derive(Clone, Copy)]
 enum OscShape { Tri, Saw, Square }
 const OSC_SHAPES: [OscShape; NUM_OSCS] = [OscShape::Tri, OscShape::Tri, OscShape::Saw, OscShape::Saw, OscShape::Square];
 
-// Im-axis (pan) of the orbit position is in the same Hz-scaled units as the
-// Re-axis (frequency), since both come from one `radius` -- this constant
-// is how many Hz of Im-deviation reach full pan swing. Chosen so a mid-size
-// radius already pans hard, since a full-radius Hz swing on the freq axis
-// alone (a few hundred Hz) would be a huge, un-musical pan jump if used 1:1.
-const PAN_NORM_HZ: f32 = 120.0;
-
 const MIN_OSC_FREQ: f32 = 20.0;
 
-// Hand-rolled phaser: cascaded first-order allpass stages with a shared,
-// LFO-modulated break frequency, plus feedback. Not fundsp's own phaser()
-// combinator -- that one bakes its LFO into a fixed Fn(f32) -> f32 closure
-// at construction, which doesn't fit a rate that has to track a live,
-// per-oscillator orbiting frequency every sample.
 const PHASER_STAGES: usize = 4;
 const PHASER_FC_LO: f32 = 200.0;
 const PHASER_FC_HI: f32 = 3000.0;
@@ -102,6 +88,8 @@ fn xover_alpha (fc: f32, sample_rate: f32) -> f32 {
     1.0 - (-2.0 * PI * fc / sample_rate).exp()
 }
 
+fn lerp (a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
+
 const LIMITER_THRESH_DB: f32 = -24.0; // "low threshold" -- squashes hard to normalize into the crossover
 
 // Fixed Crusher/moog character -- not GUI-exposed, the spec only calls out
@@ -118,97 +106,15 @@ const CRUSH_MAKEUP_DB:    f32 = 0.0;
 
 const MOOG_RESONANCE: f32 = 0.3; // 0..1, no GUI knob specified for this
 
-#[derive(Clone, Copy)]
-pub struct SwarmParams {
-    pub chase_factor: f32,
-    pub radius:        f32, // Hz -- orbit radius on both the freq and (scaled) pan axes
-    pub orbit_speed:   f32, // Hz -- rotations per second
-    pub phaser_depth:  f32,
-    pub xover_freq: f32, // Hz, splits the swarm mix before the two NAM stages
-}
-
-impl Default for SwarmParams {
-    fn default () -> SwarmParams {
-        SwarmParams { chase_factor: 0.99, radius: 60.0, orbit_speed: 0.25, phaser_depth: 0.4, xover_freq: 400.0 }
-    }
-}
-
-impl VoiceParams for SwarmParams {
-    fn voice_name () -> &'static str { "swarm" }
-
-    fn fields (&self) -> Vec<(&'static str, f32)> {
-        vec![
-            ("chase_factor",   self.chase_factor),
-            ("radius",         self.radius),
-            ("orbit_speed",    self.orbit_speed),
-            ("phaser_depth",   self.phaser_depth),
-            ("xover_freq",     self.xover_freq),
-        ]
-    }
-
-    fn from_fields (fields: &[(String, f32)]) -> SwarmParams {
-        let mut params = SwarmParams::default();
-        for (name, value) in fields {
-            match name.as_str() {
-                "chase_factor"   => params.chase_factor   = *value,
-                "radius"         => params.radius         = *value,
-                "orbit_speed"    => params.orbit_speed    = *value,
-                "phaser_depth"   => params.phaser_depth   = *value,
-                "xover_freq"     => params.xover_freq = *value,
-                _ => {},
-            }
-        }
-        params
-    }
-}
-
-#[derive(Clone)]
-pub struct SwarmHandle {
-    pub chase_factor: Shared,
-    pub radius:       Shared,
-    pub orbit_speed:  Shared,
-    pub phaser_depth: Shared,
-    pub xover_freq:   Shared,
-    pub nam_lo: NamModelCycler,
-    pub nam_hi: NamModelCycler,
-}
+const PAN_NORM_HZ:          f32 = 20.0;
+const DEFAULT_CHASE_FACTOR: f32 = 0.99;
+const DEFAULT_RADIUS:       f32 = 6.0;  // Hz -- orbit radius on both the freq and (scaled) pan axes
+const DEFAULT_ORBIT_SPEED:  f32 = 2.25; // Hz -- rotations per second
+const DEFAULT_PHASER_DEPTH: f32 = 0.4;
+const DEFAULT_XOVER_FREQ:   f32 = 400.0; // Hz, splits the swarm mix before the two NAM stages
 
 fn model_index_by_name (names: &[String], name: &str) -> usize {
     names.iter().position(|n| n == name).unwrap_or(0)
-}
-
-impl SwarmHandle {
-    pub fn new (params: &SwarmParams, nam_names: Arc<Vec<String>>) -> SwarmHandle {
-        let lo_index = model_index_by_name(&nam_names, "wetbass") as f32;
-        let hi_index = model_index_by_name(&nam_names, "sansamp") as f32;
-        SwarmHandle {
-            chase_factor: shared(params.chase_factor),
-            radius:       shared(params.radius),
-            orbit_speed:  shared(params.orbit_speed),
-            phaser_depth: shared(params.phaser_depth),
-            xover_freq:   shared(params.xover_freq),
-            nam_lo: NamModelCycler::new(shared(lo_index), nam_names.clone()),
-            nam_hi: NamModelCycler::new(shared(hi_index), nam_names),
-        }
-    }
-
-    pub fn params (&self) -> SwarmParams {
-        SwarmParams {
-            chase_factor: self.chase_factor.value(),
-            radius:       self.radius.value(),
-            orbit_speed:  self.orbit_speed.value(),
-            phaser_depth: self.phaser_depth.value(),
-            xover_freq:   self.xover_freq.value(),
-        }
-    }
-
-    pub fn load (&self, params: &SwarmParams) {
-        self.chase_factor.set_value(params.chase_factor);
-        self.radius.set_value(params.radius);
-        self.orbit_speed.set_value(params.orbit_speed);
-        self.phaser_depth.set_value(params.phaser_depth);
-        self.xover_freq.set_value(params.xover_freq);
-    }
 }
 
 // One output channel's post-swarm chain: limiter -> xover -> (low NAM,
@@ -250,10 +156,6 @@ impl ChannelChain {
         self.crusher.set_sample_rate(sample_rate);
     }
 
-    // Runs the limiter + xover split immediately, buffers the two raw
-    // bands for this block's NAM inference, and reads back last block's
-    // already-inferred wet bands (one-block latency, same ring shape as
-    // GrowlVoice's scratch) to finish the chain through moog + crusher.
     fn tick (&mut self, x: f32, sample_rate: f32, filter_cutoff: f32, xover_hz: f32) -> f32 {
         let (limited, _) = self.limiter.tick(x, x, LIMITER_THRESH_DB);
 
@@ -275,24 +177,32 @@ impl ChannelChain {
 
     fn on_block_start (&mut self, block_len: usize, fuzz_signal: f32) {
         let n = std::cmp::min(block_len, self.raw_lo.len());
-        self.nam_lo.process_block(&mut self.raw_lo[..n], 1.0, fuzz_signal.clamp(0.0, 1.0), 1.0, 0.0);
-        self.nam_hi.process_block(&mut self.raw_hi[..n], 1.0, fuzz_signal.clamp(0.0, 1.0), 1.0, 0.0);
+        // to save cpu for now
+        //self.nam_lo.process_block(&mut self.raw_lo[..n], 1.0, fuzz_signal.clamp(0.0, 1.0), 1.0, 0.0);
+        //self.nam_hi.process_block(&mut self.raw_hi[..n], 1.0, fuzz_signal.clamp(0.0, 1.0), 1.0, 0.0);
         self.pos = 0;
     }
 }
 
 #[derive(Clone)]
 pub struct SwarmVoice {
-    oscs:    [An<WaveSynth<U1>>; NUM_OSCS],
-    phasers: [Phaser; NUM_OSCS],
-    angle:   [f32; NUM_OSCS], // running orbit phase per oscillator, radians
+    pub oscs:    [An<WaveSynth<U1>>; NUM_OSCS],
+    pub phasers: [Phaser; NUM_OSCS],
+    pub angle:   [f32; NUM_OSCS], // running orbit phase per oscillator, radians
 
     origin_freq: f32, // chased origin, Hz -- see ThumpMod::tick's own doc for why thump applies after
 
     chain_l: ChannelChain,
     chain_r: ChannelChain,
 
-    handle: SwarmHandle,
+    pub chase_factor: Shared,
+    pub radius:       Shared,
+    pub orbit_speed:  Shared,
+    pub phaser_depth: Shared,
+    pub xover_freq:   Shared,
+    pub nam_lo: NamModelCycler,
+    pub nam_hi: NamModelCycler,
+
     sample_rate: f32,
 
     thump: ThumpMod,
@@ -302,10 +212,36 @@ pub struct SwarmVoice {
     width_signal:  f32,
 }
 
+// Read-only-from-outside view onto SwarmVoice's Shared cells -- see
+// GrowlView's doc in growl.rs for why this exists. nam_lo/nam_hi are
+// NamModelCycler, already a cheap-clone Shared+Arc<Vec<String>> bundle.
+#[derive(Clone)]
+pub struct SwarmView {
+    pub chase_factor: Shared,
+    pub radius:       Shared,
+    pub orbit_speed:  Shared,
+    pub phaser_depth: Shared,
+    pub xover_freq:   Shared,
+    pub nam_lo: NamModelCycler,
+    pub nam_hi: NamModelCycler,
+}
+
 impl SwarmVoice {
+    pub fn view (&self) -> SwarmView {
+        SwarmView {
+            chase_factor: self.chase_factor.clone(),
+            radius:       self.radius.clone(),
+            orbit_speed:  self.orbit_speed.clone(),
+            phaser_depth: self.phaser_depth.clone(),
+            xover_freq:   self.xover_freq.clone(),
+            nam_lo: self.nam_lo.clone(),
+            nam_hi: self.nam_hi.clone(),
+        }
+    }
+
     pub fn new (
-        handle: SwarmHandle,
         nam_models: Vec<Option<NamModelSlot>>,
+        nam_names: Arc<Vec<String>>,
         thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared,
     ) -> SwarmVoice {
         let oscs: [An<WaveSynth<U1>>; NUM_OSCS] = std::array::from_fn(|i| match OSC_SHAPES[i] {
@@ -315,14 +251,26 @@ impl SwarmVoice {
         });
         let angle: [f32; NUM_OSCS] = std::array::from_fn(|i| i as f32 * TAU / NUM_OSCS as f32);
 
+        let lo_index = model_index_by_name(&nam_names, "wetbass") as f32;
+        let hi_index = model_index_by_name(&nam_names, "sansamp") as f32;
+        let nam_lo = NamModelCycler::new(shared(lo_index), nam_names.clone());
+        let nam_hi = NamModelCycler::new(shared(hi_index), nam_names);
+
         SwarmVoice {
             oscs,
             phasers: std::array::from_fn(|_| Phaser::new()),
             angle,
             origin_freq: 110.0,
-            chain_l: ChannelChain::new(nam_models.clone(), handle.nam_lo.shared(), handle.nam_hi.shared()),
-            chain_r: ChannelChain::new(nam_models, handle.nam_lo.shared(), handle.nam_hi.shared()),
-            handle,
+            chain_l: ChannelChain::new(nam_models.clone(), nam_lo.shared(), nam_hi.shared()),
+            chain_r: ChannelChain::new(nam_models, nam_lo.shared(), nam_hi.shared()),
+
+            chase_factor: shared(DEFAULT_CHASE_FACTOR),
+            radius:       shared(DEFAULT_RADIUS),
+            orbit_speed:  shared(DEFAULT_ORBIT_SPEED),
+            phaser_depth: shared(DEFAULT_PHASER_DEPTH),
+            xover_freq:   shared(DEFAULT_XOVER_FREQ),
+            nam_lo, nam_hi,
+
             sample_rate: DEFAULT_SR as f32,
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
             thump_signal: 0.0, filter_signal: 0.0, fuzz_signal: 0.0, width_signal: 0.0,
@@ -340,14 +288,14 @@ impl AudioNode for SwarmVoice {
         let selected = input[1] as usize;
         if selected != Self::INDEX { return Frame::from([0.0, 0.0]); }
 
-        let chase_factor = self.handle.chase_factor.value().clamp(0.0, 0.999_999);
-        self.origin_freq += (freq - self.origin_freq) * chase_factor;
+        let chase_factor = self.chase_factor.value().clamp(0.0, 0.999_999);
+        self.origin_freq = lerp(self.origin_freq, freq, chase_factor);
         let origin_freq = self.origin_freq * self.thump.tick(self.thump_signal);
 
         let width_signal = self.width_signal.clamp(0.0, 1.0);
-        let radius       = self.handle.radius.value().max(0.0)      * (1.0 + width_signal);
-        let orbit_speed  = self.handle.orbit_speed.value()          * (1.0 + width_signal);
-        let phaser_depth = (self.handle.phaser_depth.value() + width_signal + self.fuzz_signal).clamp(0.0, 1.0);
+        let radius       = self.radius.value().max(0.0)      * (1.0 + width_signal);
+        let orbit_speed  = self.orbit_speed.value()          * (1.0 + width_signal);
+        let phaser_depth = (self.phaser_depth.value() + width_signal + self.fuzz_signal).clamp(0.0, 1.0);
 
         let mut mix_l = 0.0f32;
         let mut mix_r = 0.0f32;
@@ -374,7 +322,7 @@ impl AudioNode for SwarmVoice {
         mix_r *= norm;
 
         let filter_cutoff = self.filter_signal.clamp(0.0, 1.0);
-        let xover_hz  = self.handle.xover_freq.value().max(1.0);
+        let xover_hz  = self.xover_freq.value().max(1.0);
 
         let out_l = self.chain_l.tick(mix_l, self.sample_rate, filter_cutoff, xover_hz);
         let out_r = self.chain_r.tick(mix_r, self.sample_rate, filter_cutoff, xover_hz);
@@ -406,5 +354,18 @@ impl Voice for SwarmVoice {
     fn on_block_start (&mut self, block_len: usize) {
         self.chain_l.on_block_start(block_len, self.fuzz_signal);
         self.chain_r.on_block_start(block_len, self.fuzz_signal);
+    }
+
+    // CC 50-54, 0..1 normalized input scaled to each param's own range.
+    fn apply_cc (&mut self, cc: u8, value: f32) {
+        let value = value.clamp(0.0, 1.0);
+        match cc {
+            50 => self.chase_factor.set_value(0.5 + value * 0.5),
+            51 => self.radius.set_value(value * 200.0),
+            52 => self.orbit_speed.set_value(value * 2.0),
+            53 => self.phaser_depth.set_value(value),
+            54 => self.xover_freq.set_value(value * 2000.0),
+            _ => {},
+        }
     }
 }

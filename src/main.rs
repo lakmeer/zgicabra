@@ -55,13 +55,11 @@ fn main() {
     let args = tools::parse_args();
 
     let mut hydra_state = HydraState::new();
-
-    let mut output = AudioOutput::new()
-        .unwrap_or_else(|e| panic!("║ 🟥 Failed to init audio backend: {e}"));
-    let audio = output.handles();
-    let audio_errors = audio.errors.clone();
+    let mut output = AudioOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init audio backend: {e}"));
 
     output.panic(); // Kill any overrunning notes
+
+    let audio = output.handles();
 
     hydra::start(&mut hydra_state);
 
@@ -87,15 +85,15 @@ fn main() {
             std::thread::spawn(move || run_self_test(test_handles, test_quit));
         }
 
-        let engine_audio_errors = audio_errors.clone();
+        let engine_audio = audio.clone();
         let engine_thread = std::thread::spawn(move || {
-            run_engine_loop(args, hydra_state, output, engine_bridge, engine_quit, engine_mock_controls, engine_audio_errors);
+            run_engine_loop(args, hydra_state, output, engine_bridge, engine_quit, engine_mock_controls, engine_audio);
         });
 
         gui::run(Some(audio), mock_controls, bridge, quit);
         engine_thread.join().expect("engine thread panicked");
     } else {
-        run_engine_loop(args, hydra_state, output, bridge, Arc::new(AtomicBool::new(false)), mock_controls, audio_errors);
+        run_engine_loop(args, hydra_state, output, bridge, Arc::new(AtomicBool::new(false)), mock_controls, audio);
     }
 }
 
@@ -143,7 +141,7 @@ fn run_engine_loop (
     bridge: ZgicabraBridge, 
     quit: Arc<AtomicBool>,
     mock_controls: Option<MockControls>,
-    audio_errors: audio::AudioErrors
+    audio: audio::AudioHandles
 ) {
 
     let no_ui = args.debug || args.gui;
@@ -207,10 +205,7 @@ fn run_engine_loop (
         bridge.sync(&mut zgicabra);
 
         if !no_ui {
-            ui::draw_all(&zgicabra, &history, &delta_events, &delta_history, &audio_errors);
-            //ui::draw_events(&delta_events, &delta_history);
-            //ui::draw_note_state(&zgicabra);
-            //ui::draw_graph(&history);
+            ui::draw_all(&zgicabra, &history, &delta_history, &audio);
         }
 
         output.handle_signal(&zgicabra.signal);
