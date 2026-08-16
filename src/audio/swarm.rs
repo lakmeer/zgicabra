@@ -104,11 +104,18 @@ const CRUSH_ATTACK:       f32 = 0.01;
 const CRUSH_DEPTH:        f32 = 1.0;
 const CRUSH_MAKEUP_DB:    f32 = 0.0;
 
-const MOOG_RESONANCE: f32 = 0.3; // 0..1, no GUI knob specified for this
+// 0..1, no GUI knob specified for this. MoogFilterFx (filter.rs) remaps this
+// into a raw Moog Q of 0.1..4.0 -- simulating that ladder's own feedback
+// equation shows it self-oscillates (sustained output with silent input)
+// once raw Q crosses ~0.6-1.0 depending on cutoff, i.e. past input~0.13-0.23.
+// 0.3 here maps to raw Q 1.27, comfortably past that onset at every cutoff,
+// which is the whine -- not the filter reacting to the swarm, oscillating
+// on its own. Kept well under the onset margin instead.
+const MOOG_RESONANCE: f32 = 0.08;
 
 const PAN_NORM_HZ:          f32 = 20.0;
 const DEFAULT_CHASE_FACTOR: f32 = 0.99;
-const DEFAULT_RADIUS:       f32 = 6.0;  // Hz -- orbit radius on both the freq and (scaled) pan axes
+const DEFAULT_RADIUS:       f32 = 90.0; // cents -- orbit radius on the freq axis, converted to Hz per-tick relative to the current origin frequency so the detune width stays perceptually consistent across pitch (see radius_hz in tick)
 const DEFAULT_ORBIT_SPEED:  f32 = 2.25; // Hz -- rotations per second
 const DEFAULT_PHASER_DEPTH: f32 = 0.4;
 const DEFAULT_XOVER_FREQ:   f32 = 400.0; // Hz, splits the swarm mix before the two NAM stages
@@ -203,6 +210,12 @@ pub struct SwarmVoice {
     pub nam_lo: NamModelCycler,
     pub nam_hi: NamModelCycler,
 
+    // Live per-oscillator freq/pan, written every tick -- read-only from the
+    // UI side for the swarm scope (see ui.rs's draw_swarm_panel).
+    pub osc_freq:    [Shared; NUM_OSCS],
+    pub osc_pan:     [Shared; NUM_OSCS],
+    pub origin_live: Shared,
+
     sample_rate: f32,
 
     thump: ThumpMod,
@@ -224,6 +237,10 @@ pub struct SwarmView {
     pub xover_freq:   Shared,
     pub nam_lo: NamModelCycler,
     pub nam_hi: NamModelCycler,
+
+    pub osc_freq:    [Shared; NUM_OSCS],
+    pub osc_pan:     [Shared; NUM_OSCS],
+    pub origin_live: Shared,
 }
 
 impl SwarmVoice {
@@ -236,6 +253,9 @@ impl SwarmVoice {
             xover_freq:   self.xover_freq.clone(),
             nam_lo: self.nam_lo.clone(),
             nam_hi: self.nam_hi.clone(),
+            osc_freq:    self.osc_freq.clone(),
+            osc_pan:     self.osc_pan.clone(),
+            origin_live: self.origin_live.clone(),
         }
     }
 
@@ -271,6 +291,10 @@ impl SwarmVoice {
             xover_freq:   shared(DEFAULT_XOVER_FREQ),
             nam_lo, nam_hi,
 
+            osc_freq:    std::array::from_fn(|_| shared(0.0)),
+            osc_pan:     std::array::from_fn(|_| shared(0.0)),
+            origin_live: shared(110.0),
+
             sample_rate: DEFAULT_SR as f32,
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
             thump_signal: 0.0, filter_signal: 0.0, fuzz_signal: 0.0, width_signal: 0.0,
@@ -293,9 +317,16 @@ impl AudioNode for SwarmVoice {
         let origin_freq = self.origin_freq * self.thump.tick(self.thump_signal);
 
         let width_signal = self.width_signal.clamp(0.0, 1.0);
-        let radius       = self.radius.value().max(0.0)      * (1.0 + width_signal);
+        let radius_cents = self.radius.value().max(0.0)      * (1.0 + width_signal);
         let orbit_speed  = self.orbit_speed.value()          * (1.0 + width_signal);
         let phaser_depth = (self.phaser_depth.value() + width_signal + self.fuzz_signal).clamp(0.0, 1.0);
+
+        // cents -> Hz radius against the current origin, so a fixed cents
+        // width reads the same at any pitch instead of shrinking as origin
+        // rises (which is what a fixed-Hz radius did).
+        let radius_hz = origin_freq * (2.0f32.powf(radius_cents / 1200.0) - 1.0);
+
+        self.origin_live.set_value(origin_freq);
 
         let mut mix_l = 0.0f32;
         let mut mix_r = 0.0f32;
@@ -303,9 +334,12 @@ impl AudioNode for SwarmVoice {
         for k in 0..NUM_OSCS {
             self.angle[k] = (self.angle[k] + orbit_speed * TAU / self.sample_rate).rem_euclid(TAU);
 
-            let position = Complex32::new(origin_freq, 0.0) + Complex32::from_polar(radius, self.angle[k]);
+            let position = Complex32::new(origin_freq, 0.0) + Complex32::from_polar(radius_hz, self.angle[k]);
             let osc_freq = position.re.max(MIN_OSC_FREQ);
             let pan      = (position.im / PAN_NORM_HZ).clamp(-1.0, 1.0);
+
+            self.osc_freq[k].set_value(osc_freq);
+            self.osc_pan[k].set_value(pan);
 
             let dry = self.oscs[k].filter_mono(osc_freq);
             let phaser_rate = (osc_freq / 100.0).clamp(0.05, 8.0);

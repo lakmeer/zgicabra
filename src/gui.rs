@@ -408,7 +408,6 @@ fn signal_override_row_center (ui: &imgui::Ui, label: &str, size: [f32; 2], fiel
 }
 
 // W (double-ended, center-out) sits above 4 vertical faders (F/B/Z/T).
-// velocity/acceleration/jerk are readouts, not hand-ridden, so dropped.
 fn draw_signal_state (ui: &imgui::Ui, bridge: &ZgicabraBridge) {
     signal_override_row_center(ui, "W", HCENTER_SIZE, &bridge.width);
 

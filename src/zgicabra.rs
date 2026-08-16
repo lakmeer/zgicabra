@@ -121,12 +121,10 @@ pub struct Wand {
     pub rot: [f32; 4],
     pub vel: [f32; 3],
     pub acc: [f32; 3],
-    pub jerk: [f32; 3],
     pub pitch: f32,
     pub twist: f32,
     pub scalar_vel: f32,
     pub scalar_acc: f32,
-    pub scalar_jerk: f32,
     pub trigger: f32,
     pub bumper: bool,
     pub home: bool,
@@ -142,12 +140,10 @@ impl Wand {
             rot: [0.0, 0.0, 0.0, 0.0],
             vel: [0.0, 0.0, 0.0],
             acc: [0.0, 0.0, 0.0],
-            jerk: [0.0, 0.0, 0.0],
             pitch: 0.0,
             twist: 0.0,
             scalar_vel: 0.0,
             scalar_acc: 0.0,
-            scalar_jerk: 0.0,
             trigger: 0.0,
             bumper: false,
             home: false,
@@ -189,7 +185,6 @@ pub struct SignalState {
     pub thump:        f32,
     pub velocity:     f32,
     pub acceleration: f32,
-    pub jerk:         f32,
 }
 
 impl SignalState {
@@ -202,7 +197,6 @@ impl SignalState {
             thump:        0.0,
             velocity:     0.0,
             acceleration: 0.0,
-            jerk:         0.0,
         }
     }
 }
@@ -324,7 +318,6 @@ pub struct ZgicabraBridge {
     pub thump:        SignalOverride,
     pub velocity:     SignalOverride,
     pub acceleration: SignalOverride,
-    pub jerk:         SignalOverride,
 
     pub left_rot:  [Arc<AtomicF32>; 4],
     pub right_rot: [Arc<AtomicF32>; 4],
@@ -340,7 +333,6 @@ impl ZgicabraBridge {
             thump:        SignalOverride::new(),
             velocity:     SignalOverride::new(),
             acceleration: SignalOverride::new(),
-            jerk:         SignalOverride::new(),
             left_rot:  std::array::from_fn(|_| Arc::new(AtomicF32::new(0.0))),
             right_rot: std::array::from_fn(|_| Arc::new(AtomicF32::new(0.0))),
         }
@@ -356,7 +348,6 @@ impl ZgicabraBridge {
         self.thump.sync(&mut state.signal.thump);
         self.velocity.sync(&mut state.signal.velocity);
         self.acceleration.sync(&mut state.signal.acceleration);
-        self.jerk.sync(&mut state.signal.jerk);
 
         for i in 0..4 {
             self.left_rot[i].store(state.left.rot[i]);
@@ -379,30 +370,33 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     copy_frame_to_wand(&hydra_state.controllers[0], &mut curr_state.left,  &prev_state.left);
     copy_frame_to_wand(&hydra_state.controllers[1], &mut curr_state.right, &prev_state.right);
 
+    // Compute derivatives
+
     let dt:f32 = hydra_state.timedelta.as_millis() as f32;
 
     curr_state.left.vel   = derivative_r3(&curr_state.left.pos,  &prev_state.left.pos,  dt);
     curr_state.right.vel  = derivative_r3(&curr_state.right.pos, &prev_state.right.pos, dt);
     curr_state.left.acc   = derivative_r3(&curr_state.left.vel,  &prev_state.left.vel,  dt);
     curr_state.right.acc  = derivative_r3(&curr_state.right.vel, &prev_state.right.vel, dt);
-    curr_state.left.jerk  = derivative_r3(&curr_state.left.acc,  &prev_state.left.acc,  dt);
-    curr_state.right.jerk = derivative_r3(&curr_state.right.acc, &prev_state.right.acc, dt);
 
     curr_state.left.scalar_vel   = (hyp(&curr_state.left.vel)   + &prev_state.left.scalar_vel)   / 2.0;
     curr_state.right.scalar_vel  = (hyp(&curr_state.right.vel)  + &prev_state.right.scalar_vel)  / 2.0;
     curr_state.left.scalar_acc   = (hyp(&curr_state.left.acc)   + &prev_state.left.scalar_acc)   / 2.0;
     curr_state.right.scalar_acc  = (hyp(&curr_state.right.acc)  + &prev_state.right.scalar_acc)  / 2.0;
-    curr_state.left.scalar_jerk  = (hyp(&curr_state.left.jerk)  + &prev_state.left.scalar_jerk)  / 2.0;
-    curr_state.right.scalar_jerk = (hyp(&curr_state.right.jerk) + &prev_state.right.scalar_jerk) / 2.0;
 
+    // Width
 
     curr_state.separation = (curr_state.left.pos[0] - curr_state.right.pos[0]).abs();
+
+    // Bend
+
     curr_state.note.bend  = curr_state.left.twist/2.5 - curr_state.right.twist/2.5;
     curr_state.note.bend  = (curr_state.note.bend.powf(3.0) * 0.5).clamp(-1.0, 1.0);
 
     let trigger_total = curr_state.left.trigger + curr_state.right.trigger;
     curr_state.level  = smoothstep(0.0, 1.0, trigger_total.clamp(0.0, 1.0));
 
+    // Trigger state
 
     let left_trigger_start  = curr_state.left.trigger  > prev_state.left.trigger  && prev_state.left.trigger  == 0.0;
     let left_trigger_end    = prev_state.left.trigger  > curr_state.left.trigger  && curr_state.left.trigger  == 0.0;
@@ -415,9 +409,15 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     if right_trigger_end && curr_state.left.trigger > 0.0 { curr_state.most_recent_wand = Hand::Left; }
     if curr_state.level == 0.0 { curr_state.most_recent_wand = Hand::Neither; }
 
-    if (left_trigger_start || right_trigger_start) && !curr_state.note.on {
-        deltas.push(DeltaEvent::NoteStart(curr_state.note.current));
-        curr_state.note.on = true;
+    // Notes
+
+    if left_trigger_start || right_trigger_start {
+        if !curr_state.note.on {
+            deltas.push(DeltaEvent::NoteStart(curr_state.note.current));
+            curr_state.note.on = true;
+        } else {
+            deltas.push(DeltaEvent::NoteRetrig(curr_state.note.current));
+        }
     }
 
     if curr_state.note.on && (left_trigger_end && curr_state.right.trigger == 0.0) {
@@ -438,8 +438,6 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
         deltas.push(DeltaEvent::NoteChange(curr_state.note.current, new_note));
         curr_state.note.current = new_note;
     }
-
-    // TODO: Note retrigger
 
     if curr_state.left.stick.clicked && curr_state.right.stick.clicked {
         deltas.push(DeltaEvent::Panic());
@@ -465,11 +463,11 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
 
     //                       ╭─────[ - Tune + ]─────╮
     //           ┏━━━┓     ┏━┷━┓                  ┏━┷━┓     ┏━━━┓
-    //         ╭─┨ 4 ┃     ┃ 1 ┃                  ┃ 1 ┃     ┃ 4 ┠─╮
-    //         │ ┗━━━┛     ┗━━━┛                  ┗━━━┛     ┗━━━┛ │
-    // THUMP ]─┤                                                  ├─[ FUZZ
-    //         │   ┏━━━┓ ┏━━━┓                      ┏━━━┓ ┏━━━┓   │
-    //         ╰───┨ 3 ┃ ┃ 2 ┃                      ┃ 2 ┃ ┃ 3 ┠───╯
+    //         ╭─┨ 4 ┃     ┃ 1 ┃        ││        ┃ 1 ┃     ┃ 4 ┠─╮
+    //         │ ┗━━━┛     ┗━━━┛        ││        ┗━━━┛     ┗━━━┛ │
+    // THUMP ]─┤                        ││                        ├─[ FUZZ
+    //         │   ┏━━━┓ ┏━━━┓          ││          ┏━━━┓ ┏━━━┓   │
+    //         ╰───┨ 3 ┃ ┃ 2 ┃          ││          ┃ 2 ┃ ┃ 3 ┠───╯
     //             ┗━━━┛ ┗━┯━┛                      ┗━┯━┛ ┗━━━┛
     //                     ╰──────[ - Voices + ]──────╯
 
@@ -480,15 +478,15 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
 
             let rock_direction:i8 = if !prev_state.left.buttons[i] { -1 } else { 1 };
 
-            match i {
+            match i + 1 { // to match button numbers
                 // Tune
-                0 => {
+                1 => {
                     curr_state.note.root = ((curr_state.note.root as i8) + rock_direction) as u8;
                     deltas.push(DeltaEvent::RootChange(curr_state.note.root));
                 },
 
                 // Voice
-                1 => {
+                2 => {
                     curr_state.voice = curr_state.voice.cycle(rock_direction);
                     deltas.push(DeltaEvent::VoiceChange(curr_state.voice));
                 },
