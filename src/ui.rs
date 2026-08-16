@@ -67,21 +67,21 @@ pub fn draw_all (
     draw_banner(TEXT_WIDTH, 1, zgicabra.level == 0.0);
     draw_sequence_pie(zgicabra.sequence_number, TEXT_WIDTH, 1);
 
-    print!("{}{}", termion::cursor::Goto(1, AUDIO_PANEL_Y),
+    print!("{}{}", goto(1, AUDIO_PANEL_Y),
         barcode_string(TEXT_WIDTH.into(), zgicabra.level == 0.0));
 
     draw_audio_panel(AUDIO_PANEL_Y, zgicabra, audio);
 
-    print!("{}{}", termion::cursor::Goto(1, DEBUG_PANEL_Y),
+    print!("{}{}", goto(1, DEBUG_PANEL_Y),
         barcode_string(TEXT_WIDTH.into(), zgicabra.level == 0.0));
 
     /*
-    print!("{}{:^40}", termion::cursor::Goto(0, 19), format!("[{:.3} {:.3} {:.3} {:.3}]",
+    print!("{}{:^40}", goto(0, 19), format!("[{:.3} {:.3} {:.3} {:.3}]",
         zgicabra.left.rot[0],
         zgicabra.left.rot[1],
         zgicabra.left.rot[2],
         zgicabra.left.rot[3]));
-    print!("{}{:^40}", termion::cursor::Goto(40, 19), format!("[{:.2} {:.3} {:.3} {:.3}]",
+    print!("{}{:^40}", goto(40, 19), format!("[{:.2} {:.3} {:.3} {:.3}]",
         zgicabra.right.rot[0],
         zgicabra.right.rot[1],
         zgicabra.right.rot[2],
@@ -89,11 +89,11 @@ pub fn draw_all (
     */
 
     //if zgicabra.most_recent_wand == Hand::Left {
-        //print!("{}{}{:^38}", termion::cursor::Goto(0, 21),  termion::color::Fg(termion::color::LightBlue), format!("X"));
+        //print!("{}{}{:^38}", goto(0, 21),  termion::color::Fg(termion::color::LightBlue), format!("X"));
     //}
 
     //if zgicabra.most_recent_wand == Hand::Right {
-        //print!("{}{}{:^38}", termion::cursor::Goto(38, 21), termion::color::Fg(termion::color::LightBlue), format!("X"));
+        //print!("{}{}{:^38}", goto(38, 21), termion::color::Fg(termion::color::LightBlue), format!("X"));
     //}
 
     //draw_palette(10, 40);
@@ -102,7 +102,7 @@ pub fn draw_all (
     draw_note_state(38, DEBUG_PANEL_Y + 2, &zgicabra);
     draw_events(38, DEBUG_PANEL_Y + 10, &delta_history);
 
-    print!("{}{}", termion::cursor::Goto(1, BOTTOM_Y),
+    print!("{}{}", goto(1, BOTTOM_Y),
         barcode_string(TEXT_WIDTH.into(), zgicabra.level == 0.0));
 
 }
@@ -114,7 +114,7 @@ fn draw_range_label (x: u16, y: u16, label: &str, value: f32, min: f32, max: f32
     let num_bars = num_half_bars / 2;
     let range_bar = format!("{}{}", "█".repeat(num_bars), if odd_bar { "▌" } else { "" });
 
-    print!("{}{:>13} {:<8} {:<5.2}", termion::cursor::Goto(x, y), label, range_bar.to_string(), value);
+    print!("{}{:>13} {:<8} {:<5.2}", goto(x, y), label, range_bar.to_string(), value);
 }
 
 fn draw_audio_panel (y: u16, zgicabra: &Zgicabra, audio: &AudioHandles) {
@@ -150,10 +150,10 @@ fn draw_audio_panel (y: u16, zgicabra: &Zgicabra, audio: &AudioHandles) {
         ];
 
         for (row, (name, value)) in input.iter().enumerate() {
-            print!("{}{:<14}{:>7.4}", termion::cursor::Goto(2, y + 1 + row as u16), name, value);
+            print!("{}{:<14}{:>7.4}", goto(2, y + 1 + row as u16), name, value);
         }
         for (row, (name, value)) in live.iter().enumerate() {
-            print!("{}{:<14}{:>7.4}", termion::cursor::Goto(26, y + 1 + row as u16), name, value);
+            print!("{}{:<14}{:>7.4}", goto(26, y + 1 + row as u16), name, value);
         }
     }
 
@@ -161,6 +161,7 @@ fn draw_audio_panel (y: u16, zgicabra: &Zgicabra, audio: &AudioHandles) {
 }
 
 fn draw_main_panel (y: u16, canvas: &mut Canvas, zgicabra: &Zgicabra) {
+
     if !zgicabra.docked {
         draw_wand(canvas, zgicabra.left,  WIDTH*1.0/4.0, HEIGHT/2.0, WIDTH/6.0);
         draw_wand(canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/2.0, WIDTH/6.0);
@@ -179,31 +180,26 @@ fn draw_main_panel (y: u16, canvas: &mut Canvas, zgicabra: &Zgicabra) {
         draw_wand_fixed(canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/2.0, WIDTH/6.0);
     }
 
-    print!("{}{}", termion::cursor::Goto(1, y), &mut canvas.frame());
+    print!("{}{}", goto(1, y), &mut canvas.frame());
 
     // Voice, width, root, thump/fuzz
 
-    print!("{}{}", termion::cursor::Goto(37, y + 18), format_note_name(zgicabra.note.root));
+    print!("{}{}{}",
+        goto(37, y + 18),
+        fg(tw::WHITE),
+        format_note_name(zgicabra.note.root));
 
-    let width_color = if zgicabra.signal.width > 0.0 { GREEN_1 } else { RED_1 };
+    let width_color = if zgicabra.signal.width > 0.0 { tw::GREEN_400 } else { tw::RED_400 };
     print!("{}{}{:^56}{}",
-        termion::cursor::Goto(11, y + 19),
+        goto(11, y + 19),
         fg(width_color),
         "━".repeat((zgicabra.signal.width.abs() * 28.0).round() as usize * 2),
         termion::color::Fg(termion::color::Reset));
 
-    print!("{}{:^76}", termion::cursor::Goto(0, y + 20), format!("{:?}", zgicabra.voice));
+    print!("{}{:^76}", goto(0, y + 20), format!("{:?}", zgicabra.voice));
 
     draw_toggle_box(             5, y + 18, GREEN_0, zgicabra.signal.thump > 0.0);
     draw_toggle_box(TEXT_WIDTH - 8, y + 18, RED_0,   zgicabra.signal.fuzz > 0.0);
-}
-
-fn goto (x: u16, y: u16) -> termion::cursor::Goto {
-    termion::cursor::Goto(x, y)
-}
-
-fn fg (color: RGB8) -> termion::color::Fg<termion::color::Rgb> {
-    termion::color::Fg(termion::color::Rgb(color.r, color.g, color.b))
 }
 
 fn draw_palette (x: u16, y: u16) {
@@ -215,22 +211,22 @@ fn draw_palette (x: u16, y: u16) {
 }
 
 fn draw_toggle_box (x: u16, y: u16, on_color: RGB8, on: bool) {
-    print!("{}┌───┐", termion::cursor::Goto(x, y + 0));
+    print!("{}┌───┐", goto(x, y + 0));
     if on {
-        print!("{}│{}▐█▌{}│", termion::cursor::Goto(x, y + 1), fg(on_color), termion::color::Fg(termion::color::Reset));
+        print!("{}│{}▐█▌{}│", goto(x, y + 1), fg(on_color), termion::color::Fg(termion::color::Reset));
     } else {
-        print!("{}│   │", termion::cursor::Goto(x, y + 1));
+        print!("{}│   │", goto(x, y + 1));
     }
-    print!("{}└───┘", termion::cursor::Goto(x, y + 2));
+    print!("{}└───┘", goto(x, y + 2));
 }
 
 fn draw_ascii_frame (x: u16, y: u16, width: u16, height: u16) {
     let inner = (width - 2) as usize;
-    print!("{}{}", termion::cursor::Goto(x, y), format!("╔{}╗", "═".repeat(inner)));
+    print!("{}{}", goto(x, y), format!("╔{}╗", "═".repeat(inner)));
     for row in 1..height - 1 {
-        print!("{}║{}║", termion::cursor::Goto(x, y + row), " ".repeat(inner));
+        print!("{}║{}║", goto(x, y + row), " ".repeat(inner));
     }
-    print!("{}╚{}╝", termion::cursor::Goto(x, y + height - 1), "═".repeat(inner));
+    print!("{}╚{}╝", goto(x, y + height - 1), "═".repeat(inner));
 }
 
 fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32) {
@@ -371,7 +367,7 @@ fn draw_banner (width: u16, y: u16, solid: bool) {
     let banner_text = " zgicabra ";
     let stripe_length = (width - banner_text.len() as u16) / 2;
 
-    print!("{}{}{}{}", termion::cursor::Goto(1,y),
+    print!("{}{}{}{}", goto(1,y),
         barcode_string(stripe_length.into(), solid),
         banner_text,
         barcode_string(stripe_length.into(), solid));
@@ -469,7 +465,7 @@ fn breakup (n: f32, r: f32) -> (f32, PixelColor) {
 
 fn drawille_paste (rows: &mut Vec<String>, x: u16, y: u16) {
     for (ix, row) in rows.iter().enumerate() {
-        print!("{}{}", termion::cursor::Goto(x,y+ix as u16), row);
+        print!("{}{}", goto(x,y+ix as u16), row);
     }
 }
 
@@ -526,7 +522,7 @@ pub fn draw_graph (y: u16, history: &Vec<Zgicabra>) {
         }
     }
 
-    print!("{}", termion::cursor::Goto(1, y+2));
+    print!("{}", goto(1, y+2));
     Chart::new_with_y_range(70, 90, 0.0, n as f32, -600.0, 600.0)
         .linecolorplot(&Shape::Lines(&left_jerk), GREEN_3)
         .linecolorplot(&Shape::Lines(&left_acc),  GREEN_2)
@@ -541,46 +537,54 @@ pub fn draw_graph (y: u16, history: &Vec<Zgicabra>) {
     // Blank right side for next draw phase
     for i in y+1..y+25 {
         print!("{}{}{}", 
-            termion::cursor::Goto(38, i),
+            goto(38, i),
             termion::color::Fg(termion::color::White), 
             " ".repeat(38));
     }
 }
 
 pub fn draw_events (x: u16, y: u16, delta_history: &Vec<DeltaEvent>) {
-    print!("{}{}", termion::cursor::Goto(x, y), termion::color::Fg(termion::color::White));
+    print!("{}{}", goto(x, y), termion::color::Fg(termion::color::White));
 
     for row in 0..12 {
         match delta_history.iter().rev().nth(row) {
-            Some(e) => println!("{}- {:?}", termion::cursor::Goto(x, y + row as u16), e),
-            None    => println!("{}-",      termion::cursor::Goto(x, y + row as u16)),
+            Some(e) => println!("{}- {:?}", goto(x, y + row as u16), e),
+            None    => println!("{}-",      goto(x, y + row as u16)),
         }
     }
 }
 
 pub fn draw_note_state (x: u16, y: u16, state: &Zgicabra) {
-    println!("{}Root:    {:>17}",   termion::cursor::Goto(x, y + 0), format_note(state.note.root));
-    println!("{}Current: {:>17}",   termion::cursor::Goto(x, y + 1), format_note(state.note.current));
-    println!("{}Pitch:   {:>17.4}", termion::cursor::Goto(x, y + 2), state.note.bend);
-    println!("{}Filter:  {:>17.4}", termion::cursor::Goto(x, y + 3), state.signal.filter);
-    println!("{}Fuzz:    {:>17.4}", termion::cursor::Goto(x, y + 4), state.signal.fuzz);
-    println!("{}Width:   {:>17.4}", termion::cursor::Goto(x, y + 5), state.signal.width);
-    println!("{}Thump:   {:>17.4}", termion::cursor::Goto(x, y + 6), state.signal.thump);
+    println!("{}Root:    {:>17}",   goto(x, y + 0), format_note(state.note.root));
+    println!("{}Current: {:>17}",   goto(x, y + 1), format_note(state.note.current));
+    println!("{}Pitch:   {:>17.4}", goto(x, y + 2), state.note.bend);
+    println!("{}Filter:  {:>17.4}", goto(x, y + 3), state.signal.filter);
+    println!("{}Fuzz:    {:>17.4}", goto(x, y + 4), state.signal.fuzz);
+    println!("{}Width:   {:>17.4}", goto(x, y + 5), state.signal.width);
+    println!("{}Thump:   {:>17.4}", goto(x, y + 6), state.signal.thump);
 }
 
 fn draw_sequence_pie (seq: u8, x: u16, y: u16) {
     const LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let step = (seq as usize / 32).min(LEVELS.len() - 1);
-    print!("{}{}", termion::cursor::Goto(x, y), LEVELS[step]);
+    print!("{}{}", goto(x, y), LEVELS[step]);
 }
 
 pub fn draw_audio_errors (y: u16, errors: &AudioErrors) {
     let log = errors.lock().unwrap();
-    print!("{} {}▪", termion::cursor::Goto(2, y), fg(GREEN_0));
-    print!("{} {}", termion::cursor::Goto(2, y), fg(RED_0));
+    print!("{} {}▪", goto(2, y), fg(GREEN_0));
+    print!("{} {}", goto(2, y), fg(RED_0));
     for e in log.iter() {
         print!("▪");
     }
     print!("{}", termion::color::Fg(termion::color::Reset));
 }
 
+
+fn goto (x: u16, y: u16) -> termion::cursor::Goto {
+    termion::cursor::Goto(x, y)
+}
+
+fn fg (color: RGB8) -> termion::color::Fg<termion::color::Rgb> {
+    termion::color::Fg(termion::color::Rgb(color.r, color.g, color.b))
+}

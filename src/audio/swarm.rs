@@ -186,9 +186,9 @@ impl ChannelChain {
 
 #[derive(Clone)]
 pub struct SwarmVoice {
-    pub oscs:    [An<WaveSynth<U1>>; NUM_OSCS],
-    pub phasers: [Phaser; NUM_OSCS],
-    pub angle:   [f32; NUM_OSCS], // running orbit phase per oscillator, radians
+    oscs:    [An<WaveSynth<U1>>; NUM_OSCS],
+    phasers: [Phaser; NUM_OSCS],
+    angle:   [f32; NUM_OSCS], // running orbit phase per oscillator, radians
 
     origin_freq: f32, // chased origin, Hz -- see ThumpMod::tick's own doc for why thump applies after
 
