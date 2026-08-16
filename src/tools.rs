@@ -1,6 +1,6 @@
 
 use core::f32::consts::PI;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
 use rand::prelude::*;
@@ -12,7 +12,7 @@ lazy_static! {
     static ref START_TIME: Instant = Instant::now();
 }
 
-const NOTE_NAME:&str = "C C#D D#E F F#G G#A A#B ";
+const NOTE_NAME:&str = "C•C#D•D#E•F•F#G•G#A•A#B•";
 
 
 // A lock-free shared f32 cell (bit-cast through AtomicU32), for cross-thread
@@ -112,33 +112,23 @@ pub fn ease_out (t: f32) -> f32 {
 
 // CLI
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Consumer {
-    Osc,
-    Audio,
-}
-
 #[derive(Debug)]
 pub struct Args {
-    pub no_ui: bool,
-    pub consumer: Consumer,
+    pub debug: bool,
     pub test: bool,
     pub gui: bool,
 }
 
 pub fn parse_args() -> Args {
-    let mut no_ui = false;
-    let mut consumer = Consumer::Audio;
+    let mut debug = false;
     let mut test = false;
     let mut gui = false;
 
-    let help_text = "║ Supported options:\n║  --no-ui    Disable TUI\n║  --osc      Send output via OSC (Bitwig/DrivenByMoss)\n║  --audio    Send output to the native audio backend (default)\n║  --gui      Open the graphical voice-params/mock-hydra tuner window\n║  --test     Run self-tests";
+    let help_text = "║ Supported options:\n║  --debug    Disable TUI, print verbose debug logging\n║  --gui      Open the graphical voice-params/mock-hydra tuner window\n║  --test     Run self-tests";
 
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
-            "--no-ui" => no_ui = true,
-            "--osc"   => consumer = Consumer::Osc,
-            "--audio" => consumer = Consumer::Audio,
+            "--debug" => debug = true,
             "--gui"   => gui = true,
             "--test"  => test = true,
             other => {
@@ -149,7 +139,32 @@ pub fn parse_args() -> Args {
         }
     }
 
-    Args { no_ui, consumer, test, gui }
+    set_debug_enabled(debug);
+
+    Args { debug, test, gui }
+}
+
+
+// Debug logging
+
+static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
+
+fn set_debug_enabled (enabled: bool) {
+    DEBUG_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn debug_enabled () -> bool {
+    DEBUG_ENABLED.load(Ordering::Relaxed)
+}
+
+// Verbose debug logger, gated on the --debug flag -- silent no-op otherwise.
+#[macro_export]
+macro_rules! dbg {
+    ($($arg:tt)*) => {
+        if $crate::tools::debug_enabled() {
+            eprintln!($($arg)*);
+        }
+    };
 }
 
 
@@ -163,6 +178,12 @@ pub fn button_mask (buttons: u32, mask: u32) -> bool {
 }
 
 pub fn format_note (n: u8) -> String {
-    format!("{} [{}]", n, NOTE_NAME.chars().skip((n % 12) as usize * 2).take(2).collect::<String>())
+    format!("{} [{}]", n, format_note_name(n))
+}
+
+
+pub fn format_note_name (n: u8) -> String {
+    let oct = (n / 12) as i8 - 1;
+    format!("{}{}", NOTE_NAME.chars().skip((n % 12) as usize * 2).take(2).collect::<String>(), oct)
 }
 

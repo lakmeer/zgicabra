@@ -4,13 +4,19 @@
 - Binary must be run with libsixense_x64.so in working directory
 - Run `run.sh` for dev. This will watch source files.
 
-## Setup requirements
+## Usage
 
-- Bitwig Studio
-  - DrivenByMoss Extension Package for OSC Extension
-  - OSC Controller added and active
-  - Set OSC Controller -> Protocol -> Value Resolution to 16384
-  - OSC listen port should be 8000 (default)
+```sh
+zgicabra           # run with the terminal UI (default)
+zgicabra --gui      # also open the imgui voice-params/mock-hydra tuner window
+zgicabra --debug    # suppress the terminal UI, print verbose diagnostics instead
+zgicabra --test     # run the audio self-test (needs --gui)
+```
+
+`--debug` is the flag to reach for when diagnosing controller/engine
+issues: it turns off the terminal UI and streams verbose per-frame and
+per-event logging to stderr (hydra controller telemetry, dispatched note/
+voice events, raw HID read errors) instead.
 
 ## Sixense SDK Linking
 
@@ -26,7 +32,9 @@ needs. Don't vendor a copy; a mismatched version has caused runtime crashes.
 `libsixense.so`, and `sixense.h` are not used but are retained for reference.
 
 
-## System Dependencies
+## Setup requirements
+
+- cargo-watch
 
 ### Build toolchain (NixOS / Linux performance machine)
 

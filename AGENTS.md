@@ -17,9 +17,10 @@ audio engine (or OSC out to a DAW). An optional imgui debug GUI edits
 engine parameters and can drive a mock controller from keyboard/mouse/MIDI
 when no real hardware is attached.
 
-Entry point: `src/main.rs`. CLI flags (`tools::parse_args`): `--audio`
-(default) vs `--osc` output backend, `--gui` to open the tuner window,
-`--no-ui` to suppress the terminal UI, `--test` to run the audio self-test.
+Entry point: `src/main.rs`. CLI flags (`tools::parse_args`): `--gui` to
+open the tuner window, `--debug` to suppress the terminal UI and print
+verbose diagnostics (see "Debug logging" below), `--test` to run the
+audio self-test.
 
 ## Hardware
 
@@ -54,8 +55,9 @@ Two machines, different roles — confirm which one you're on.
   whenever no real backend connects).
 - **Engine loop** (`main.rs::run_engine_loop`): polls hydra → derives
   `Zgicabra` state (`zgicabra::update`) → emits `DeltaEvent`s plus a
-  continuous `SignalState` → feeds both to whatever implements
-  `output::DeltaConsumer` (`audio::AudioOutput` or `osc::OscOutput`). Runs
+  continuous `SignalState` → feeds both straight to `audio::AudioOutput`
+  (the only output backend; the old OSC/`DeltaConsumer` trait indirection
+  was removed once the native audio engine became the sole target). Runs
   on the main thread, or a background thread when `--gui` is set.
 - **GUI thread**: winit/AppKit require the window + event loop on the
   process's main thread on macOS, so `gui::run()` owns `main()` whenever
@@ -293,9 +295,9 @@ the same `Shared` cells the audio thread reads.
   from a running `AudioOutput`: `test_tone`, `voice_selected` + one
   `*Handle` per voice slot, the main/dry-sub + thump knobs, `amp_*`/
   `reverb_*`/`limiter_*` cells, and `capture` (for `--test`).
-  `AudioOutput::handles()` builds one; `main.rs` threads a single
-  `Option<AudioHandles>` into `gui::run` (`None` for the OSC backend). Add
-  new audio-thread handles as fields here, not positional params.
+  `AudioOutput::handles()` builds one; `main.rs` threads it into
+  `gui::run`. Add new audio-thread handles as fields here, not positional
+  params.
 - **Module-card pattern**: `draw_module_card(ui, title, bypass_cell, size,
   body_fn)` — bordered child window, optional bypass checkbox, body
   closure. `draw_knob_row(ui, &[(id, label, lo, hi, cell), ...])` lays out
@@ -338,6 +340,24 @@ the same `Shared` cells the audio thread reads.
   cycle tune, arrow keys drive the left stick to full deflection (toggle,
   not held). Right wand stick + button rows are GUI-only, no keyboard
   equivalent.
+
+## Debug logging
+
+Run with `--debug` for diagnosis — it suppresses the terminal UI and
+prints verbose per-frame/per-event diagnostics straight to stderr instead
+(hydra frame telemetry, `DeltaEvent`s as they're handled, raw HID
+read errors from `src/hydra/hid.rs`). This is the first thing to reach
+for when tracking down a controller/engine issue instead of guessing from
+the TUI.
+
+Under the hood: `tools::parse_args` flips a crate-wide `AtomicBool`
+(`tools::DEBUG_ENABLED`, via `tools::set_debug_enabled`/`debug_enabled`),
+and `crate::dbg!(...)` (defined in `tools.rs`, `#[macro_export]`'d to the
+crate root) wraps `eprintln!` gated on that flag — a no-op when `--debug`
+isn't passed. Use `crate::dbg!(...)` for any new verbose/diagnostic
+logging; reserve plain `eprintln!` for actual user-facing error surfaces
+(failed snapshot load/save, bad CLI flag, etc.) that should print
+regardless of `--debug`.
 
 ## Conventions
 

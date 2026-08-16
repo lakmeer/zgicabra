@@ -112,7 +112,7 @@ fn wait_for_motion(data_hid: &HidDevice, timeout: Duration) -> bool {
 pub struct HidBackend {
     data_hid: HidDevice,
     command_hid: HidDevice,
-    keys: Keys<AsyncReader>,
+    keys: Option<Keys<AsyncReader>>,
     _cbreak_guard: CbreakGuard, // restores the terminal on drop
 }
 
@@ -150,10 +150,17 @@ impl HidBackend {
         }
 
         println!("✅");
+
+        // termion::async_stdin() panics its worker thread (non-fatally, but
+        // noisily) if /dev/tty can't be opened, e.g. no controlling terminal.
+        // Probe first and skip the keyboard-quit feature rather than crash it.
+        let keys = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty").ok()
+            .map(|_| termion::async_stdin().keys());
+
         Some(HidBackend {
             data_hid,
             command_hid,
-            keys: termion::async_stdin().keys(),
+            keys,
             _cbreak_guard: CbreakGuard::enable(),
         })
     }
@@ -170,8 +177,8 @@ impl Backend for HidBackend {
                 controllers[0] = parse_controller(&buf[8..30],  LEFT_HAND,  buf[7]);
                 controllers[1] = parse_controller(&buf[30..52], RIGHT_HAND, buf[7]);
             },
-            Ok(n)  => eprintln!("Hydra::Hid::update - hid ok-but-wrong-size {n}"),
-            Err(e) => eprintln!("Hydra::Hid::update - hid err {e}"),
+            Ok(n)  => crate::dbg!("Hydra::Hid::update - hid ok-but-wrong-size {n}"),
+            Err(e) => crate::dbg!("Hydra::Hid::update - hid err {e}"),
         }
     }
 
@@ -179,7 +186,7 @@ impl Backend for HidBackend {
     // this backend puts stdin in cbreak mode via CbreakGuard so a non-blocking
     // check works instead.
     fn should_quit (&mut self) -> bool {
-        self.keys.next().is_some()
+        self.keys.as_mut().is_some_and(|keys| keys.next().is_some())
     }
 }
 

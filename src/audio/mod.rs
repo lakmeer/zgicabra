@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use fundsp::prelude64::*;
 
-use crate::output::DeltaConsumer;
 use crate::zgicabra::{DeltaEvent, SignalState};
 
 mod nam;
@@ -60,8 +59,14 @@ const ENVELOPE_RELEASE: f32 = 0.1;
 // Debug: captures snippet of cpal output stream to check non-zero output
 const CAPTURE_SECONDS: f32 = 0.1;
 
+// Cap on buffered cpal stream error strings -- oldest dropped once full so a
+// stuck device can't grow this unbounded.
+const AUDIO_ERROR_LOG_CAP: usize = 50;
+
 // The fixed "amp" stage always runs this one model
 const AMP_MODEL: &str = "lowgain";
+
+pub type AudioErrors = Arc<Mutex<Vec<String>>>;
 
 // Taps the raw cpal output stream (mono, left channel) so main.rs's --test
 // self-test can confirm audio is actually producing signal.
@@ -155,6 +160,7 @@ pub struct AudioHandles {
     pub master_vol: Shared,
 
     pub capture: AudioCapture,
+    pub errors:  AudioErrors,
 }
 
 pub struct AudioOutput {
@@ -197,6 +203,7 @@ pub struct AudioOutput {
     master_vol: Shared,
 
     capture: AudioCapture,
+    errors:  AudioErrors,
     stream:  cpal::Stream,
 }
 
@@ -227,6 +234,7 @@ impl AudioOutput {
             // For self-test
             test_tone: TestTone { freq: self.freq.clone(), gate: self.gate.clone() },
             capture: self.capture.clone(),
+            errors:  self.errors.clone(),
         }
     }
 
@@ -347,7 +355,15 @@ impl AudioOutput {
 
         engine.set_sample_rate(config.sample_rate as f64);
 
-        let err_fn = |e| {}; // eprintln!("║ 🟥 Audio stream error: {e}");
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let err_fn = {
+            let errors = errors.clone();
+            move |e| {
+                let mut log = errors.lock().unwrap();
+                if log.len() >= AUDIO_ERROR_LOG_CAP { log.remove(0); }
+                log.push(format!("{e}"));
+            }
+        };
 
         let build_result = match sample_format {
             cpal::SampleFormat::F32 => build_stream::<f32>(&device, config, engine, capture.clone(), err_fn),
@@ -372,7 +388,7 @@ impl AudioOutput {
             reverb_bypass, reverb_dry, reverb_decay, reverb_damp, reverb_size,
             limiter_bypass, limiter_thresh,
             master_vol,
-            capture, stream,
+            capture, errors, stream,
         })
     }
 }
@@ -700,12 +716,12 @@ where
     )
 }
 
-impl DeltaConsumer for AudioOutput {
-    fn panic (&mut self) {
+impl AudioOutput {
+    pub fn panic (&mut self) {
         self.gate.set_value(GATE_OFF);
     }
 
-    fn handle_signal (&mut self, signal: &SignalState) {
+    pub fn handle_signal (&mut self, signal: &SignalState) {
         self.bend.set_value(signal.bend);
         self.width.set_value(signal.width);
         self.filter.set_value(signal.filter);
@@ -715,7 +731,7 @@ impl DeltaConsumer for AudioOutput {
         self.acceleration.set_value(signal.acceleration);
     }
 
-    fn handle_event (&mut self, delta: &DeltaEvent) {
+    pub fn handle_event (&mut self, delta: &DeltaEvent) {
         match delta {
             DeltaEvent::NoteStart(note) => {
                 self.freq.set_value(midi_hz(*note as f32));

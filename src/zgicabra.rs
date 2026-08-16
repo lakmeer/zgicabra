@@ -226,6 +226,7 @@ pub enum DeltaEvent {
     NoteStart(Note),
     NoteChange(Note, Note),
     NoteEnd(Note),
+    NoteRetrig(Note),
     WidthLevel(f32),
     VoiceChange(Voice),
     RootChange(Note),
@@ -396,8 +397,8 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
 
 
     curr_state.separation = (curr_state.left.pos[0] - curr_state.right.pos[0]).abs();
-    curr_state.note.bend  = curr_state.left.twist/2.0 - curr_state.right.twist/2.0;
-    curr_state.note.bend  = curr_state.note.bend.powf(3.0).clamp(-2.0, 2.0) * 0.5;
+    curr_state.note.bend  = curr_state.left.twist/2.5 - curr_state.right.twist/2.5;
+    curr_state.note.bend  = (curr_state.note.bend.powf(3.0) * 0.5).clamp(-1.0, 1.0);
 
     let trigger_total = curr_state.left.trigger + curr_state.right.trigger;
     curr_state.level  = smoothstep(0.0, 1.0, trigger_total.clamp(0.0, 1.0));
@@ -438,6 +439,7 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
         curr_state.note.current = new_note;
     }
 
+    // TODO: Note retrigger
 
     if curr_state.left.stick.clicked && curr_state.right.stick.clicked {
         deltas.push(DeltaEvent::Panic());
@@ -546,7 +548,7 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
 
     // Physical hand separation ranges ~50 (fingers touching) to ~1500 (full
     // arm span); normalized and biased down slightly to avoid DC hum.
-    curr_state.signal.width = curr_state.level * (curr_state.separation - 500.0) / 1500.0;
+    curr_state.signal.width = (curr_state.separation - 500.0) / 1300.0;
 
     // Whichever wand is moving/accelerating harder, not just most-recently-triggered.
     let mut velocity: f32 = 0.0;

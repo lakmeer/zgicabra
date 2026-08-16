@@ -120,7 +120,7 @@ impl MockControls {
 use super::CbreakGuard;
 
 pub struct MockBackend {
-    keys: Keys<AsyncReader>,
+    keys: Option<Keys<AsyncReader>>,
     left_trigger:  Arc<AtomicF32>,
     right_trigger: Arc<AtomicF32>,
     voice_cycle: Arc<AtomicI8>,
@@ -166,8 +166,14 @@ impl MockBackend {
         let notes: Arc<Mutex<VecDeque<DeltaEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
         let (midi, _midi_connection) = midi::connect(notes.clone());
 
+        // termion::async_stdin() panics its worker thread (non-fatally, but
+        // noisily) if /dev/tty can't be opened, e.g. no controlling terminal.
+        // Probe first and skip the keyboard-control feature rather than crash it.
+        let keys = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty").ok()
+            .map(|_| termion::async_stdin().keys());
+
         MockBackend {
-            keys: termion::async_stdin().keys(),
+            keys,
             left_trigger:  Arc::new(AtomicF32::new(0.0)),
             right_trigger: Arc::new(AtomicF32::new(0.0)),
             voice_cycle: Arc::new(AtomicI8::new(0)),
@@ -294,7 +300,8 @@ impl MockBackend {
             axis.store(if v == 0.0 { delta } else { 0.0 });
         };
 
-        while let Some(Ok(key)) = self.keys.next() {
+        let Some(keys) = self.keys.as_mut() else { return };
+        while let Some(Ok(key)) = keys.next() {
             match key {
                 Key::Char('z') => MockControls::toggle_trigger(&self.left_trigger),
                 Key::Char('.') => MockControls::toggle_trigger(&self.right_trigger),

@@ -2,7 +2,6 @@
 use std::io::{Write, Error};
 use std::time::Instant;
 use std::f32::consts::PI;
-
 use rgb::RGB8;
 
 use rand::prelude::IteratorRandom;
@@ -11,8 +10,10 @@ use textplots::{ColorPlot,Chart,Shape};
 use drawille::{Canvas,PixelColor};
 use drawille::PixelColor::TrueColor;
 
+use crate::tw;
 use crate::hydra::HydraState;
 use crate::zgicabra::{DeltaEvent,Zgicabra,Wand,Hand,Direction,Joystick,NoteState,SignalState};
+use crate::audio::AudioErrors;
 use crate::tools::*;
 
 use crate::HISTORY_WINDOW;
@@ -20,6 +21,16 @@ use crate::HISTORY_WINDOW;
 
 type Screen = termion::screen::AlternateScreen<std::io::Stdout>;
 
+const TEXT_WIDTH  : u16 = 76;
+const TEXT_HEIGHT : u16 = TEXT_WIDTH / 4;
+
+const CANVAS_WIDTH  : u16 = TEXT_WIDTH * 2;
+const CANVAS_HEIGHT : u16 = TEXT_HEIGHT * 4;
+
+const WIDTH  : f32 = CANVAS_WIDTH  as f32;
+const HEIGHT : f32 = CANVAS_HEIGHT as f32;
+
+const VOICE_TERM_Y:u16 = 30;
 const READOUT_TERM_Y:u16 = 25;
 
 const BLUE_0:RGB8  = RGB8 { r: 120, g: 150, b: 255 };
@@ -32,43 +43,35 @@ const GREEN_1:RGB8 = RGB8 { r: 150, g: 255, b: 200 };
 const GREEN_2:RGB8 = RGB8 { r:  60, g: 155, b: 80 };
 const GREEN_3:RGB8 = RGB8 { r: 180, g: 180, b: 180 };
 
+const RED_0:RGB8 = RGB8 { r: 200, g: 80, b: 80 };
+const RED_1:RGB8 = RGB8 { r: 200, g: 150, b: 150 };
+const RED_2:RGB8 = RGB8 { r: 180, g: 50, b: 40 };
+const RED_3:RGB8 = RGB8 { r: 180, g: 180, b: 180 };
 
-pub fn draw_all (zgicabra: &Zgicabra, history: &Vec<Zgicabra>, delta_events: &Vec<DeltaEvent>, delta_history: &Vec<DeltaEvent>) {
+const WHITE:RGB8 = RGB8 { r: 255, g: 255, b: 255 };
+const BLACK:RGB8 = RGB8 { r: 0, g: 0, b: 0 };
 
-    const TEXT_WIDTH  : u16 = 76;
-    const TEXT_HEIGHT : u16 = TEXT_WIDTH / 4;
 
-    const CANVAS_WIDTH  : u16 = TEXT_WIDTH * 2;
-    const CANVAS_HEIGHT : u16 = TEXT_HEIGHT * 4;
-
-    const WIDTH  : f32 = CANVAS_WIDTH  as f32;
-    const HEIGHT : f32 = CANVAS_HEIGHT as f32;
+pub fn draw_all (
+    zgicabra: &Zgicabra,
+    history: &Vec<Zgicabra>,
+    delta_events: &Vec<DeltaEvent>,
+    delta_history: &Vec<DeltaEvent>,
+    audio_errors: &AudioErrors) {
 
     let mut canvas = Canvas::new(CANVAS_WIDTH as u32, CANVAS_HEIGHT as u32);
 
     draw_banner(TEXT_WIDTH, 1, zgicabra.level == 0.0);
+    draw_sequence_pie(zgicabra.sequence_number, TEXT_WIDTH, 1);
 
-    if !zgicabra.docked {
-        draw_wand(&mut canvas, zgicabra.left,  WIDTH*1.0/4.0, HEIGHT/2.0, WIDTH/6.0);
-        draw_wand(&mut canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/2.0, WIDTH/6.0);
+    draw_main_panel(1, &mut canvas, zgicabra);
 
-        if zgicabra.level > 0.0  {
-            draw_bend(&mut canvas, zgicabra.separation,
-                      zgicabra.left.twist, zgicabra.right.twist,
-                      (WIDTH*1.0/4.0) as u32,
-                      (WIDTH*3.0/4.0) as u32,
-                      (HEIGHT/2.0) as u32,
-                      WIDTH/6.0,
-                      zgicabra.level);
-        }
-    } else {
-        draw_wand_fixed(&mut canvas, zgicabra.left,  WIDTH*1.0/4.0, HEIGHT/2.0, WIDTH/6.0);
-        draw_wand_fixed(&mut canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/2.0, WIDTH/6.0);
-    }
+    print!("{}{}", termion::cursor::Goto(1, READOUT_TERM_Y),
+        barcode_string(TEXT_WIDTH.into(), zgicabra.level == 0.0));
 
-    print!("{}{}", termion::cursor::Goto(1, 2), &mut canvas.frame());
-    print!("{}{}", termion::cursor::Goto(1, TEXT_HEIGHT + 4), barcode_string(TEXT_WIDTH.into(), zgicabra.level == 0.0));
+    draw_audio_panel(VOICE_TERM_Y, zgicabra);
 
+    /*
     print!("{}{:^40}", termion::cursor::Goto(0, 19), format!("[{:.3} {:.3} {:.3} {:.3}]",
         zgicabra.left.rot[0],
         zgicabra.left.rot[1],
@@ -79,20 +82,101 @@ pub fn draw_all (zgicabra: &Zgicabra, history: &Vec<Zgicabra>, delta_events: &Ve
         zgicabra.right.rot[1],
         zgicabra.right.rot[2],
         zgicabra.right.rot[3]));
+    */
 
-    if zgicabra.most_recent_wand == Hand::Left {
-        print!("{}{}{:^40}", termion::cursor::Goto(0, 21),  termion::color::Fg(termion::color::LightBlue), format!("X"));
-    }
+    //if zgicabra.most_recent_wand == Hand::Left {
+        //print!("{}{}{:^38}", termion::cursor::Goto(0, 21),  termion::color::Fg(termion::color::LightBlue), format!("X"));
+    //}
 
-    if zgicabra.most_recent_wand == Hand::Right {
-        print!("{}{}{:^40}", termion::cursor::Goto(40, 21), termion::color::Fg(termion::color::LightBlue), format!("X"));
-    }
+    //if zgicabra.most_recent_wand == Hand::Right {
+        //print!("{}{}{:^38}", termion::cursor::Goto(38, 21), termion::color::Fg(termion::color::LightBlue), format!("X"));
+    //}
 
-    draw_events(&delta_events, &delta_history);
-    draw_note_state(&zgicabra);
+    //draw_events(&delta_events, &delta_history);
+    //draw_note_state(&zgicabra);
+
+    //draw_palette(10, 40);
+
     draw_graph(&history);
+    //draw_audio_errors(audio_errors);
 }
 
+fn draw_audio_panel (y: u16, zgicabra: &Zgicabra) {
+}
+
+fn draw_main_panel (y: u16, canvas: &mut Canvas, zgicabra: &Zgicabra) {
+
+    if !zgicabra.docked {
+        draw_wand(canvas, zgicabra.left,  WIDTH*1.0/4.0, HEIGHT/2.0, WIDTH/6.0);
+        draw_wand(canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/2.0, WIDTH/6.0);
+
+        if zgicabra.level > 0.0  {
+            draw_bend(canvas, zgicabra.separation,
+                      zgicabra.left.twist, zgicabra.right.twist,
+                      (WIDTH*1.0/4.0) as u32,
+                      (WIDTH*3.0/4.0) as u32,
+                      (HEIGHT/2.0) as u32,
+                      WIDTH/6.0,
+                      zgicabra.level);
+        }
+    } else {
+        draw_wand_fixed(canvas, zgicabra.left,  WIDTH*1.0/4.0, HEIGHT/2.0, WIDTH/6.0);
+        draw_wand_fixed(canvas, zgicabra.right, WIDTH*3.0/4.0, HEIGHT/2.0, WIDTH/6.0);
+    }
+
+    print!("{}{}", termion::cursor::Goto(1, 2), &mut canvas.frame());
+
+    // Voice, width, root, thump/fuzz
+
+    print!("{}{:^76}", termion::cursor::Goto(0, 21), format_note_name(zgicabra.note.root));
+
+    let width_color = if zgicabra.signal.width > 0.0 { GREEN_1 } else { RED_1 };
+    print!("{}{}{:^56}{}", 
+        termion::cursor::Goto(11, 22),
+        fg(width_color),
+        "━".repeat((zgicabra.signal.width.abs() * 28.0).round() as usize * 2),
+        termion::color::Fg(termion::color::Reset));
+
+    print!("{}{:^76}", termion::cursor::Goto(0, 23), format!("{:?}", zgicabra.voice));
+
+    draw_toggle_box(             5, 21, GREEN_0, zgicabra.signal.thump > 0.0);
+    draw_toggle_box(TEXT_WIDTH - 8, 21, RED_0,   zgicabra.signal.fuzz > 0.0);
+}
+
+fn goto (x: u16, y: u16) -> termion::cursor::Goto {
+    termion::cursor::Goto(x, y)
+}
+
+fn fg (color: RGB8) -> termion::color::Fg<termion::color::Rgb> {
+    termion::color::Fg(termion::color::Rgb(color.r, color.g, color.b))
+}
+
+fn draw_palette (x: u16, y: u16) {
+    print!("{}{}▐█▌{}▐█▌{}▐█▌{}▐█▌", goto(x, y +  0), fg(WHITE), fg(GREEN_0), fg(BLUE_0), fg(RED_0));
+    print!("{}{}▐█▌{}▐█▌{}▐█▌{}▐█▌", goto(x, y +  1), fg(BLACK), fg(GREEN_1), fg(BLUE_1), fg(RED_1));
+    print!("{}{}▐█▌{}▐█▌{}▐█▌{}▐█▌", goto(x, y +  2), fg(WHITE), fg(GREEN_2), fg(BLUE_2), fg(RED_2));
+    print!("{}{}▐█▌{}▐█▌{}▐█▌{}▐█▌", goto(x, y +  3), fg(BLACK), fg(GREEN_3), fg(BLUE_3), fg(RED_3));
+    print!("{}", termion::color::Fg(termion::color::Reset));
+}
+
+fn draw_toggle_box (x: u16, y: u16, on_color: RGB8, on: bool) {
+    print!("{}┌───┐", termion::cursor::Goto(x, y + 0));
+    if on {
+        print!("{}│{}▐█▌{}│", termion::cursor::Goto(x, y + 1), fg(on_color), termion::color::Fg(termion::color::Reset));
+    } else {
+        print!("{}│   │", termion::cursor::Goto(x, y + 1));
+    }
+    print!("{}└───┘", termion::cursor::Goto(x, y + 2));
+}
+
+fn draw_ascii_frame (x: u16, y: u16, width: u16, height: u16) {
+    let inner = (width - 2) as usize;
+    print!("{}{}", termion::cursor::Goto(x, y), format!("╔{}╗", "═".repeat(inner)));
+    for row in 1..height - 1 {
+        print!("{}║{}║", termion::cursor::Goto(x, y + row), " ".repeat(inner));
+    }
+    print!("{}╚{}╝", termion::cursor::Goto(x, y + height - 1), "═".repeat(inner));
+}
 
 fn draw_wand (canvas: &mut Canvas, wand: Wand, x: f32, y: f32, radius: f32) {
 
@@ -424,17 +508,11 @@ pub fn draw_events (delta_events: &Vec<DeltaEvent>, delta_history: &Vec<DeltaEve
             None    => println!("{} -",      termion::cursor::Goto(1, READOUT_TERM_Y + row as u16)),
         }
     }
-
-    // TODO: OSC events
 }
 
 pub fn draw_note_state (state: &Zgicabra) {
-    let term_x = 50;
+    let term_x = 52;
 
-    println!("{}Note:  [{}]",   termion::cursor::Goto(term_x, READOUT_TERM_Y + 0), if state.note.on { state.note.current } else { 0 });
-    println!("{}Voice: [{:?}]", termion::cursor::Goto(term_x, READOUT_TERM_Y + 1), state.voice);
-
-    println!("{}Seq:     {:>17}",   termion::cursor::Goto(term_x, READOUT_TERM_Y + 3), state.sequence_number);
     println!("{}Root:    {:>17}",   termion::cursor::Goto(term_x, READOUT_TERM_Y + 4), format_note(state.note.root));
     println!("{}Current: {:>17}",   termion::cursor::Goto(term_x, READOUT_TERM_Y + 5), format_note(state.note.current));
     println!("{}Pitch:   {:>17.4}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 6), state.note.bend);
@@ -442,5 +520,35 @@ pub fn draw_note_state (state: &Zgicabra) {
     println!("{}Fuzz:    {:>17.4}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 8), state.signal.fuzz);
     println!("{}Width:   {:>17.4}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 9), state.signal.width);
     println!("{}Thump:   {:>17.4}", termion::cursor::Goto(term_x, READOUT_TERM_Y + 10), state.signal.thump);
+}
+
+// Little heartbeat readout: the hydra's rolling 0-255 sequence number as a
+// single progressively-filled char, one step per 32-count chunk (256/32 = 8
+// steps) -- a glance confirms fresh frames are still arriving without
+// reading the raw number.
+fn draw_sequence_pie (seq: u8, x: u16, y: u16) {
+    const LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+    let step = (seq as usize / 32).min(LEVELS.len() - 1);
+
+    print!("{}{}", termion::cursor::Goto(x, y), LEVELS[step]);
+}
+
+pub fn draw_audio_errors (errors: &AudioErrors) {
+    let term_x = 50;
+    let row_y  = READOUT_TERM_Y + 12;
+
+    let log = errors.lock().unwrap();
+
+    println!("{}{}Audio errors:", termion::cursor::Goto(term_x, row_y), termion::color::Fg(termion::color::Red));
+
+    for row in 0..5 {
+        match log.iter().rev().nth(row) {
+            Some(e) => println!("{} {}", termion::cursor::Goto(term_x, row_y + 1 + row as u16), e),
+            None    => println!("{}",    termion::cursor::Goto(term_x, row_y + 1 + row as u16)),
+        }
+    }
+
+    println!("{}", termion::color::Fg(termion::color::White));
 }
 

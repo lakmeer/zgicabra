@@ -1,0 +1,3 @@
+#!/bin/sh
+cd /home/zgicabra/zgicabra/
+cargo watch -- cargo run --release

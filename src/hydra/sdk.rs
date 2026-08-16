@@ -42,7 +42,7 @@ extern "C" {
 }
 
 pub struct SdkBackend {
-    keys: Keys<AsyncReader>,
+    keys: Option<Keys<AsyncReader>>,
     _cbreak_guard: CbreakGuard, // restores the terminal on drop
 }
 
@@ -80,8 +80,14 @@ impl SdkBackend {
             }
         }
 
+        // termion::async_stdin() panics its worker thread (non-fatally, but
+        // noisily) if /dev/tty can't be opened, e.g. no controlling terminal.
+        // Probe first and skip the keyboard-quit feature rather than crash it.
+        let keys = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty").ok()
+            .map(|_| termion::async_stdin().keys());
+
         Some(SdkBackend {
-            keys: termion::async_stdin().keys(),
+            keys,
             _cbreak_guard: CbreakGuard::enable(),
         })
     }
@@ -101,7 +107,7 @@ impl Backend for SdkBackend {
     // Trait default blocks on a canonical-mode stdin read; CbreakGuard puts
     // stdin in cbreak mode so this can poll non-blocking instead.
     fn should_quit (&mut self) -> bool {
-        self.keys.next().is_some()
+        self.keys.as_mut().is_some_and(|keys| keys.next().is_some())
     }
 }
 

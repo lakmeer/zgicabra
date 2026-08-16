@@ -6,25 +6,20 @@ use std::env;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod tw;
 mod tools;
 mod hydra;
 mod zgicabra;
 mod ui;
-mod osc;
 mod audio;
-mod output;
 mod gui;
 
-use osc::OscOutput;
 use audio::AudioOutput;
-use output::DeltaConsumer;
 
 use hydra::{HydraState, MockControls};
 use zgicabra::{Zgicabra, DeltaEvent, ZgicabraBridge};
 
 pub const HISTORY_WINDOW: usize = 100;
-
-const DEBUG_FRAMES: bool = false;
 
 const REFRESH_MS: Duration = Duration::from_millis(10);
 const DEVICE_NAME: &str = "Zgicabra";
@@ -35,7 +30,6 @@ const DEVICE_NAME: &str = "Zgicabra";
 //
 // - Represent stick click on UI
 // - self-test mode
-// - Proxy OSC heartbeat status to UI
 //
 // INVESTIGATE
 // - Argent Compressor: https://www.youtube.com/watch?v=dqv3jC7GX6Y
@@ -62,16 +56,11 @@ fn main() {
 
     let mut hydra_state = HydraState::new();
 
-    let mut audio: Option<audio::AudioHandles> = None;
+    let mut output = AudioOutput::new()
+        .unwrap_or_else(|e| panic!("║ 🟥 Failed to init audio backend: {e}"));
+    let audio = output.handles();
+    let audio_errors = audio.errors.clone();
 
-    let mut output: Box<dyn DeltaConsumer + Send> = match args.consumer {
-        tools::Consumer::Osc   => Box::new(OscOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init OSC connection: {e}"))),
-        tools::Consumer::Audio => {
-            let audio_output = AudioOutput::new().unwrap_or_else(|e| panic!("║ 🟥 Failed to init native audio backend: {e}"));
-            audio = Some(audio_output.handles());
-            Box::new(audio_output)
-        },
-    };
     output.panic(); // Kill any overrunning notes
 
     hydra::start(&mut hydra_state);
@@ -93,29 +82,23 @@ fn main() {
         let engine_mock_controls = mock_controls.clone();
 
         if args.test {
-            match audio.clone() {
-                Some(handles) => {
-                    let test_quit = quit.clone();
-                    std::thread::spawn(move || run_self_test(handles, test_quit));
-                },
-                None => eprintln!("║ 🟥 --test needs the audio backend (drop --osc)"),
-            }
+            let test_quit = quit.clone();
+            let test_handles = audio.clone();
+            std::thread::spawn(move || run_self_test(test_handles, test_quit));
         }
 
+        let engine_audio_errors = audio_errors.clone();
         let engine_thread = std::thread::spawn(move || {
-            run_engine_loop(args, hydra_state, output, engine_bridge, engine_quit, engine_mock_controls);
+            run_engine_loop(args, hydra_state, output, engine_bridge, engine_quit, engine_mock_controls, engine_audio_errors);
         });
 
-        gui::run(audio, mock_controls, bridge, quit);
+        gui::run(Some(audio), mock_controls, bridge, quit);
         engine_thread.join().expect("engine thread panicked");
     } else {
-        run_engine_loop(args, hydra_state, output, bridge, Arc::new(AtomicBool::new(false)), mock_controls);
+        run_engine_loop(args, hydra_state, output, bridge, Arc::new(AtomicBool::new(false)), mock_controls, audio_errors);
     }
 }
 
-// --gui --test: holds a test note directly on the audio graph's gate
-// (bypassing DeltaEvent/hydra) and checks the raw cpal output is non-zero --
-// isolates "no audio output" to either the graph itself or the OS/device layer.
 fn run_self_test (audio: audio::AudioHandles, quit: Arc<AtomicBool>) {
     println!("║ [selftest] waiting for audio stream to settle...");
     sleep(Duration::from_millis(300));
@@ -153,8 +136,17 @@ fn run_self_test (audio: audio::AudioHandles, quit: Arc<AtomicBool>) {
 // Runs on the main thread normally, or a background thread when --gui needs
 // the main thread for itself. `quit` (set by closing the gui window) is
 // polled alongside hydra::should_quit() to stop the loop either way.
-fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: Box<dyn DeltaConsumer + Send>, bridge: ZgicabraBridge, quit: Arc<AtomicBool>, mock_controls: Option<MockControls>) {
-    let no_ui = args.no_ui || args.gui;
+fn run_engine_loop (
+    args: tools::Args,
+    mut hydra_state: HydraState,
+    mut output: AudioOutput,
+    bridge: ZgicabraBridge, 
+    quit: Arc<AtomicBool>,
+    mock_controls: Option<MockControls>,
+    audio_errors: audio::AudioErrors
+) {
+
+    let no_ui = args.debug || args.gui;
 
     let mut zgicabra                       = Zgicabra::new();
     let mut history:       Vec<Zgicabra>   = Vec::with_capacity(HISTORY_WINDOW);
@@ -177,14 +169,12 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
             let l = &hydra_state.controllers[0];
             let r = &hydra_state.controllers[1];
 
-            if DEBUG_FRAMES {
-                println!(
-                    "F t={} L seq={} pos=[{:.4},{:.4},{:.4}] quat=[{:.3},{:.3},{:.3},{:.3}] joy=[{:.3},{:.3}] trig={:.3} btn={:#011b} en={} dock={} | R seq={} pos=[{:.4},{:.4},{:.4}] quat=[{:.3},{:.3},{:.3},{:.3}] joy=[{:.3},{:.3}] trig={:.3} btn={:#011b} en={} dock={}",
-                    t,
-                    l.sequence_number, l.pos[0], l.pos[1], l.pos[2], l.rot_quat[0], l.rot_quat[1], l.rot_quat[2], l.rot_quat[3], l.joystick_x, l.joystick_y, l.trigger, l.buttons, l.enabled, l.is_docked,
-                    r.sequence_number, r.pos[0], r.pos[1], r.pos[2], r.rot_quat[0], r.rot_quat[1], r.rot_quat[2], r.rot_quat[3], r.joystick_x, r.joystick_y, r.trigger, r.buttons, r.enabled, r.is_docked,
-                );
-            }
+            crate::dbg!(
+                "F t={} L seq={} pos=[{:.4},{:.4},{:.4}] quat=[{:.3},{:.3},{:.3},{:.3}] joy=[{:.3},{:.3}] trig={:.3} btn={:#011b} en={} dock={} | R seq={} pos=[{:.4},{:.4},{:.4}] quat=[{:.3},{:.3},{:.3},{:.3}] joy=[{:.3},{:.3}] trig={:.3} btn={:#011b} en={} dock={}",
+                t,
+                l.sequence_number, l.pos[0], l.pos[1], l.pos[2], l.rot_quat[0], l.rot_quat[1], l.rot_quat[2], l.rot_quat[3], l.joystick_x, l.joystick_y, l.trigger, l.buttons, l.enabled, l.is_docked,
+                r.sequence_number, r.pos[0], r.pos[1], r.pos[2], r.rot_quat[0], r.rot_quat[1], r.rot_quat[2], r.rot_quat[3], r.joystick_x, r.joystick_y, r.trigger, r.buttons, r.enabled, r.is_docked,
+            );
         }
 
         let voice_cycle = hydra::take_voice_cycle(&mut hydra_state);
@@ -217,16 +207,16 @@ fn run_engine_loop (args: tools::Args, mut hydra_state: HydraState, mut output: 
         bridge.sync(&mut zgicabra);
 
         if !no_ui {
-            ui::draw_all(&zgicabra, &history, &delta_events, &delta_history);
-            ui::draw_events(&delta_events, &delta_history);
-            ui::draw_note_state(&zgicabra);
-            ui::draw_graph(&history);
+            ui::draw_all(&zgicabra, &history, &delta_events, &delta_history, &audio_errors);
+            //ui::draw_events(&delta_events, &delta_history);
+            //ui::draw_note_state(&zgicabra);
+            //ui::draw_graph(&history);
         }
 
         output.handle_signal(&zgicabra.signal);
 
         for delta in delta_events.drain(..) {
-            if no_ui { println!("E t={} - {:?}", tools::millis_now(), delta); }
+            crate::dbg!("E t={} - {:?}", tools::millis_now(), delta);
             output.handle_event(&delta);
             delta_history.push(delta);
         }

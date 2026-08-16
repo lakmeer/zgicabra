@@ -13,7 +13,6 @@ rand_distr = "0.4.3"
 rgb = "0.8.35"
 termion = "2.0.1"
 textplots = "0.8.7"
-rosc = "~0.10"
 fundsp = { version = "0.23.0", default-features = false, features = ["std"] }
 num-complex = { version = "0.4.6", default-features = false, features = ["libm"] }
 cpal = "0.18.1"
