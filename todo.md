@@ -11,6 +11,7 @@
 - Is it appropriate to vendor NAM model files? Check tone3000 license info
 - Reintroduce T3K IR but as finishing stage, replace final NAM pair
 - Map DeltaEvent::NoteRetrig in Voices
+- Audio connection drops after a long time idle; investigate
 
 - Voices
   - Basic

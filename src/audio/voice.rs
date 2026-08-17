@@ -6,17 +6,18 @@
 // voice burns CPU despite the whole graph staying wired.
 //
 // Each concrete Voice owns its tunable params directly, as `Shared` cells
-// (for anything outside the audio thread needs to read, e.g. gui.rs's
-// read-only meters) or plain fields (for anything nobody outside the audio
-// thread touches). The audio thread is the only writer of every per-voice
-// value -- tuning happens live via MIDI CC (apply_cc below, see
-// src/audio/cc_input.rs), not GUI knob-dragging -- so there's no separate
-// GUI-facing handle type to keep in sync.
+// (for anything outside the audio thread needs to read) or plain fields (for
+// anything nobody outside the audio thread touches). The audio thread is the
+// only writer of every per-voice value -- tuning happens live via MIDI CC
+// (apply_cc below, see src/audio/cc_input.rs) -- so there's no separate
+// external-facing handle type to keep in sync.
 //
-// CC registry (per-voice, non-overlapping; distinct from the global
-// performance-signal CCs 1-4/7-8 in hydra/midi.rs): Reese 20-27, Growl
-// 30-34, Basic 40-44, Swarm 50-54. See each voice's apply_cc for the exact
-// cc -> field mapping.
+// CC registry (per-voice, non-overlapping; distinct from CC1, the global
+// Mod Wheel -> filter mapping in hydra/midi.rs): Reese 20-27, Growl 30-34,
+// Basic 40-44, Swarm 50-54. CC2-8 mirror the front of each voice's own
+// range (e.g. Reese's CC2 == CC20) so an 8-knob controller can reach the
+// selected voice's params directly without needing CC20+ automation lanes;
+// see each voice's apply_cc for the exact cc -> field mapping.
 //
 
 use fundsp::prelude64::*;
@@ -24,8 +25,8 @@ use fundsp::prelude64::*;
 pub trait Voice: AudioNode<Inputs = U2, Outputs = U2> {
     const INDEX: usize;
     fn name (&self) -> &'static str;
-    // The 5 hand-riddable performance signals (W/F/B/Z/T, see gui.rs
-    // draw_signal_state), always passed in full so a voice that doesn't
+    // The 5 hand-riddable performance signals (W/F/B/Z/T, see
+    // zgicabra::SignalState), always passed in full so a voice that doesn't
     // care about one just ignores the argument.
     fn set_signal (&mut self, bend: f32, filter: f32, fuzz: f32, width: f32, thump: f32);
     // Called once per cpal callback chunk, before that block's tick()

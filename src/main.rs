@@ -11,12 +11,11 @@ mod hydra;
 mod zgicabra;
 mod ui;
 mod audio;
-mod gui;
 
 use audio::AudioOutput;
 
 use hydra::{HydraState, MockControls};
-use zgicabra::{Zgicabra, DeltaEvent, ZgicabraBridge};
+use zgicabra::{Zgicabra, DeltaEvent};
 
 pub const HISTORY_WINDOW: usize = 100;
 
@@ -62,38 +61,18 @@ fn main() {
 
     hydra::start(&mut hydra_state);
 
-    // None on real hardware -- only the mock backend has keyboard-driven
-    // inputs a gui panel can also drive.
+    // None on real hardware -- only the mock backend has keyboard-driven inputs.
     let mock_controls = hydra::mock_controls(&hydra_state);
 
-    // Shared between the engine loop and the gui (wand telemetry, signal
-    // overrides); cheap to keep alive even without --gui.
-    let bridge = ZgicabraBridge::new();
+    let quit = Arc::new(AtomicBool::new(false));
 
-    if args.gui {
-        // SDL2/AppKit requires the window + event loop on the main thread on
-        // macOS, so gui owns main() here and the engine loop runs in the background.
-        let quit = Arc::new(AtomicBool::new(false));
-        let engine_quit = quit.clone();
-        let engine_bridge = bridge.clone();
-        let engine_mock_controls = mock_controls.clone();
-
-        if args.test {
-            let test_quit = quit.clone();
-            let test_handles = audio.clone();
-            std::thread::spawn(move || run_self_test(test_handles, test_quit));
-        }
-
-        let engine_audio = audio.clone();
-        let engine_thread = std::thread::spawn(move || {
-            run_engine_loop(args, hydra_state, output, engine_bridge, engine_quit, engine_mock_controls, engine_audio);
-        });
-
-        gui::run(Some(audio), mock_controls, bridge, quit);
-        engine_thread.join().expect("engine thread panicked");
-    } else {
-        run_engine_loop(args, hydra_state, output, bridge, Arc::new(AtomicBool::new(false)), mock_controls, audio);
+    if args.test {
+        let test_quit = quit.clone();
+        let test_handles = audio.clone();
+        std::thread::spawn(move || run_self_test(test_handles, test_quit));
     }
+
+    run_engine_loop(args, hydra_state, output, quit, mock_controls, audio);
 }
 
 fn run_self_test (audio: audio::AudioHandles, quit: Arc<AtomicBool>) {
@@ -130,20 +109,18 @@ fn run_self_test (audio: audio::AudioHandles, quit: Arc<AtomicBool>) {
     quit.store(true, Ordering::Relaxed);
 }
 
-// Runs on the main thread normally, or a background thread when --gui needs
-// the main thread for itself. `quit` (set by closing the gui window) is
-// polled alongside hydra::should_quit() to stop the loop either way.
+// `quit` (set by the self-test thread finishing) is polled alongside
+// hydra::should_quit() to stop the loop.
 fn run_engine_loop (
     args: tools::Args,
     mut hydra_state: HydraState,
     mut output: AudioOutput,
-    bridge: ZgicabraBridge, 
     quit: Arc<AtomicBool>,
     mock_controls: Option<MockControls>,
     audio: audio::AudioHandles
 ) {
 
-    let no_ui = args.debug || args.gui;
+    let no_ui = args.debug;
 
     let mut zgicabra                       = Zgicabra::new();
     let mut history:       Vec<Zgicabra>   = Vec::with_capacity(HISTORY_WINDOW);
@@ -179,29 +156,26 @@ fn run_engine_loop (
         zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state, voice_cycle, tune_cycle, &mut delta_events);
         delta_events.extend(hydra::take_midi_notes(&mut hydra_state));
 
-        if let Some(mc) = &mock_controls {
-            if mc.midi.connected {
-                bridge.filter.set(mc.midi.filter.load());
-                bridge.width.set(mc.midi.width.load());
-                bridge.fuzz.set(mc.midi.fuzz.load());
-                bridge.thump.set(mc.midi.thump.load());
-                // Bend also has a live source (wand twist), so only an actual
-                // off-center wheel gesture takes it over; forwarding 0 every
-                // tick would pin it there forever (SignalOverride has no
-                // other way to release `enabled`) -- centering the wheel
-                // hands control back to twist, like a spring-return wheel.
-                if mc.midi.bend.load() != 0.0 {
-                    bridge.bend.set(mc.midi.bend.load());
-                } else {
-                    bridge.bend.enabled.store(false, Ordering::Relaxed);
-                }
-            }
-            if mc.seq_playing.load(Ordering::Relaxed) {
-                bridge.filter.set(mc.seq_filter.load());
+        // MIDI is connected unconditionally on HydraState (see hydra/mod.rs),
+        // independent of which Backend is active, so this runs alongside
+        // real Hydra hardware too, not just the mock backend. Only CC1 (Mod
+        // Wheel) -> filter is handled globally here -- CC2-8 route to
+        // whichever Voice is selected instead (see cc_input.rs).
+        if hydra_state.midi.connected {
+            zgicabra.signal.filter = hydra_state.midi.filter.load();
+            // Bend also has a live source (wand twist); only an actual
+            // off-center wheel gesture overrides it -- centering the wheel
+            // leaves bend alone, like a spring-return wheel.
+            if hydra_state.midi.bend.load() != 0.0 {
+                zgicabra.signal.bend = hydra_state.midi.bend.load();
             }
         }
 
-        bridge.sync(&mut zgicabra);
+        if let Some(mc) = &mock_controls {
+            if mc.seq_playing.load(Ordering::Relaxed) {
+                zgicabra.signal.filter = mc.seq_filter.load();
+            }
+        }
 
         if !no_ui {
             ui::draw_all(&zgicabra, &history, &delta_history, &audio);

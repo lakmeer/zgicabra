@@ -373,9 +373,9 @@ impl GrowlVoice {
             space_input:         self.space_input.clone(),
             warp_input:          self.warp_input.clone(),
             nam_crossover_input: self.nam_crossover_input.clone(),
-            filter_live:    self.filter_live.clone(),
-            warp_live:      self.warp_live.clone(),
-            freq_mult_live: self.freq_mult_live.clone(),
+            filter_live:         self.filter_live.clone(),
+            warp_live:           self.warp_live.clone(),
+            freq_mult_live:      self.freq_mult_live.clone(),
         }
     }
 
@@ -430,7 +430,7 @@ impl AudioNode for GrowlVoice {
         self.freq_mult_live.set_value(freq_mult);
         let freq = freq * freq_mult;
 
-        self.filter_live.set_value((self.filter_input.value() * self.filter_signal).clamp(0.0, 1.0));
+        self.filter_live.set_value((self.filter_input.value() + self.filter_signal).clamp(0.0, 1.0));
         self.warp_live.set_value((self.warp_input.value() * (1.0 - self.width_signal)).clamp(0.0, 1.0));
 
         let drive = self.bass_drive_input.value();
@@ -471,9 +471,6 @@ impl Voice for GrowlVoice {
         self.width_signal  = width;
     }
 
-    // Runs the NAM model over last block's buffered raw output (`scratch`
-    // above) before this block's tick() calls start reading it. Fixed
-    // level=1/boost=1 -- Bypass (model index 0) already gives dry passthrough.
     fn on_block_start (&mut self, block_len: usize) {
         let n = std::cmp::min(block_len, self.scratch.len());
         let crossover_hz = self.nam_crossover_input.value();
@@ -481,15 +478,13 @@ impl Voice for GrowlVoice {
         self.pos = 0;
     }
 
-    // CC 30-34, 0..1 normalized input scaled to each param's own range
-    // (matching the ranges gui.rs's read-only meters display).
     fn apply_cc (&mut self, cc: u8, value: f32) {
         match cc {
-            30 => self.bass_drive_input.set_value(value.clamp(0.0, 1.0)),
-            31 => self.filter_input.set_value(value.clamp(0.0, 1.0)),
-            32 => self.space_input.set_value(value.clamp(0.0, 1.0)),
-            33 => self.warp_input.set_value(value.clamp(0.0, 1.0)),
-            34 => self.nam_crossover_input.set_value(value.clamp(0.0, 1.0) * 2000.0),
+            2 => self.bass_drive_input.set_value(value.clamp(0.0, 1.0)),
+            3 => self.filter_input.set_value(value.clamp(0.0, 1.0)),
+            4 => self.space_input.set_value(value.clamp(0.0, 1.0)),
+            5 => self.warp_input.set_value(value.clamp(0.0, 1.0)),
+            6 => self.nam_crossover_input.set_value(value.clamp(0.0, 1.0) * 10000.0),
             _ => {},
         }
     }

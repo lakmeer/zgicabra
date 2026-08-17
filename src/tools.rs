@@ -116,20 +116,17 @@ pub fn ease_out (t: f32) -> f32 {
 pub struct Args {
     pub debug: bool,
     pub test: bool,
-    pub gui: bool,
 }
 
 pub fn parse_args() -> Args {
     let mut debug = false;
     let mut test = false;
-    let mut gui = false;
 
-    let help_text = "║ Supported options:\n║  --debug    Disable TUI, print verbose debug logging\n║  --gui      Open the graphical voice-params/mock-hydra tuner window\n║  --test     Run self-tests";
+    let help_text = "║ Supported options:\n║  --debug    Disable TUI, print verbose debug logging\n║  --test     Run self-tests";
 
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--debug" => debug = true,
-            "--gui"   => gui = true,
             "--test"  => test = true,
             other => {
                 eprintln!("║ Error: unrecognized flag '{other}'");
@@ -141,7 +138,7 @@ pub fn parse_args() -> Args {
 
     set_debug_enabled(debug);
 
-    Args { debug, test, gui }
+    Args { debug, test }
 }
 
 

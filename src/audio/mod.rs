@@ -118,12 +118,11 @@ impl TestTone {
     }
 }
 
-// Every Shared cell external code (gui.rs/ui.rs) needs to read, bundled once
+// Every Shared cell external code (ui.rs) needs to read, bundled once
 // so AudioOutput and AudioHandles don't each declare their own copy of the
 // same ~20-field list (see mod.rs's old handles()/AudioOutput duplication).
 // Per-voice fields are read-only *View types (see growl.rs's GrowlView doc)
 // -- writes are audio-thread/MIDI-CC-only now, see voice.rs's module doc.
-// The rest (mix-stage globals) stay GUI-editable Shared cells, unchanged.
 #[derive(Clone)]
 pub struct Handles {
     pub voice_selected: Shared,
@@ -154,8 +153,8 @@ pub struct Handles {
     pub master_vol: Shared,
 }
 
-// Every GUI-facing handle onto a running AudioOutput, bundled so main.rs/
-// gui.rs thread one Option through instead of per-feature. Derefs to
+// Every external-facing handle onto a running AudioOutput, bundled so
+// main.rs threads one Option through instead of per-feature. Derefs to
 // `Handles` so `audio.voice_a`/`audio.master_vol`/etc. keep working as plain
 // field access.
 #[derive(Clone)]
@@ -681,6 +680,7 @@ where
                 // mid-performance retargets subsequent CC messages, it
                 // doesn't replay queued ones onto the old voice.
                 while let Some((cc, value)) = engine.cc_input.pop() {
+                    crate::dbg!("audio::build_stream - applying CC {cc}={value} to voice index {selected}");
                     if selected == ReeseVoice::INDEX { engine.voice_a.apply_cc(cc, value); }
                     if selected == GrowlVoice::INDEX { engine.voice_b.apply_cc(cc, value); }
                     if selected == BasicVoice::INDEX { engine.voice_c.apply_cc(cc, value); }
@@ -740,7 +740,7 @@ impl AudioOutput {
                 self.gate.set_value(GATE_ON);
             },
             DeltaEvent::NoteEnd(_) => self.gate.set_value(GATE_OFF),
-            // Index must match VOICE_NAMES order in gui.rs.
+            // Index must match zgicabra::Voice's enum order.
             DeltaEvent::VoiceChange(voice) => self.handles.voice_selected.set_value(*voice as u8 as f32),
             DeltaEvent::Panic()    => self.gate.set_value(GATE_OFF),
             _ => {},

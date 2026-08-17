@@ -4,8 +4,8 @@
 //
 // Generates synthetic wand motion via steady sine waves, so the rest of the
 // app can be developed and tested without real Hydra hardware attached.
-// Triggers/buttons are simulated from the keyboard/gui, toggled on/off
-// (rather than held) since terminals don't deliver real key-up events:
+// Triggers/buttons are simulated from the keyboard, toggled on/off (rather
+// than held) since terminals don't deliver real key-up events:
 //
 //   'z' / '.' - toggle left/right trigger
 //   'a' / 's' - cycle voice (dev stand-in for the physical Rocking button)
@@ -13,7 +13,8 @@
 //   arrow keys - toggle the left wand's joystick to full deflection
 //
 // The right wand's joystick and every wand's 4 buttons have no keyboard
-// mapping -- gui.rs-only, driven straight through MockControls.
+// mapping and no other driver -- exposed on MockControls for an external
+// caller to set directly, but currently always at rest.
 //
 
 use std::f32::consts::{PI, TAU};
@@ -62,9 +63,9 @@ fn seq_note_at (t: f32) -> u8 {
 const BUTTON_BITS: [u32; 4] = [BUTTON_1, BUTTON_2, BUTTON_3, BUTTON_4];
 
 // Shared handle onto a running MockBackend's togglable inputs, so something
-// other than the keyboard (e.g. gui.rs) can drive the same mock wand state.
-// Every field is the same Arc'd atomic the backend itself reads each frame,
-// so writes here take effect immediately with no polling/sync needed.
+// other than the keyboard can drive the same mock wand state. Every field is
+// the same Arc'd atomic the backend itself reads each frame, so writes here
+// take effect immediately with no polling/sync needed.
 #[derive(Clone)]
 pub struct MockControls {
     pub left_trigger:  Arc<AtomicF32>,
@@ -87,7 +88,8 @@ pub struct MockControls {
     voice_cycle: Arc<AtomicI8>,
     tune_cycle:  Arc<AtomicI8>,
 
-    // See hydra::midi -- inert (0.0/false) on targets with no MIDI support.
+    // Clone of HydraState's MidiState (see hydra/mod.rs) -- inert
+    // (0.0/false) on targets with no MIDI support.
     pub midi: midi::MidiState,
 
     // Audition sequence player toggle (see step_sequence) and its published
@@ -140,12 +142,11 @@ pub struct MockBackend {
     sequence: u8,
     _cbreak_guard: CbreakGuard, // restores the terminal on drop
 
-    // rot_left/rot_right feed straight into wand_frame's rot_quat twist slot
-    // rather than through a SignalOverride -- they drive zgicabra's own
-    // rotation->bend math, not bypass it the way midi.bend does.
+    // The connection and MidiState live on HydraState (see hydra/mod.rs) so
+    // MIDI keeps working alongside real hardware backends too -- these are
+    // just clones of that shared state, handed in at construction.
     midi: midi::MidiState,
     notes: Arc<Mutex<VecDeque<DeltaEvent>>>, // Note On/Off/PC events, MIDI or audition-sequence sourced
-    _midi_connection: midi::Connection, // held to keep the callback alive; disconnects on drop
 
     // Audition sequence player (see SEQ_NOTES above): seq_playing is the
     // GUI-driven toggle, seq_filter is the published filter sweep, the rest
@@ -158,13 +159,10 @@ pub struct MockBackend {
 }
 
 impl MockBackend {
-    pub fn new() -> MockBackend {
+    pub fn new (midi: midi::MidiState, notes: Arc<Mutex<VecDeque<DeltaEvent>>>) -> MockBackend {
         let cbreak_guard = CbreakGuard::enable();
 
         println!("Hydra::start - mock backend active. 'z'/'.' toggle triggers, 'a'/'s' cycle voice, '-'/'=' tune, arrows steer left stick, 'q' quits.");
-
-        let notes: Arc<Mutex<VecDeque<DeltaEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
-        let (midi, _midi_connection) = midi::connect(notes.clone());
 
         // termion::async_stdin() panics its worker thread (non-fatally, but
         // noisily) if /dev/tty can't be opened, e.g. no controlling terminal.
@@ -190,20 +188,12 @@ impl MockBackend {
             _cbreak_guard: cbreak_guard,
             midi,
             notes,
-            _midi_connection,
             seq_playing: Arc::new(AtomicBool::new(false)),
             seq_filter:  Arc::new(AtomicF32::new(0.0)),
             seq_elapsed: 0.0,
             seq_note:    None,
             seq_last_tick: Instant::now(),
         }
-    }
-
-    // Note On/Off/PC DeltaEvents accumulated since the last call (MIDI input
-    // and/or the audition sequence player, see step_sequence below); drains
-    // the queue.
-    pub fn take_midi_notes (&mut self) -> Vec<DeltaEvent> {
-        self.notes.lock().unwrap().drain(..).collect()
     }
 
     // Steps the audition sequence loop (see SEQ_NOTES) if seq_playing is on,
@@ -286,9 +276,9 @@ impl MockBackend {
 
         self.sequence = self.sequence.wrapping_add(1);
 
-        controllers[0] = self.wand_frame(LEFT_HAND,  0.0, self.left_trigger.load(), self.midi.rot_left.load(),
+        controllers[0] = self.wand_frame(LEFT_HAND,  0.0, self.left_trigger.load(),
             self.left_stick_x.load(), self.left_stick_y.load(), &self.left_buttons);
-        controllers[1] = self.wand_frame(RIGHT_HAND, PI,  self.right_trigger.load(), self.midi.rot_right.load(),
+        controllers[1] = self.wand_frame(RIGHT_HAND, PI,  self.right_trigger.load(),
             self.right_stick_x.load(), self.right_stick_y.load(), &self.right_buttons);
     }
 
@@ -319,7 +309,7 @@ impl MockBackend {
         }
     }
 
-    fn wand_frame (&self, hand: u8, phase: f32, trigger: f32, twist: f32, stick_x: f32, stick_y: f32, buttons: &[Arc<AtomicBool>; 4]) -> ControllerFrame {
+    fn wand_frame (&self, hand: u8, phase: f32, trigger: f32, stick_x: f32, stick_y: f32, buttons: &[Arc<AtomicBool>; 4]) -> ControllerFrame {
         let mut frame = ControllerFrame::new();
 
         frame.which_hand      = hand;
@@ -328,9 +318,6 @@ impl MockBackend {
         frame.trigger         = trigger.clamp(0.0, 1.0);
         frame.joystick_x      = stick_x.clamp(-1.0, 1.0);
         frame.joystick_y      = stick_y.clamp(-1.0, 1.0);
-
-        // rot_quat[2] (twist) is CC7/8-driven regardless of sine_drift.
-        frame.rot_quat[2] = twist.clamp(-1.0, 1.0);
 
         if self.sine_drift.load(Ordering::Relaxed) {
             frame.pos = [
@@ -373,9 +360,5 @@ impl Backend for MockBackend {
 
     fn mock_controls (&self) -> Option<MockControls> {
         Some(self.controls())
-    }
-
-    fn take_midi_notes (&mut self) -> Vec<DeltaEvent> {
-        MockBackend::take_midi_notes(self)
     }
 }

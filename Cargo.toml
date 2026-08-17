@@ -17,12 +17,6 @@ fundsp = { version = "0.23.0", default-features = false, features = ["std"] }
 num-complex = { version = "0.4.6", default-features = false, features = ["libm"] }
 cpal = "0.18.1"
 nam-rs = "0.4.0"
-imgui = { version = "0.12", features = ["tables-api"] }
-imgui-sdl2-support = "0.13"
-imgui-glow-renderer = "0.13"
-sdl2 = { version = "0.37", default-features = false, features = ["use-pkgconfig"] }
-glow = "0.14"
-png = "0.18"
 rtrb = "0.3"
 
 # Native USB HID backend for the Hydra on macOS (see src/hydra/hid.rs) -- the
@@ -38,11 +32,3 @@ hidapi = "2"
 # performance rig, so midir builds fine there too.
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 midir = "0.11.0"
-
-# imgui-rs 0.12's DrawData::cmd_lists() calls slice::from_raw_parts on a
-# possibly-null pointer when a draw list is empty; harmless in Dear ImGui's C++
-# but trips Rust's debug-only UB precondition checks (stable since ~1.80).
-# Release builds skip these checks, so this only matters for `cargo build`
-# without --release. Upstream issue: imgui-rs/imgui-rs, unfixed as of 0.12.0.
-[profile.dev]
-debug-assertions = false

@@ -2,8 +2,6 @@
 // Turns raw Hydra state into the more-complex Zgicabra state.
 
 use std::fmt;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use std::io::{Error};
 use core::f32::consts::PI;
@@ -259,97 +257,6 @@ impl Zgicabra {
             note: NoteState::new(),
             signal: SignalState::new(),
             voice: Voice::VoiceA,
-        }
-    }
-}
-
-
-// GUI Bridge: shared handle between the engine loop (owns the real Zgicabra
-// state) and gui.rs, on separate threads. One SignalOverride per
-// SignalState field: each engine tick publishes the computed value into
-// `value` for the gui to display, unless `enabled` says the gui has taken
-// the field over, in which case the engine pulls `value` back onto the live
-// SignalState instead -- so a UI can drive raw signal values without
-// fighting whatever normally computes them. Rotation is read-only telemetry
-// (no override), just published for display.
-#[derive(Clone)]
-pub struct SignalOverride {
-    pub value:   Arc<AtomicF32>,
-    pub enabled: Arc<AtomicBool>,
-}
-
-impl SignalOverride {
-    fn new () -> SignalOverride {
-        SignalOverride { value: Arc::new(AtomicF32::new(0.0)), enabled: Arc::new(AtomicBool::new(false)) }
-    }
-
-    fn sync (&self, live: &mut f32) {
-        if self.enabled.load(Ordering::Relaxed) {
-            *live = self.value.load();
-        } else {
-            self.value.store(*live);
-        }
-    }
-
-    // Convenience for a plain on/off toggle button (thump/fuzz): take over
-    // the field and flip it, in one call.
-    pub fn toggle (&self) {
-        let next = if self.value.load() > 0.5 { 0.0 } else { 1.0 };
-        self.value.store(next);
-        self.enabled.store(true, Ordering::Relaxed);
-    }
-
-    // Take over the field and set it to an explicit value, in one call (e.g.
-    // a MIDI CC/pitch-bend level -- see hydra::mock's MIDI listener).
-    pub fn set (&self, v: f32) {
-        self.value.store(v);
-        self.enabled.store(true, Ordering::Relaxed);
-    }
-}
-
-#[derive(Clone)]
-pub struct ZgicabraBridge {
-    pub bend:         SignalOverride,
-    pub filter:       SignalOverride,
-    pub fuzz:         SignalOverride,
-    pub width:        SignalOverride,
-    pub thump:        SignalOverride,
-    pub velocity:     SignalOverride,
-    pub acceleration: SignalOverride,
-
-    pub left_rot:  [Arc<AtomicF32>; 4],
-    pub right_rot: [Arc<AtomicF32>; 4],
-}
-
-impl ZgicabraBridge {
-    pub fn new () -> ZgicabraBridge {
-        ZgicabraBridge {
-            bend:         SignalOverride::new(),
-            filter:       SignalOverride::new(),
-            fuzz:         SignalOverride::new(),
-            width:        SignalOverride::new(),
-            thump:        SignalOverride::new(),
-            velocity:     SignalOverride::new(),
-            acceleration: SignalOverride::new(),
-            left_rot:  std::array::from_fn(|_| Arc::new(AtomicF32::new(0.0))),
-            right_rot: std::array::from_fn(|_| Arc::new(AtomicF32::new(0.0))),
-        }
-    }
-
-    // Called once per engine-loop tick, right after zgicabra::update():
-    // pulls gui overrides onto `state.signal`, publishes rotation telemetry.
-    pub fn sync (&self, state: &mut Zgicabra) {
-        self.bend.sync(&mut state.signal.bend);
-        self.filter.sync(&mut state.signal.filter);
-        self.fuzz.sync(&mut state.signal.fuzz);
-        self.width.sync(&mut state.signal.width);
-        self.thump.sync(&mut state.signal.thump);
-        self.velocity.sync(&mut state.signal.velocity);
-        self.acceleration.sync(&mut state.signal.acceleration);
-
-        for i in 0..4 {
-            self.left_rot[i].store(state.left.rot[i]);
-            self.right_rot[i].store(state.right.rot[i]);
         }
     }
 }

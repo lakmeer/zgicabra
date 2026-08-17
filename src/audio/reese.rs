@@ -205,18 +205,22 @@ impl Voice for ReeseVoice {
         self.fuzz_signal   = fuzz;
     }
 
-    // CC 20-27, 0..1 normalized input scaled to each param's own range
-    // (matching the ranges gui.rs's read-only meters display).
+    // CC 20-27, 0..1 normalized input scaled to each param's own range.
+    // CC2-8 is the
+    // same set of knobs (CC1 being reserved for the global Mod Wheel ->
+    // filter mapping, see hydra/midi.rs) so a controller with only 8 physical
+    // knobs can still reach them live -- `width` doesn't fit in that 7-slot
+    // bank, so it's only reachable via CC27 here.
     fn apply_cc (&mut self, cc: u8, value: f32) {
         let value = value.clamp(0.0, 1.0);
         match cc {
-            20 => self.detune.set_value(value * 50.0),
-            21 => self.sub_level.set_value(value),
-            22 => self.drive.set_value(1.0 + value * 7.0),
-            23 => self.cutoff.set_value(value),
-            24 => self.resonance.set_value(0.3 + value * 2.7),
-            25 => self.lfo_rate.set_value(0.05 + value * 2.95),
-            26 => self.lfo_depth.set_value(value),
+            20 | 2 => self.detune.set_value(value * 50.0),
+            21 | 3 => self.sub_level.set_value(value),
+            22 | 4 => self.drive.set_value(1.0 + value * 7.0),
+            23 | 5 => self.cutoff.set_value(value),
+            24 | 6 => self.resonance.set_value(0.3 + value * 2.7),
+            25 | 7 => self.lfo_rate.set_value(0.05 + value * 2.95),
+            26 | 8 => self.lfo_depth.set_value(value),
             27 => self.width.set_value(value),
             _ => {},
         }

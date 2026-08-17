@@ -50,24 +50,43 @@ mod backend {
     // events, same no-op-safe fallback as hydra/midi.rs.
     pub struct Real(Option<MidiInputConnection<()>>);
 
+    // True for ALSA's software-only ports (the "Midi Through" loopback, and
+    // "VirMIDI" clients from the snd-virmidi kernel module) -- never a real
+    // attached controller.
+    fn is_virtual_port (name: &str) -> bool {
+        name.contains("Midi Through") || name.contains("VirMIDI") || name.contains("Virtual Raw MIDI")
+    }
+
     pub fn connect (mut producer: Producer<(u8, f32)>) -> Real {
         let connection = (|| {
             let mut midi_in = MidiInput::new("zgicabra-cc").ok()?;
             midi_in.ignore(Ignore::None);
 
             let ports = midi_in.ports();
-            let port = ports.first()?;
+            // ports().first() would happily grab one of ALSA's virtual ports
+            // (the "Midi Through" loopback, or a "VirMIDI" client from the
+            // snd-virmidi kernel module) over an actual attached controller,
+            // depending on enumeration order -- skip those in favor of a
+            // real device; only fall back to a virtual port if nothing else
+            // is present.
+            let port = ports.iter()
+                .find(|p| !is_virtual_port(&midi_in.port_name(p).unwrap_or_default()))
+                .or_else(|| ports.first())?;
             let name = midi_in.port_name(port).unwrap_or_default();
             println!("║ CC MIDI controller found: {name}");
 
             midi_in.connect(port, "zgicabra-cc-in", move |_stamp, message, _| {
+                crate::dbg!("cc_input - raw message {:?}", message);
                 if let [status, cc, value] = *message {
                     if status & 0xF0 == 0xB0 {
                         let level = value as f32 / 127.0;
+                        crate::dbg!("cc_input - CC {cc} = {level}, pushing to ring buffer");
                         // Drop-on-full is correct here -- these are advisory
                         // current-knob-positions, not events needing
                         // guaranteed delivery.
-                        let _ = producer.push((cc, level));
+                        if producer.push((cc, level)).is_err() {
+                            crate::dbg!("cc_input - ring buffer full, dropped CC {cc}");
+                        }
                     }
                 }
             }, ()).ok()

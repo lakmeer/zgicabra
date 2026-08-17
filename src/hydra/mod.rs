@@ -14,6 +14,8 @@
 //
 
 use std::time::{Instant,Duration};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use libc::{c_float, c_int, c_uint, c_uchar, c_ushort};
 
@@ -144,10 +146,6 @@ trait Backend: Send {
     fn take_voice_cycle (&mut self) -> i8 { 0 }
     fn take_tune_cycle (&mut self) -> i8 { 0 }
     fn mock_controls (&self) -> Option<MockControls> { None }
-
-    // Note On/Off DeltaEvents accumulated since the last call. Mock backend
-    // only; real backends have no MIDI listener.
-    fn take_midi_notes (&mut self) -> Vec<DeltaEvent> { Vec::new() }
 }
 
 // Records and manipulates incoming hydra data.
@@ -156,15 +154,32 @@ pub struct HydraState {
     pub timedelta:   Duration,
     pub controllers: [ ControllerFrame; 2 ],
     backend: Option<Box<dyn Backend>>,
+
+    // MIDI note/CC/pitch-bend listener -- connected unconditionally,
+    // independent of which Backend is active, so an external MIDI
+    // controller can feed notes/global signals alongside real Hydra
+    // hardware rather than only as a mock-backend supplement. The mock
+    // backend also feeds its own audition-sequence notes onto the same
+    // `midi_notes` queue (see mock.rs's step_sequence), so it's kept here
+    // rather than owned by any one backend.
+    pub midi:   midi::MidiState,
+    midi_notes: Arc<Mutex<VecDeque<DeltaEvent>>>,
+    _midi_connection: midi::Connection, // held to keep the callback alive; disconnects on drop
 }
 
 impl HydraState {
     pub fn new() -> HydraState {
+        let midi_notes: Arc<Mutex<VecDeque<DeltaEvent>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let (midi, midi_connection) = midi::connect(midi_notes.clone());
+
         HydraState {
             timestamp:   Instant::now(),
             timedelta:   Duration::from_millis(0),
             controllers: [ ControllerFrame::new(), ControllerFrame::new() ],
             backend:     None,
+            midi,
+            midi_notes,
+            _midi_connection: midi_connection,
         }
     }
 }
@@ -190,7 +205,7 @@ pub fn start (state: &mut HydraState) {
     }
 
     println!("Hydra::start - falling back to mock hydra backend.");
-    state.backend = Some(Box::new(mock::MockBackend::new()));
+    state.backend = Some(Box::new(mock::MockBackend::new(state.midi.clone(), state.midi_notes.clone())));
 }
 
 pub fn stop (state: &mut HydraState) {
@@ -219,15 +234,16 @@ pub fn take_tune_cycle (state: &mut HydraState) -> i8 {
     state.backend.as_mut().map_or(0, |backend| backend.take_tune_cycle())
 }
 
-// Shared handle onto the mock backend's inputs, for a UI to drive directly
-// (gui.rs's mock hydra panel). None on real backends.
+// Shared handle onto the mock backend's inputs (audition sequence, keyboard
+// state). None on real backends.
 pub fn mock_controls (state: &HydraState) -> Option<MockControls> {
     state.backend.as_ref().and_then(|backend| backend.mock_controls())
 }
 
-// Note On/Off DeltaEvents accumulated since the last call. Mock only.
+// Note On/Off/PC DeltaEvents accumulated since the last call -- MIDI-sourced
+// (any backend) and/or the mock backend's audition-sequence player.
 pub fn take_midi_notes (state: &mut HydraState) -> Vec<DeltaEvent> {
-    state.backend.as_mut().map_or(Vec::new(), |backend| backend.take_midi_notes())
+    state.midi_notes.lock().unwrap().drain(..).collect()
 }
 
 // True if the user has asked to quit -- any keypress on real backends; the

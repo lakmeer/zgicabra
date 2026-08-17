@@ -26,8 +26,9 @@ const CROSSOVER_SAMPLE_RATE: f32 = super::NAM_SAMPLE_RATE as f32;
 
 // A handle for cycling through the discovered NAM models (index 0 is always
 // "Bypass" -- no model, dry passthrough) and reading the current selection's
-// name. Independent of Zgicabra's Voice enum: something else (currently
-// gui.rs's Model cycler buttons) drives `selected` directly.
+// name. Independent of Zgicabra's Voice enum: some external caller drives
+// `selected` directly via cycle() -- currently unreferenced now that the
+// GUI's Model cycler buttons (its only caller) are gone.
 #[derive(Clone)]
 pub struct NamModelCycler {
     selected: Shared,

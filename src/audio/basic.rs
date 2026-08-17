@@ -107,16 +107,19 @@ impl Voice for BasicVoice {
         self.thump_signal = thump;
     }
 
-    // CC 40-44, 0..1 normalized input scaled to each param's own range
-    // (matching the ranges gui.rs's read-only meters display).
+    // CC 40-44, 0..1 normalized input scaled to each param's own range.
+    // CC2-6 is the
+    // same set of knobs (CC1 being reserved for the global Mod Wheel ->
+    // filter mapping, see hydra/midi.rs) so a controller with only 8
+    // physical knobs can still reach them live.
     fn apply_cc (&mut self, cc: u8, value: f32) {
         let value = value.clamp(0.0, 1.0);
         match cc {
-            40 => self.sin_level.set_value(value),
-            41 => self.tri_level.set_value(value),
-            42 => self.square_level.set_value(value),
-            43 => self.saw_level.set_value(value),
-            44 => self.saturation.set_value(1.0 + value * 9.0),
+            40 | 2 => self.sin_level.set_value(value),
+            41 | 3 => self.tri_level.set_value(value),
+            42 | 4 => self.square_level.set_value(value),
+            43 | 5 => self.saw_level.set_value(value),
+            44 | 6 => self.saturation.set_value(1.0 + value * 9.0),
             _ => {},
         }
     }

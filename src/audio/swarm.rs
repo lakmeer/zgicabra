@@ -434,14 +434,17 @@ impl Voice for SwarmVoice {
     }
 
     // CC 50-54, 0..1 normalized input scaled to each param's own range.
+    // CC2-6 is the same set of knobs (CC1 being reserved for the global Mod
+    // Wheel -> filter mapping, see hydra/midi.rs) so a controller with only
+    // 8 physical knobs can still reach them live.
     fn apply_cc (&mut self, cc: u8, value: f32) {
         let value = value.clamp(0.0, 1.0);
         match cc {
-            50 => self.chase_factor.set_value(0.5 + value * 0.5),
-            51 => self.radius.set_value(value * 200.0),
-            52 => self.orbit_speed.set_value(value * 2.0),
-            53 => self.phaser_depth.set_value(value),
-            54 => self.xover_freq.set_value(value * 2000.0),
+            50 | 2 => self.chase_factor.set_value(0.5 + value * 0.5),
+            51 | 3 => self.radius.set_value(value * 200.0),
+            52 | 4 => self.orbit_speed.set_value(value * 2.0),
+            53 | 5 => self.phaser_depth.set_value(value),
+            54 | 6 => self.xover_freq.set_value(value * 2000.0),
             _ => {},
         }
     }
