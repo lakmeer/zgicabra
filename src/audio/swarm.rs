@@ -8,13 +8,17 @@
 // frequency offset, stereo pan, and its own hand-rolled phaser (rate
 // tracks that oscillator's own orbiting frequency -- see Phaser below).
 //
-// The summed swarm then splits into two fully independent channel chains
-// (limiter -> crossover -> low/high NAM -> moog filter -> crusher), one
-// per output channel, mirroring Engine's amp_l/amp_r precedent: NAM
-// WaveNet models carry internal dilation state, so sharing one model
-// instance across L and R would let one channel's audio bleed into the
-// other's model state. Each of the 4 NAM slots below (L-low, L-high,
-// R-low, R-high) is therefore its own independently loaded model bank.
+// The summed swarm splits into two per-channel chains (limiter ->
+// crossover -> moog filter -> crusher), one per output channel. The NAM
+// stage in between is mid/side, not per-channel: L/R low bands collapse to
+// mid_lo/side_lo (same for high), one NamStage runs on each of mid_lo and
+// mid_hi, and L/R are rebuilt as mid+side / mid-side afterward. This halves
+// the WaveNet inference cost (2 model runs/block instead of 4) and, unlike
+// giving each channel its own NamStage pointed at the same underlying
+// model, can't let one channel's dilation state bleed into the other's --
+// there's only one instance of each selected model, and it only ever sees
+// one (merged) signal. Side channels (side_lo/side_hi) stay dry, which is
+// where any stereo width the model would have added is traded away.
 //
 
 use std::f32::consts::{PI, TAU};
@@ -124,16 +128,15 @@ fn model_index_by_name (names: &[String], name: &str) -> usize {
     names.iter().position(|n| n == name).unwrap_or(0)
 }
 
-// One output channel's post-swarm chain: limiter -> xover -> (low NAM,
-// high NAM) -> moog filter -> crusher. NAM inference is block-rate (see
-// SwarmVoice::on_block_start), so this only owns the per-sample stages plus
-// the one-block-latency raw/wet scratch ring for its two NAM bands.
+// One output channel's post-swarm chain: limiter -> xover -> moog filter ->
+// crusher. NAM inference happens once per block, mid/side across both
+// channels (see SwarmVoice::on_block_start) -- this struct only owns the
+// per-sample stages plus the one-block-latency raw/wet scratch ring that
+// the swarm-level NAM pass reads and rewrites in place between blocks.
 #[derive(Clone)]
 struct ChannelChain {
     limiter:  Compressor,
     xover_lp: f32,
-    nam_lo:   NamStage,
-    nam_hi:   NamStage,
     moog:     MoogFilterFx,
     crusher:  Crusher,
     raw_lo:   Vec<f32>,
@@ -142,12 +145,10 @@ struct ChannelChain {
 }
 
 impl ChannelChain {
-    fn new (nam_models: Vec<Option<NamModelSlot>>, nam_lo_selected: Shared, nam_hi_selected: Shared) -> ChannelChain {
+    fn new () -> ChannelChain {
         ChannelChain {
             limiter: Compressor::new(),
             xover_lp: 0.0,
-            nam_lo:  NamStage::new(nam_models.clone(), nam_lo_selected),
-            nam_hi:  NamStage::new(nam_models, nam_hi_selected),
             moog:    MoogFilterFx::new(),
             crusher: Crusher::new(CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_MIX),
             raw_lo: vec![0.0; NAM_BLOCK_CAP], raw_hi: vec![0.0; NAM_BLOCK_CAP],
@@ -157,8 +158,6 @@ impl ChannelChain {
 
     fn set_sample_rate (&mut self, sample_rate: f64) {
         self.limiter.set_sample_rate(sample_rate);
-        self.nam_lo.set_sample_rate(sample_rate);
-        self.nam_hi.set_sample_rate(sample_rate);
         self.moog.set_sample_rate(sample_rate);
         self.crusher.set_sample_rate(sample_rate);
     }
@@ -182,11 +181,7 @@ impl ChannelChain {
         self.crusher.tick(&Frame::from([filtered, filtered, 1.0, CRUSH_THRESH_DOWN, CRUSH_ATTACK, CRUSH_DEPTH, CRUSH_MAKEUP_DB]))[0]
     }
 
-    fn on_block_start (&mut self, block_len: usize, fuzz_signal: f32) {
-        let n = std::cmp::min(block_len, self.raw_lo.len());
-        // to save cpu for now
-        //self.nam_lo.process_block(&mut self.raw_lo[..n], 1.0, fuzz_signal.clamp(0.0, 1.0), 1.0, 0.0);
-        //self.nam_hi.process_block(&mut self.raw_hi[..n], 1.0, fuzz_signal.clamp(0.0, 1.0), 1.0, 0.0);
+    fn on_block_start (&mut self) {
         self.pos = 0;
     }
 }
@@ -201,6 +196,17 @@ pub struct SwarmVoice {
 
     chain_l: ChannelChain,
     chain_r: ChannelChain,
+
+    // Mid/side NAM stages -- one instance per band, shared across both
+    // channels (see file doc comment). mid_lo/side_lo/mid_hi/side_hi are
+    // scratch for the merge/split around them, sized once at construction,
+    // never reallocated on the audio thread.
+    nam_lo_stage: NamStage,
+    nam_hi_stage: NamStage,
+    mid_lo:  Vec<f32>,
+    side_lo: Vec<f32>,
+    mid_hi:  Vec<f32>,
+    side_hi: Vec<f32>,
 
     pub chase_factor: Shared,
     pub radius:       Shared,
@@ -281,8 +287,15 @@ impl SwarmVoice {
             phasers: std::array::from_fn(|_| Phaser::new()),
             angle,
             origin_freq: 110.0,
-            chain_l: ChannelChain::new(nam_models.clone(), nam_lo.shared(), nam_hi.shared()),
-            chain_r: ChannelChain::new(nam_models, nam_lo.shared(), nam_hi.shared()),
+            chain_l: ChannelChain::new(),
+            chain_r: ChannelChain::new(),
+
+            nam_lo_stage: NamStage::new(nam_models.clone(), nam_lo.shared()),
+            nam_hi_stage: NamStage::new(nam_models, nam_hi.shared()),
+            mid_lo:  vec![0.0; NAM_BLOCK_CAP],
+            side_lo: vec![0.0; NAM_BLOCK_CAP],
+            mid_hi:  vec![0.0; NAM_BLOCK_CAP],
+            side_hi: vec![0.0; NAM_BLOCK_CAP],
 
             chase_factor: shared(DEFAULT_CHASE_FACTOR),
             radius:       shared(DEFAULT_RADIUS),
@@ -370,6 +383,8 @@ impl AudioNode for SwarmVoice {
         for phaser in self.phasers.iter_mut() { phaser.set_sample_rate(sample_rate); }
         self.chain_l.set_sample_rate(sample_rate);
         self.chain_r.set_sample_rate(sample_rate);
+        self.nam_lo_stage.set_sample_rate(sample_rate);
+        self.nam_hi_stage.set_sample_rate(sample_rate);
         self.thump.set_sample_rate(sample_rate);
     }
 }
@@ -385,9 +400,37 @@ impl Voice for SwarmVoice {
         self.width_signal  = width;
     }
 
+    // Merge last block's per-channel low/high dry buffers to mid/side, run
+    // one NAM instance per band on the mid signal only (side stays dry),
+    // then rebuild L/R in place before this block's tick() calls start
+    // reading them as wet. See file doc comment for why mid/side instead of
+    // one NamStage per channel.
     fn on_block_start (&mut self, block_len: usize) {
-        self.chain_l.on_block_start(block_len, self.fuzz_signal);
-        self.chain_r.on_block_start(block_len, self.fuzz_signal);
+        let n = std::cmp::min(block_len, NAM_BLOCK_CAP);
+
+        for i in 0..n {
+            let (l, r) = (self.chain_l.raw_lo[i], self.chain_r.raw_lo[i]);
+            self.mid_lo[i]  = (l + r) * 0.5;
+            self.side_lo[i] = (l - r) * 0.5;
+
+            let (l, r) = (self.chain_l.raw_hi[i], self.chain_r.raw_hi[i]);
+            self.mid_hi[i]  = (l + r) * 0.5;
+            self.side_hi[i] = (l - r) * 0.5;
+        }
+
+        let blend = self.fuzz_signal.clamp(0.0, 1.0);
+        self.nam_lo_stage.process_block(&mut self.mid_lo[..n], 1.0, blend, 1.0, 0.0);
+        self.nam_hi_stage.process_block(&mut self.mid_hi[..n], 1.0, blend, 1.0, 0.0);
+
+        for i in 0..n {
+            self.chain_l.raw_lo[i] = self.mid_lo[i] + self.side_lo[i];
+            self.chain_r.raw_lo[i] = self.mid_lo[i] - self.side_lo[i];
+            self.chain_l.raw_hi[i] = self.mid_hi[i] + self.side_hi[i];
+            self.chain_r.raw_hi[i] = self.mid_hi[i] - self.side_hi[i];
+        }
+
+        self.chain_l.on_block_start();
+        self.chain_r.on_block_start();
     }
 
     // CC 50-54, 0..1 normalized input scaled to each param's own range.

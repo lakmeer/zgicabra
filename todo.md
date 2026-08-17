@@ -1,12 +1,16 @@
 
 # TODO
 
+- Wait for hydra on startup
+- Fix MIDI CC mapping
+- Fade master when width is negative
+- Clamp master when wands are docked
 - Filter audibly snaps back to neutral when note released
   - Still?
-- restore panic btn -> notes can get stuck
 - Add DeltaEvent::NoteRetrig -> voices can decide what it means
 - Is it appropriate to vendor NAM model files? Check tone3000 license info
 - Reintroduce T3K IR but as finishing stage, replace final NAM pair
+- Map DeltaEvent::NoteRetrig in Voices
 
 - Voices
   - Basic
