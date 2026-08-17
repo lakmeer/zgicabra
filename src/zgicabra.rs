@@ -224,8 +224,6 @@ pub enum DeltaEvent {
     WidthLevel(f32),
     VoiceChange(Voice),
     RootChange(Note),
-    ThumpToggle(f32),
-    FuzzToggle(f32),
     Panic()
 }
 
@@ -241,7 +239,7 @@ pub struct Zgicabra {
     pub separation: f32,
     pub docked: bool,
     pub level: f32,
-    pub sequence_number: u8,
+    pub seq_num: u8,
     pub most_recent_wand: Hand,
     pub note: NoteState,
     pub signal: SignalState,
@@ -256,7 +254,7 @@ impl Zgicabra {
             separation: 0.0,
             docked: false,
             level: 0.0,
-            sequence_number: 0,
+            seq_num: 0,
             most_recent_wand: Hand::Neither,
             note: NoteState::new(),
             signal: SignalState::new(),
@@ -363,7 +361,7 @@ impl ZgicabraBridge {
 
 pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &HydraState, voice_cycle: i8, tune_cycle: i8, deltas: &mut Vec<DeltaEvent>) {
 
-    curr_state.sequence_number = hydra_state.controllers[0].sequence_number;
+    curr_state.seq_num = hydra_state.controllers[0].sequence_number;
     curr_state.docked = hydra_state.controllers[0].is_docked != 0
                      || hydra_state.controllers[1].is_docked != 0;
 
@@ -518,11 +516,9 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
             match hand {
                 Hand::Left  => {
                     curr_state.signal.thump = 1.0 - curr_state.signal.thump;
-                    deltas.push(DeltaEvent::ThumpToggle(curr_state.signal.thump));
                 },
                 Hand::Right => {
                     curr_state.signal.fuzz = 1.0 - curr_state.signal.fuzz;
-                    deltas.push(DeltaEvent::FuzzToggle(curr_state.signal.fuzz));
                 }
                 Hand::Neither => {},
             }

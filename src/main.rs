@@ -6,7 +6,6 @@ use std::env;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-mod tw;
 mod tools;
 mod hydra;
 mod zgicabra;
