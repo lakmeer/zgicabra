@@ -5,6 +5,8 @@
   - Still?
 - restore panic btn -> notes can get stuck
 - Add DeltaEvent::NoteRetrig -> voices can decide what it means
+- Is it appropriate to vendor NAM model files? Check tone3000 license info
+- Reintroduce T3K IR but as finishing stage, replace final NAM pair
 
 - Voices
   - Basic
