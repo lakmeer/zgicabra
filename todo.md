@@ -1,8 +1,7 @@
 
 # TODO
 
-- Wait for hydra on startup
-- Fix MIDI CC mapping
+- Wait for hydra docking on startup?
 - Fade master when width is negative
 - Clamp master when wands are docked
 - Filter audibly snaps back to neutral when note released
@@ -12,13 +11,19 @@
 - Reintroduce T3K IR but as finishing stage, replace final NAM pair
 - Map DeltaEvent::NoteRetrig in Voices
 - Audio connection drops after a long time idle; investigate
+- When consuming DeltaEvent::VoiceChange(voice), use the actual voice
+  value to determine index of selected voice, so that there is one place
+  to rearrange the voice list (zgicabra.rs)
 
 - Voices
+  - Macro potential?
   - Basic
     - sin/tri/saw/sq select
     - multivoice
+    - use to test midi tweaking/persistence
   - Growl
     - Needs dedicated sub
+      - Power 5?
     - Multiband distortion
       - low: `bass`
       - hi: `mesa`
@@ -29,7 +34,8 @@
     - lfo_rate ^ pitch
     - drive noy audible
   - SamplePlayer
-  - Experiment with waveshapers
+    - Kick sample
+    - Bass sample
 
 - FX
   - OTT crusher 
@@ -37,12 +43,13 @@
     - expose per-band thresholds as params
     - scale all bands attack and release together as 'time' param
     - single 'depth' param scales all ratios and thresholds
+  - Chorus/phasers
+  - Waveshapers
+  - Bitcrushers
 
 - Panel
-  - Simpler stack than imgui?
-    - Can we do it without a compositor at all? raw FB?
-      - Probably need it for raw boot mode anyway
-  - Test KMSDRM mode in an alternate tty?
+  - Await hardware
+  - Portrait mode?
 
 - System
   - KMSCON
@@ -53,4 +60,4 @@
       ];
 
     - Specify font as "Terminus (TTF)" exactly
-  - 6 NAMs might be too much - test in bare env
+  - 6 NAM FF passes might be too much - test in bare env

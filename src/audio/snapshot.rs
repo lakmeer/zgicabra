@@ -6,12 +6,22 @@
 // anywhere in this project -- it's a flat name=value list, plain enough not
 // to need one.
 //
+// This file also owns `config/` -- the always-current, overwriting
+// counterpart to the numbered snapshots above: one `{voice_name}.state` file
+// per voice plus a `selected` file naming the last-active voice, both
+// version-controlled in the repo (not `~/.local/state/`) so tuned params
+// survive a crash/restart on the performance box and travel with git. See
+// audio/mod.rs's `persist_dirty_voices`/`AudioOutput::new` for who calls
+// these and when.
+//
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 const SNAPSHOT_DIR: &str = "snapshots";
+const STATE_DIR: &str = "config";
+const SELECTED_FILE: &str = "selected";
 
 // Next free index for this voice -- scans snapshots/ for existing
 // "{voice_name}_NNNN.snap" files and returns max+1 (0 if none yet).
@@ -75,6 +85,41 @@ pub fn list_snapshots () -> io::Result<Vec<String>> {
 
 pub fn snapshot_path (name: &str) -> PathBuf {
     Path::new(SNAPSHOT_DIR).join(format!("{name}.snap"))
+}
+
+// Overwrites `config/{voice_name}.state` with this voice's current fields --
+// unlike save_snapshot, there's only ever one live copy, no monotonic index.
+pub fn save_state (voice_name: &str, fields: &[(&'static str, f32)]) -> io::Result<()> {
+    fs::create_dir_all(STATE_DIR)?;
+
+    let mut text = String::new();
+    for (name, value) in fields {
+        text.push_str(&format!("{name}={value}\n"));
+    }
+
+    fs::write(Path::new(STATE_DIR).join(format!("{voice_name}.state")), text)
+}
+
+// Err(NotFound) on a fresh checkout / first run -- caller treats that as
+// "keep this voice's compiled-in defaults", not an error.
+pub fn load_state (voice_name: &str) -> io::Result<Vec<(String, f32)>> {
+    let text = fs::read_to_string(Path::new(STATE_DIR).join(format!("{voice_name}.state")))?;
+
+    Ok(text.lines()
+        .filter_map(|line| line.split_once('='))
+        .filter_map(|(key, value)| value.parse::<f32>().ok().map(|v| (key.to_string(), v)))
+        .collect())
+}
+
+pub fn save_selected (voice_name: &str) -> io::Result<()> {
+    fs::create_dir_all(STATE_DIR)?;
+    fs::write(Path::new(STATE_DIR).join(SELECTED_FILE), voice_name)
+}
+
+// None if the file doesn't exist yet (first run) -- caller falls back to
+// index 0.
+pub fn load_selected () -> Option<String> {
+    fs::read_to_string(Path::new(STATE_DIR).join(SELECTED_FILE)).ok().map(|s| s.trim().to_string())
 }
 
 #[cfg(test)]

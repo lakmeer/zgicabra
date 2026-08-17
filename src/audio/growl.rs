@@ -365,6 +365,33 @@ pub struct GrowlView {
     pub freq_mult_live: Shared,
 }
 
+impl GrowlView {
+    // CC-settable fields only (see apply_cc below) -- filter_live/warp_live/
+    // freq_mult_live are computed per-tick from the live signal, not persisted.
+    pub fn fields (&self) -> Vec<(&'static str, f32)> {
+        vec![
+            ("bass_drive_input",    self.bass_drive_input.value()),
+            ("filter_input",        self.filter_input.value()),
+            ("space_input",         self.space_input.value()),
+            ("warp_input",          self.warp_input.value()),
+            ("nam_crossover_input", self.nam_crossover_input.value()),
+        ]
+    }
+
+    pub fn apply (&self, fields: &[(String, f32)]) {
+        for (name, value) in fields {
+            match name.as_str() {
+                "bass_drive_input"    => self.bass_drive_input.set_value(*value),
+                "filter_input"        => self.filter_input.set_value(*value),
+                "space_input"         => self.space_input.set_value(*value),
+                "warp_input"          => self.warp_input.set_value(*value),
+                "nam_crossover_input" => self.nam_crossover_input.set_value(*value),
+                _ => {},
+            }
+        }
+    }
+}
+
 impl GrowlVoice {
     pub fn view (&self) -> GrowlView {
         GrowlView {

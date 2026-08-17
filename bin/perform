@@ -1,5 +1,15 @@
 #!/bin/sh
 
-# LD_LIBRARY_PATH=
-echo "no op"
+# Manually exercises the performance-mode launch path (KMSCON exec'ing
+# zgicabra directly, no login) from the dev desktop, without touching the
+# boot specialisation. Uses vt3, not vt1 -- vt1 is owned by the X session
+# in dev mode; the real boot service (sys/nixos-config.nix) uses vt1, since
+# nothing else wants it there.
 
+cd /home/zgicabra/zgicabra/target/release || exit 1
+
+exec kmscon --vt=3 \
+  --font-engine=pango \
+  --font-name="Terminus (TTF)" \
+  --font-size=20 \
+  -- /home/zgicabra/zgicabra/target/release/zgicabra

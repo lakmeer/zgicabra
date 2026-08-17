@@ -45,6 +45,31 @@ pub struct BasicView {
     pub saturation:   Shared,
 }
 
+impl BasicView {
+    pub fn fields (&self) -> Vec<(&'static str, f32)> {
+        vec![
+            ("sin_level",    self.sin_level.value()),
+            ("tri_level",    self.tri_level.value()),
+            ("square_level", self.square_level.value()),
+            ("saw_level",    self.saw_level.value()),
+            ("saturation",   self.saturation.value()),
+        ]
+    }
+
+    pub fn apply (&self, fields: &[(String, f32)]) {
+        for (name, value) in fields {
+            match name.as_str() {
+                "sin_level"    => self.sin_level.set_value(*value),
+                "tri_level"    => self.tri_level.set_value(*value),
+                "square_level" => self.square_level.set_value(*value),
+                "saw_level"    => self.saw_level.set_value(*value),
+                "saturation"   => self.saturation.set_value(*value),
+                _ => {},
+            }
+        }
+    }
+}
+
 impl BasicVoice {
     pub fn view (&self) -> BasicView {
         BasicView {

@@ -249,6 +249,34 @@ pub struct SwarmView {
     pub origin_live: Shared,
 }
 
+impl SwarmView {
+    // CC-settable fields only (see apply_cc below) -- nam_lo/nam_hi (model
+    // cyclers) and osc_freq/osc_pan/origin_live (per-tick telemetry, not
+    // user-set params) aren't persisted here.
+    pub fn fields (&self) -> Vec<(&'static str, f32)> {
+        vec![
+            ("chase_factor", self.chase_factor.value()),
+            ("radius",       self.radius.value()),
+            ("orbit_speed",  self.orbit_speed.value()),
+            ("phaser_depth", self.phaser_depth.value()),
+            ("xover_freq",   self.xover_freq.value()),
+        ]
+    }
+
+    pub fn apply (&self, fields: &[(String, f32)]) {
+        for (name, value) in fields {
+            match name.as_str() {
+                "chase_factor" => self.chase_factor.set_value(*value),
+                "radius"       => self.radius.set_value(*value),
+                "orbit_speed"  => self.orbit_speed.set_value(*value),
+                "phaser_depth" => self.phaser_depth.set_value(*value),
+                "xover_freq"   => self.xover_freq.set_value(*value),
+                _ => {},
+            }
+        }
+    }
+}
+
 impl SwarmVoice {
     pub fn view (&self) -> SwarmView {
         SwarmView {

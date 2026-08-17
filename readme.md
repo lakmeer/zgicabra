@@ -8,9 +8,8 @@
 
 ```sh
 zgicabra           # run with the terminal UI (default)
-zgicabra --gui      # also open the imgui voice-params/mock-hydra tuner window
 zgicabra --debug    # suppress the terminal UI, print verbose diagnostics instead
-zgicabra --test     # run the audio self-test (needs --gui)
+zgicabra --test     # run the audio self-test
 ```
 
 `--debug` is the flag to reach for when diagnosing controller/engine
@@ -94,6 +93,11 @@ boot.kernelModules = [ "snd-virmidi" ];
 
 Userspace needs permission to access the USB device that connects to the Hydra.
 Rules are provided in `sys/udev-rules` to allow this.
+
+On the NixOS performance box, `sys/nixos-config.nix` now applies these (and
+the rest of the machine's zgicabra-specific config) automatically on
+`nixos-rebuild switch` — see `sys/README.md`. The manual steps below are
+still accurate as a fallback / for a non-NixOS setup.
 
 #### udev Setup (untested)
 

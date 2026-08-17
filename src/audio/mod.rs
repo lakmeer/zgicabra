@@ -53,6 +53,11 @@ const ENVELOPE_RELEASE: f32 = 0.1;
 
 const AMP_MODEL: &str = "lowgain";
 
+// Index order matches zgicabra::Voice's enum (VoiceA=Reese, VoiceB=Growl,
+// VoiceC=Basic, VoiceD=Swarm) and Engine's voice_a/b/c/d fields -- used to
+// name persisted state files (see snapshot.rs's save_state/load_state).
+const VOICE_NAMES: [&str; 4] = ["Reese", "Growl", "Basic", "Swarm"];
+
 // Debug: captures snippet of cpal output stream to check non-zero output
 const CAPTURE_SECONDS: f32 = 0.1;
 const AUDIO_ERROR_LOG_CAP: usize = 50;
@@ -131,6 +136,11 @@ pub struct Handles {
     pub voice_c: BasicView,
     pub voice_d: SwarmView,
 
+    // Set (audio thread, build_stream) whenever a live CC edits that voice's
+    // params; polled and cleared (main thread, persist_dirty_voices) once
+    // per engine-loop tick -- see snapshot.rs's module doc.
+    pub voice_dirty: [Arc<AtomicBool>; 4],
+
     pub main_sub_lvl:  Shared,
     pub dry_sub_lvl:   Shared,
     pub thump_peak:    Shared,
@@ -168,6 +178,36 @@ pub struct AudioHandles {
 impl std::ops::Deref for AudioHandles {
     type Target = Handles;
     fn deref (&self) -> &Handles { &self.handles }
+}
+
+impl AudioHandles {
+    // Call once per main-loop tick (see main.rs::run_engine_loop). Cheap
+    // when nothing changed -- each check is a single atomic swap; only a
+    // voice a live CC actually touched since the last call hits disk.
+    pub fn persist_dirty_voices (&self) {
+        let dirty = &self.handles.voice_dirty;
+
+        if dirty[0].swap(false, Ordering::Relaxed) {
+            if let Err(e) = snapshot::save_state(VOICE_NAMES[0], &self.handles.voice_a.fields()) {
+                eprintln!("║ Failed to persist {} state: {e}", VOICE_NAMES[0]);
+            }
+        }
+        if dirty[1].swap(false, Ordering::Relaxed) {
+            if let Err(e) = snapshot::save_state(VOICE_NAMES[1], &self.handles.voice_b.fields()) {
+                eprintln!("║ Failed to persist {} state: {e}", VOICE_NAMES[1]);
+            }
+        }
+        if dirty[2].swap(false, Ordering::Relaxed) {
+            if let Err(e) = snapshot::save_state(VOICE_NAMES[2], &self.handles.voice_c.fields()) {
+                eprintln!("║ Failed to persist {} state: {e}", VOICE_NAMES[2]);
+            }
+        }
+        if dirty[3].swap(false, Ordering::Relaxed) {
+            if let Err(e) = snapshot::save_state(VOICE_NAMES[3], &self.handles.voice_d.fields()) {
+                eprintln!("║ Failed to persist {} state: {e}", VOICE_NAMES[3]);
+            }
+        }
+    }
 }
 
 pub struct AudioOutput {
@@ -294,12 +334,15 @@ impl AudioOutput {
         // Voice *View types are built here, right after the real Voices
         // exist (inside `engine`, same module so private fields are
         // visible) but before `engine` moves into build_stream's closure.
+        let voice_dirty = engine.voice_dirty.clone();
+
         let handles = Handles {
             voice_selected: voice_selected.clone(),
             voice_a: engine.voice_a.view(),
             voice_b: engine.voice_b.view(),
             voice_c: engine.voice_c.view(),
             voice_d: engine.voice_d.view(),
+            voice_dirty,
 
             main_sub_lvl:  main_sub_lvl.clone(),
             dry_sub_lvl:   dry_sub_lvl.clone(),
@@ -322,6 +365,20 @@ impl AudioOutput {
 
             master_vol: master_vol.clone(),
         };
+
+        // Load persisted voice state (see snapshot.rs's module doc) --
+        // safe here, before stream.play() starts the audio thread. Missing
+        // files (fresh checkout) are silent no-ops, keeping each voice's
+        // compiled-in defaults.
+        if let Some(name) = snapshot::load_selected() {
+            if let Some(idx) = VOICE_NAMES.iter().position(|n| *n == name) {
+                voice_selected.set_value(idx as f32);
+            }
+        }
+        load_voice_state(VOICE_NAMES[0], |f| handles.voice_a.apply(f));
+        load_voice_state(VOICE_NAMES[1], |f| handles.voice_b.apply(f));
+        load_voice_state(VOICE_NAMES[2], |f| handles.voice_c.apply(f));
+        load_voice_state(VOICE_NAMES[3], |f| handles.voice_d.apply(f));
 
         let host   = cpal::default_host();
         let device = host.default_output_device()
@@ -371,6 +428,17 @@ impl AudioOutput {
             handles,
             capture, errors, stream,
         })
+    }
+}
+
+// Loads `config/{voice_name}.state` and hands the fields to `apply` --
+// factored out of AudioOutput::new purely to avoid repeating the "NotFound
+// is fine, anything else is worth a warning" branch four times.
+fn load_voice_state (voice_name: &str, apply: impl FnOnce(&[(String, f32)])) {
+    match snapshot::load_state(voice_name) {
+        Ok(fields) => apply(&fields),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {},
+        Err(e) => eprintln!("║ Failed to load {voice_name} state: {e}"),
     }
 }
 
@@ -429,6 +497,11 @@ struct Engine {
     voice_c: BasicVoice,
     voice_d: SwarmVoice,
     voice_selected: Shared,
+
+    // Set from build_stream (audio thread) when apply_cc touches the
+    // currently selected voice; cloned out to Handles before `self` moves
+    // into build_stream's closure (see AudioOutput::new).
+    voice_dirty: [Arc<AtomicBool>; 4],
 
     main_sub_lvl:  Shared,
     dry_sub_lvl:   Shared,
@@ -516,6 +589,7 @@ impl Engine {
             voice_b: GrowlVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
             voice_c: BasicVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
             voice_d: SwarmVoice::new(nam_models, nam_names, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
+            voice_dirty: std::array::from_fn(|_| Arc::new(AtomicBool::new(false))),
 
             main_sub_lvl,
             dry_sub_lvl,
@@ -685,6 +759,7 @@ where
                     if selected == GrowlVoice::INDEX { engine.voice_b.apply_cc(cc, value); }
                     if selected == BasicVoice::INDEX { engine.voice_c.apply_cc(cc, value); }
                     if selected == SwarmVoice::INDEX { engine.voice_d.apply_cc(cc, value); }
+                    if let Some(flag) = engine.voice_dirty.get(selected) { flag.store(true, Ordering::Relaxed); }
                 }
 
                 for i in 0..n {
@@ -741,7 +816,15 @@ impl AudioOutput {
             },
             DeltaEvent::NoteEnd(_) => self.gate.set_value(GATE_OFF),
             // Index must match zgicabra::Voice's enum order.
-            DeltaEvent::VoiceChange(voice) => self.handles.voice_selected.set_value(*voice as u8 as f32),
+            DeltaEvent::VoiceChange(voice) => {
+                let idx = *voice as u8 as usize;
+                self.handles.voice_selected.set_value(idx as f32);
+                if let Some(name) = VOICE_NAMES.get(idx) {
+                    if let Err(e) = snapshot::save_selected(name) {
+                        eprintln!("║ Failed to persist selected voice: {e}");
+                    }
+                }
+            },
             DeltaEvent::Panic()    => self.gate.set_value(GATE_OFF),
             _ => {},
         }

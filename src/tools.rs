@@ -142,6 +142,32 @@ pub fn parse_args() -> Args {
 }
 
 
+// Graceful shutdown
+
+// Set by handle_term_signal (async-signal-safe: a single relaxed atomic
+// store, nothing else) so SIGTERM/SIGINT stop the engine loop the same way
+// the self-test thread's `quit` flag does, instead of the process just
+// getting killed mid-stream. This is what makes a systemd `Restart=on-failure`
+// unit safe -- a normal `systemctl stop`/service restart exits cleanly (exit
+// code 0, no restart triggered), only an actual crash does.
+static SIGNAL_QUIT: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn handle_term_signal (_sig: i32) {
+    SIGNAL_QUIT.store(true, Ordering::Relaxed);
+}
+
+pub fn install_signal_handlers () {
+    unsafe {
+        libc::signal(libc::SIGTERM, handle_term_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, handle_term_signal as *const () as libc::sighandler_t);
+    }
+}
+
+pub fn quit_requested () -> bool {
+    SIGNAL_QUIT.load(Ordering::Relaxed)
+}
+
+
 // Debug logging
 
 static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);

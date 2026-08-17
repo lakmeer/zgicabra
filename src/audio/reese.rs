@@ -80,6 +80,39 @@ pub struct ReeseView {
     pub width:     Shared,
 }
 
+impl ReeseView {
+    // CC-settable fields only (see apply_cc below) -- filter_signal etc. are
+    // live per-tick signals, not persisted state.
+    pub fn fields (&self) -> Vec<(&'static str, f32)> {
+        vec![
+            ("detune",    self.detune.value()),
+            ("sub_level", self.sub_level.value()),
+            ("drive",     self.drive.value()),
+            ("cutoff",    self.cutoff.value()),
+            ("resonance", self.resonance.value()),
+            ("lfo_rate",  self.lfo_rate.value()),
+            ("lfo_depth", self.lfo_depth.value()),
+            ("width",     self.width.value()),
+        ]
+    }
+
+    pub fn apply (&self, fields: &[(String, f32)]) {
+        for (name, value) in fields {
+            match name.as_str() {
+                "detune"    => self.detune.set_value(*value),
+                "sub_level" => self.sub_level.set_value(*value),
+                "drive"     => self.drive.set_value(*value),
+                "cutoff"    => self.cutoff.set_value(*value),
+                "resonance" => self.resonance.set_value(*value),
+                "lfo_rate"  => self.lfo_rate.set_value(*value),
+                "lfo_depth" => self.lfo_depth.set_value(*value),
+                "width"     => self.width.set_value(*value),
+                _ => {},
+            }
+        }
+    }
+}
+
 impl ReeseVoice {
     pub fn view (&self) -> ReeseView {
         ReeseView {

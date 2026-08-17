@@ -50,6 +50,8 @@ fn main() {
 
     println!("█║▌▌║│▌█║▌▌║║║▌║║▌▌│▌█│║▌▌│║█▌║▌│ zgicabra ▌▌│║▌║▌█║▌║▌║█║▌║│▌█║║▌▌║║║▌║║█▌│\n");
 
+    tools::install_signal_handlers();
+
     let args = tools::parse_args();
 
     let mut hydra_state = HydraState::new();
@@ -183,6 +185,10 @@ fn run_engine_loop (
 
         output.handle_signal(&zgicabra.signal);
 
+        // Persist any voice params a live CC edit changed since the last
+        // tick (see audio/snapshot.rs) -- cheap no-op when nothing changed.
+        audio.persist_dirty_voices();
+
         for delta in delta_events.drain(..) {
             crate::dbg!("E t={} - {:?}", tools::millis_now(), delta);
             output.handle_event(&delta);
@@ -198,7 +204,7 @@ fn run_engine_loop (
 
         sleep(REFRESH_MS);
 
-        if hydra::should_quit(&mut hydra_state) || quit.load(Ordering::Relaxed) {
+        if hydra::should_quit(&mut hydra_state) || quit.load(Ordering::Relaxed) || tools::quit_requested() {
             break;
         }
     }

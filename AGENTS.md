@@ -13,14 +13,13 @@ logic, under the developer's direct control.
 
 A Rust synth/controller app built around a Razer Hydra-style two-wand
 controller ("Sixense Hydra"). Wand motion/triggers/buttons drive a live
-audio engine (or OSC out to a DAW). An optional imgui debug GUI edits
-engine parameters and can drive a mock controller from keyboard/mouse/MIDI
-when no real hardware is attached.
+audio engine. The GUI mode has been removed (see `4048c9a`) -- the terminal
+UI is the only front end now; a mock controller still stands in for
+keyboard/mouse/MIDI when no real hardware is attached (`src/hydra/mock.rs`).
 
-Entry point: `src/main.rs`. CLI flags (`tools::parse_args`): `--gui` to
-open the tuner window, `--debug` to suppress the terminal UI and print
-verbose diagnostics (see "Debug logging" below), `--test` to run the
-audio self-test.
+Entry point: `src/main.rs`. CLI flags (`tools::parse_args`): `--debug` to
+suppress the terminal UI and print verbose diagnostics (see "Debug logging"
+below), `--test` to run the audio self-test.
 
 ## Hardware
 
