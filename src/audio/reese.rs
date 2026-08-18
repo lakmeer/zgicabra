@@ -247,14 +247,14 @@ impl Voice for ReeseVoice {
     fn apply_cc (&mut self, cc: u8, value: f32) {
         let value = value.clamp(0.0, 1.0);
         match cc {
-            20 | 2 => self.detune.set_value(value * 50.0),
-            21 | 3 => self.sub_level.set_value(value),
-            22 | 4 => self.drive.set_value(1.0 + value * 7.0),
-            23 | 5 => self.cutoff.set_value(value),
-            24 | 6 => self.resonance.set_value(0.3 + value * 2.7),
-            25 | 7 => self.lfo_rate.set_value(0.05 + value * 2.95),
-            26 | 8 => self.lfo_depth.set_value(value),
-            27 => self.width.set_value(value),
+            1 => self.detune.set_value(value * 50.0),
+            2 => self.sub_level.set_value(value),
+            3 => self.drive.set_value(1.0 + value * 7.0),
+            4 => self.cutoff.set_value(value),
+            5 => self.resonance.set_value(0.3 + value * 2.7),
+            6 => self.lfo_rate.set_value(0.05 + value * 2.95),
+            7 => self.lfo_depth.set_value(value),
+            8 => self.width.set_value(value),
             _ => {},
         }
     }

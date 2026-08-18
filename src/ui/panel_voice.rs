@@ -1,7 +1,7 @@
 use drawille::{Canvas,PixelColor};
 
 use crate::zgicabra::Voice;
-use crate::audio::{AudioHandles,AudioErrors,SwarmView};
+use crate::audio::{AudioHandles,AudioErrors,SwarmView,GrowlView,ReeseView};
 
 use super::utils::*;
 
@@ -10,17 +10,31 @@ use super::utils::*;
 // Voice Panel
 //
 
-fn draw_range_label (x: u16, y: u16, label: &str, value: f32, min: f32, max: f32) {
+fn draw_range_label (x: u16, y: u16, in_out: bool, label: &str, value: f32, min: f32, max: f32) {
     let norm_value = (value - min) / (max - min);
     let num_half_bars = (norm_value * 16.0).round() as usize;
     let odd_bar = num_half_bars % 2 == 1;
     let num_bars = num_half_bars / 2;
     let range_bar = format!("{}{}", "█".repeat(num_bars), if odd_bar { "▌" } else { "" });
+    let color = if in_out { fg(GREEN_0) } else { fg(BLUE_0) };
+    let tick = if in_out { "»" } else { "«" };
 
-    print!("{}{:>13} {:<8} {:<5.2}", goto(x, y), label, range_bar.to_string(), value);
+    print!("{}{:>13} {}{}{} {:<8} {:<5.2}",
+        goto(x, y),
+        label,
+        color,
+        tick,
+        FG_RESET,
+        range_bar.to_string(),
+        value);
 }
 
 pub fn draw_voice_panel (y: u16, zgicabra: &crate::zgicabra::Zgicabra, audio: &AudioHandles) {
+
+    // Blank
+    for iy in y+1..y+21 {
+        print!("{}{}", goto(1, iy), " ".repeat(75));
+    }
 
     /*
     draw_range_label(2, y +  2, "master_vol",  audio.master_vol.value(), 0.0, 1.0);
@@ -39,49 +53,63 @@ pub fn draw_voice_panel (y: u16, zgicabra: &crate::zgicabra::Zgicabra, audio: &A
     draw_range_label(2, y + 15, "lim_thresh",  audio.limiter_thresh.value(), 0.0, 1.0);
     */
 
-    if matches!(zgicabra.voice, Voice::VoiceB) {
-        let growl = &audio.voice_b;
-        let input = [
-            ("bass_drive",    growl.bass_drive_input.value()),
-            ("filter",        growl.filter_input.value()),
-            ("space",         growl.space_input.value()),
-            ("warp",          growl.warp_input.value()),
-            ("nam_crossover", growl.nam_crossover_input.value()),
-        ];
-        let live = [
-            ("filter",    growl.filter_live.value()),
-            ("warp",      growl.warp_live.value()),
-            ("freq_mult", growl.freq_mult_live.value()),
-        ];
-
-        for (row, (name, value)) in input.iter().enumerate() {
-            print!("{}{:<14}{:>7.4}", goto(2, y + 2 + row as u16), name, value);
-        }
-        for (row, (name, value)) in live.iter().enumerate() {
-            print!("{}{:<14}{:>7.4}", goto(26, y + 2 + row as u16), name, value);
-        }
+    match zgicabra.voice {
+        Voice::VoiceA => draw_reese_panel(y, &audio.voice_a),
+        Voice::VoiceB => draw_growl_panel(y, &audio.voice_b),
+        //Voice::VoiceC => draw_basic_panel(y, &audio.voice_c),
+        Voice::VoiceD => draw_swarm_panel(y, &audio.voice_d),
+        _ => {},
     }
 
-    if matches!(zgicabra.voice, Voice::VoiceD) {
-        draw_swarm_panel(y, &audio.voice_d);
-    }
-
-    draw_audio_errors(y + 19, &audio.errors);
+    draw_audio_errors(y, &audio.errors);
 }
+
+
+//
+// Reese Panel
+//
+
+fn draw_reese_panel (y: u16, reese: &ReeseView) {
+    draw_range_label(2, y + 2, true, "detune",    reese.detune.value(), -50.0, 50.0);
+    draw_range_label(2, y + 3, true, "sub_level", reese.sub_level.value(), 0.0, 1.0);
+    draw_range_label(2, y + 4, true, "drive",     reese.drive.value(),     0.0, 5.0);
+    draw_range_label(2, y + 5, true, "cutoff",    reese.cutoff.value(),    0.0, 1.0);
+    draw_range_label(2, y + 6, true, "resonance", reese.resonance.value(), 0.0, 1.0);
+    draw_range_label(2, y + 7, true, "lfo_rate",  reese.lfo_rate.value(),  0.0, 1.0);
+    draw_range_label(2, y + 8, true, "lfo_depth", reese.lfo_depth.value(), 0.0, 1.0);
+    draw_range_label(2, y + 9, true, "width",     reese.width.value(),     0.0, 1.0);
+}
+
+
+//
+// Growl Panel
+//
+
+fn draw_growl_panel (y: u16, growl: &GrowlView) {
+    draw_range_label(2, y + 2, true, "bass_drive", growl.bass_drive_input.value(), 0.0, 1.0);
+    draw_range_label(2, y + 3, true, "filter",     growl.filter_input.value(), 0.0, 1.0);
+    draw_range_label(2, y + 4, true, "space",      growl.space_input.value(), 0.0, 1.0);
+    draw_range_label(2, y + 5, true, "warp",       growl.warp_input.value(), 0.0, 1.0);
+    draw_range_label(2, y + 6, true, "nam_xover",  growl.nam_crossover_input.value(), 0.0, 10000.0);
+    draw_range_label(2, y + 8, false, "filter",    growl.filter_live.value(), 0.0, 1.0);
+    draw_range_label(2, y + 9, false, "warp",      growl.warp_live.value(), 0.0, 1.0);
+}
+
+
+//
+// Swarm Panel
+//
 
 const SWARM_SCOPE_X:    u16 = 42;
 const SWARM_SCOPE_COLS: u32 = 34; // char cols -- 2 px per drawille char
 const SWARM_SCOPE_ROWS: u32 = 14; // char rows -- 4 px per drawille char
 
-// Right of the params: a little freq (x) / pan (y) scatter of where the 5
-// swarm oscillators currently sit, orbiting the origin frequency (see
-// swarm.rs's tick -- osc_freq/osc_pan/origin_live are written every sample).
 fn draw_swarm_panel (y: u16, swarm: &SwarmView) {
-    draw_range_label(2, y + 2, "chase",  swarm.chase_factor.value(), 0.5,  1.0);
-    draw_range_label(2, y + 3, "radius", swarm.radius.value(),       0.0,  200.0);
-    draw_range_label(2, y + 4, "orbit",  swarm.orbit_speed.value(),  0.0,  2.0);
-    draw_range_label(2, y + 5, "phaser", swarm.phaser_depth.value(), 0.0,  1.0);
-    draw_range_label(2, y + 6, "xover",  swarm.xover_freq.value(),   0.0,  2000.0);
+    draw_range_label(2, y + 2, true, "chase",  swarm.chase_factor.value(), 0.5,  1.0);
+    draw_range_label(2, y + 3, true, "radius", swarm.radius.value(),       0.0,  200.0);
+    draw_range_label(2, y + 4, true, "orbit",  swarm.orbit_speed.value(),  0.0,  2.0);
+    draw_range_label(2, y + 5, true, "phaser", swarm.phaser_depth.value(), 0.0,  1.0);
+    draw_range_label(2, y + 6, true, "xover",  swarm.xover_freq.value(),   0.0,  2000.0);
 
     print!("{}{:>13} {:<14}", goto(2, y + 6), "nam_lo", swarm.nam_lo.selected_name());
     print!("{}{:>13} {:<14}", goto(2, y + 7), "nam_hi", swarm.nam_hi.selected_name());
@@ -117,10 +145,6 @@ fn draw_swarm_panel (y: u16, swarm: &SwarmView) {
 
 pub fn draw_audio_errors (y: u16, errors: &AudioErrors) {
     let log = errors.lock().unwrap();
-    print!("{} {}▪", goto(2, y), fg(GREEN_0));
-    print!("{} {}", goto(2, y), fg(RED_0));
-    for _e in log.iter() {
-        print!("▪");
-    }
-    print!("{}", termion::color::Fg(termion::color::Reset));
+    let color = if log.is_empty() { fg(GREEN_0) } else { fg(RED_0) };
+    print!("{}▌{}▪{}▐", goto(74, y), color, FG_RESET);
 }

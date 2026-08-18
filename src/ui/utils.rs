@@ -124,3 +124,12 @@ pub fn barcode_string (len: usize, solid: bool) -> String {
     s
 }
 
+pub fn draw_palette (x: u16, y: u16) {
+    print!("{}{}▐█▌{}▐█▌{}▐█▌{}▐█▌", goto(x, y +  0), fg(WHITE), fg(GREEN_0), fg(BLUE_0), fg(RED_0));
+    print!("{}{}▐█▌{}▐█▌{}▐█▌{}▐█▌", goto(x, y +  1), fg(BLACK), fg(GREEN_1), fg(BLUE_1), fg(RED_1));
+    print!("{}{}▐█▌{}▐█▌{}▐█▌{}▐█▌", goto(x, y +  2), fg(WHITE), fg(GREEN_2), fg(BLUE_2), fg(RED_2));
+    print!("{}{}▐█▌{}▐█▌{}▐█▌{}▐█▌", goto(x, y +  3), fg(BLACK), fg(GREEN_3), fg(BLUE_3), fg(RED_3));
+    print!("{}", termion::color::Fg(termion::color::Reset));
+}
+
+

@@ -35,7 +35,6 @@ impl Voice {
         Self::from_index(next)
     }
 
-    // Absolute select by index (wraps mod COUNT), e.g. MIDI Program Change.
     pub fn from_index(index: u8) -> Self {
         match index % Self::COUNT {
             0 => Voice::VoiceA,

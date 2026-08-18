@@ -158,24 +158,9 @@ fn run_engine_loop (
         zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state, voice_cycle, tune_cycle, &mut delta_events);
         delta_events.extend(hydra::take_midi_notes(&mut hydra_state));
 
-        // MIDI is connected unconditionally on HydraState (see hydra/mod.rs),
-        // independent of which Backend is active, so this runs alongside
-        // real Hydra hardware too, not just the mock backend. Only CC1 (Mod
-        // Wheel) -> filter is handled globally here -- CC2-8 route to
-        // whichever Voice is selected instead (see cc_input.rs).
         if hydra_state.midi.connected {
-            zgicabra.signal.filter = hydra_state.midi.filter.load();
-            // Bend also has a live source (wand twist); only an actual
-            // off-center wheel gesture overrides it -- centering the wheel
-            // leaves bend alone, like a spring-return wheel.
             if hydra_state.midi.bend.load() != 0.0 {
                 zgicabra.signal.bend = hydra_state.midi.bend.load();
-            }
-        }
-
-        if let Some(mc) = &mock_controls {
-            if mc.seq_playing.load(Ordering::Relaxed) {
-                zgicabra.signal.filter = mc.seq_filter.load();
             }
         }
 

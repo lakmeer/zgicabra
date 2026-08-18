@@ -457,7 +457,7 @@ impl AudioNode for GrowlVoice {
         self.freq_mult_live.set_value(freq_mult);
         let freq = freq * freq_mult;
 
-        self.filter_live.set_value((self.filter_input.value() + self.filter_signal).clamp(0.0, 1.0));
+        self.filter_live.set_value((self.filter_input.value() * self.filter_signal).clamp(0.0, 1.0));
         self.warp_live.set_value((self.warp_input.value() * (1.0 - self.width_signal)).clamp(0.0, 1.0));
 
         let drive = self.bass_drive_input.value();
@@ -507,11 +507,11 @@ impl Voice for GrowlVoice {
 
     fn apply_cc (&mut self, cc: u8, value: f32) {
         match cc {
-            2 => self.bass_drive_input.set_value(value.clamp(0.0, 1.0)),
-            3 => self.filter_input.set_value(value.clamp(0.0, 1.0)),
-            4 => self.space_input.set_value(value.clamp(0.0, 1.0)),
-            5 => self.warp_input.set_value(value.clamp(0.0, 1.0)),
-            6 => self.nam_crossover_input.set_value(value.clamp(0.0, 1.0) * 10000.0),
+            1 => self.bass_drive_input.set_value(value.clamp(0.0, 1.0)),
+            2 => self.filter_input.set_value(value.clamp(0.0, 1.0)),
+            3 => self.space_input.set_value(value.clamp(0.0, 1.0)),
+            4 => self.warp_input.set_value(value.clamp(0.0, 1.0)),
+            5 => self.nam_crossover_input.set_value(value.clamp(0.0, 1.0) * 10000.0),
             _ => {},
         }
     }
