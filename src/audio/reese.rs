@@ -50,14 +50,19 @@ pub struct ReeseVoice {
     filter_l: An<Svf<f64, LowpassMode<f64>>>,
     filter_r: An<Svf<f64, LowpassMode<f64>>>,
 
-    pub detune:    Shared,
-    pub sub_level: Shared,
-    pub drive:     Shared,
-    pub cutoff:    Shared,
-    pub resonance: Shared,
-    pub lfo_rate:  Shared,
-    pub lfo_depth: Shared,
-    pub width:     Shared,
+    pub detune_input:    Shared,
+    pub sub_level_input: Shared,
+    pub drive_input:     Shared,
+    pub cutoff_input:    Shared,
+    pub resonance_input: Shared,
+    pub lfo_rate_input:  Shared,
+    pub lfo_depth_input: Shared,
+    pub width_input:     Shared,
+
+    pub freq_mult_live: Shared,
+    pub detune_live:    Shared,
+    pub width_live:     Shared,
+    pub cutoff_live:    Shared,
 
     thump:         ThumpMod,
     thump_signal:  f32,
@@ -67,46 +72,54 @@ pub struct ReeseVoice {
 }
 
 // Read-only-from-outside view onto ReeseVoice's Shared cells -- see
-// GrowlView's doc in growl.rs for why this exists.
+// GrowlView's doc in growl.rs for why this exists. `_input` fields are the
+// authored knob values; `_live` fields are read-only, written by ReeseVoice
+// each tick, and show the actual post-modulation values the DSP is using --
+// for visualisation only.
 #[derive(Clone)]
 pub struct ReeseView {
-    pub detune:    Shared,
-    pub sub_level: Shared,
-    pub drive:     Shared,
-    pub cutoff:    Shared,
-    pub resonance: Shared,
-    pub lfo_rate:  Shared,
-    pub lfo_depth: Shared,
-    pub width:     Shared,
+    pub detune_input:    Shared,
+    pub sub_level_input: Shared,
+    pub drive_input:     Shared,
+    pub cutoff_input:    Shared,
+    pub resonance_input: Shared,
+    pub lfo_rate_input:  Shared,
+    pub lfo_depth_input: Shared,
+    pub width_input:     Shared,
+
+    pub freq_mult_live: Shared,
+    pub detune_live:    Shared,
+    pub width_live:     Shared,
+    pub cutoff_live:    Shared,
 }
 
 impl ReeseView {
-    // CC-settable fields only (see apply_cc below) -- filter_signal etc. are
-    // live per-tick signals, not persisted state.
+    // CC-settable fields only (see apply_cc below) -- `_live` fields are
+    // computed per-tick from the live signal, not persisted.
     pub fn fields (&self) -> Vec<(&'static str, f32)> {
         vec![
-            ("detune",    self.detune.value()),
-            ("sub_level", self.sub_level.value()),
-            ("drive",     self.drive.value()),
-            ("cutoff",    self.cutoff.value()),
-            ("resonance", self.resonance.value()),
-            ("lfo_rate",  self.lfo_rate.value()),
-            ("lfo_depth", self.lfo_depth.value()),
-            ("width",     self.width.value()),
+            ("detune_input",    self.detune_input.value()),
+            ("sub_level_input", self.sub_level_input.value()),
+            ("drive_input",     self.drive_input.value()),
+            ("cutoff_input",    self.cutoff_input.value()),
+            ("resonance_input", self.resonance_input.value()),
+            ("lfo_rate_input",  self.lfo_rate_input.value()),
+            ("lfo_depth_input", self.lfo_depth_input.value()),
+            ("width_input",     self.width_input.value()),
         ]
     }
 
     pub fn apply (&self, fields: &[(String, f32)]) {
         for (name, value) in fields {
             match name.as_str() {
-                "detune"    => self.detune.set_value(*value),
-                "sub_level" => self.sub_level.set_value(*value),
-                "drive"     => self.drive.set_value(*value),
-                "cutoff"    => self.cutoff.set_value(*value),
-                "resonance" => self.resonance.set_value(*value),
-                "lfo_rate"  => self.lfo_rate.set_value(*value),
-                "lfo_depth" => self.lfo_depth.set_value(*value),
-                "width"     => self.width.set_value(*value),
+                "detune_input"    => self.detune_input.set_value(*value),
+                "sub_level_input" => self.sub_level_input.set_value(*value),
+                "drive_input"     => self.drive_input.set_value(*value),
+                "cutoff_input"    => self.cutoff_input.set_value(*value),
+                "resonance_input" => self.resonance_input.set_value(*value),
+                "lfo_rate_input"  => self.lfo_rate_input.set_value(*value),
+                "lfo_depth_input" => self.lfo_depth_input.set_value(*value),
+                "width_input"     => self.width_input.set_value(*value),
                 _ => {},
             }
         }
@@ -116,14 +129,18 @@ impl ReeseView {
 impl ReeseVoice {
     pub fn view (&self) -> ReeseView {
         ReeseView {
-            detune:    self.detune.clone(),
-            sub_level: self.sub_level.clone(),
-            drive:     self.drive.clone(),
-            cutoff:    self.cutoff.clone(),
-            resonance: self.resonance.clone(),
-            lfo_rate:  self.lfo_rate.clone(),
-            lfo_depth: self.lfo_depth.clone(),
-            width:     self.width.clone(),
+            detune_input:    self.detune_input.clone(),
+            sub_level_input: self.sub_level_input.clone(),
+            drive_input:     self.drive_input.clone(),
+            cutoff_input:    self.cutoff_input.clone(),
+            resonance_input: self.resonance_input.clone(),
+            lfo_rate_input:  self.lfo_rate_input.clone(),
+            lfo_depth_input: self.lfo_depth_input.clone(),
+            width_input:     self.width_input.clone(),
+            freq_mult_live:  self.freq_mult_live.clone(),
+            detune_live:     self.detune_live.clone(),
+            width_live:      self.width_live.clone(),
+            cutoff_live:     self.cutoff_live.clone(),
         }
     }
 
@@ -141,14 +158,19 @@ impl ReeseVoice {
             filter_l: lowpass(),
             filter_r: lowpass(),
 
-            detune:    shared(DEFAULT_DETUNE),
-            sub_level: shared(DEFAULT_SUB_LEVEL),
-            drive:     shared(DEFAULT_DRIVE),
-            cutoff:    shared(DEFAULT_CUTOFF),
-            resonance: shared(DEFAULT_RESONANCE),
-            lfo_rate:  shared(DEFAULT_LFO_RATE),
-            lfo_depth: shared(DEFAULT_LFO_DEPTH),
-            width:     shared(DEFAULT_WIDTH),
+            detune_input:    shared(DEFAULT_DETUNE),
+            sub_level_input: shared(DEFAULT_SUB_LEVEL),
+            drive_input:     shared(DEFAULT_DRIVE),
+            cutoff_input:    shared(DEFAULT_CUTOFF),
+            resonance_input: shared(DEFAULT_RESONANCE),
+            lfo_rate_input:  shared(DEFAULT_LFO_RATE),
+            lfo_depth_input: shared(DEFAULT_LFO_DEPTH),
+            width_input:     shared(DEFAULT_WIDTH),
+
+            freq_mult_live: shared(0.0),
+            detune_live:    shared(0.0),
+            width_live:     shared(0.0),
+            cutoff_live:    shared(0.0),
 
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
             thump_signal: 0.0, filter_signal: 0.0, width_signal: 0.0, fuzz_signal: 0.0,
@@ -166,20 +188,24 @@ impl AudioNode for ReeseVoice {
         let selected = input[1] as usize;
         if selected != Self::INDEX { return Frame::from([0.0, 0.0]); }
 
-        let freq = freq * self.thump.tick(self.thump_signal);
+        let freq_mult = self.thump.tick(self.thump_signal);
+        self.freq_mult_live.set_value(freq_mult);
+        let freq = freq * freq_mult;
 
-        let lfo_val   = self.lfo.filter_mono(self.lfo_rate.value()); // -1..1
-        let lfo_depth = self.lfo_depth.value();
+        let lfo_val   = self.lfo.filter_mono(self.lfo_rate_input.value()); // -1..1
+        let lfo_depth = self.lfo_depth_input.value();
 
         // Detune scales with pitch (ratio, not Hz offset), wobbled by the LFO,
         // and widened live by hand span -- wide hands, wide unison spread.
         let width_signal = self.width_signal.clamp(0.0, 1.0);
-        let detune = self.detune.value()
+        let detune = self.detune_input.value()
             * (1.0 + lfo_val * lfo_depth * DETUNE_LFO_DEPTH)
             * (1.0 + width_signal);
+        self.detune_live.set_value(detune);
 
         // At width=0 every voice collapses to center (still beating, just mono).
-        let width = (self.width.value() + self.width_signal).clamp(0.0, 1.0);
+        let width = (self.width_input.value() + self.width_signal).clamp(0.0, 1.0);
+        self.width_live.set_value(width);
 
         let mut mix_l = 0.0f32;
         let mut mix_r = 0.0f32;
@@ -197,20 +223,21 @@ impl AudioNode for ReeseVoice {
 
         // Sub layer stays unpanned/centered -- keeps the low end mono-compatible.
         let sub_ratio = SUB_RATIO * cents_to_ratio(SUB_DETUNE_CENTS);
-        let sub = self.sub.filter_mono(freq * sub_ratio) * self.sub_level.value();
+        let sub = self.sub.filter_mono(freq * sub_ratio) * self.sub_level_input.value();
         mix_l += sub;
         mix_r += sub;
 
         // Live `fuzz` signal boosts drive on top of the macro knob.
-        let drive = (self.drive.value() * (1.0 + self.fuzz_signal.clamp(0.0, 1.0))).max(1.0);
+        let drive = (self.drive_input.value() * (1.0 + self.fuzz_signal.clamp(0.0, 1.0))).max(1.0);
         let shaped_l = (mix_l * drive).tanh();
         let shaped_r = (mix_r * drive).tanh();
 
         // Cutoff driven by the macro knob (scaled by live `filter` signal) and the LFO.
-        let cutoff_macro = (self.cutoff.value() * self.filter_signal).clamp(0.0, 1.0);
+        let cutoff_macro = (self.cutoff_input.value() * self.filter_signal).clamp(0.0, 1.0);
         let cutoff_base  = linexp(0.0, 1.0, CUTOFF_LO, CUTOFF_HI, cutoff_macro);
         let cutoff_hz    = (cutoff_base * 2f32.powf(lfo_val * lfo_depth * LFO_DEPTH_OCTAVES)).clamp(20.0, 18_000.0);
-        let q = self.resonance.value();
+        self.cutoff_live.set_value(cutoff_hz);
+        let q = self.resonance_input.value();
 
         let out_l = self.filter_l.tick(&Frame::from([shaped_l, cutoff_hz, q]))[0];
         let out_r = self.filter_r.tick(&Frame::from([shaped_r, cutoff_hz, q]))[0];
@@ -247,14 +274,14 @@ impl Voice for ReeseVoice {
     fn apply_cc (&mut self, cc: u8, value: f32) {
         let value = value.clamp(0.0, 1.0);
         match cc {
-            1 => self.detune.set_value(value * 50.0),
-            2 => self.sub_level.set_value(value),
-            3 => self.drive.set_value(1.0 + value * 7.0),
-            4 => self.cutoff.set_value(value),
-            5 => self.resonance.set_value(0.3 + value * 2.7),
-            6 => self.lfo_rate.set_value(0.05 + value * 2.95),
-            7 => self.lfo_depth.set_value(value),
-            8 => self.width.set_value(value),
+            1 => self.detune_input.set_value(value * 50.0),
+            2 => self.sub_level_input.set_value(value),
+            3 => self.drive_input.set_value(1.0 + value * 7.0),
+            4 => self.cutoff_input.set_value(value),
+            5 => self.resonance_input.set_value(0.3 + value * 2.7),
+            6 => self.lfo_rate_input.set_value(0.05 + value * 2.95),
+            7 => self.lfo_depth_input.set_value(value),
+            8 => self.width_input.set_value(value),
             _ => {},
         }
     }

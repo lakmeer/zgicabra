@@ -70,14 +70,19 @@ pub fn draw_voice_panel (y: u16, zgicabra: &crate::zgicabra::Zgicabra, audio: &A
 //
 
 fn draw_reese_panel (y: u16, reese: &ReeseView) {
-    draw_range_label(2, y + 2, true, "detune",    reese.detune.value(), -50.0, 50.0);
-    draw_range_label(2, y + 3, true, "sub_level", reese.sub_level.value(), 0.0, 1.0);
-    draw_range_label(2, y + 4, true, "drive",     reese.drive.value(),     0.0, 5.0);
-    draw_range_label(2, y + 5, true, "cutoff",    reese.cutoff.value(),    0.0, 1.0);
-    draw_range_label(2, y + 6, true, "resonance", reese.resonance.value(), 0.0, 1.0);
-    draw_range_label(2, y + 7, true, "lfo_rate",  reese.lfo_rate.value(),  0.0, 1.0);
-    draw_range_label(2, y + 8, true, "lfo_depth", reese.lfo_depth.value(), 0.0, 1.0);
-    draw_range_label(2, y + 9, true, "width",     reese.width.value(),     0.0, 1.0);
+    draw_range_label(2, y +  2, true, "detune",    reese.detune_input.value(), -50.0, 50.0);
+    draw_range_label(2, y +  3, true, "sub_level", reese.sub_level_input.value(), 0.0, 1.0);
+    draw_range_label(2, y +  4, true, "drive",     reese.drive_input.value(),     0.0, 5.0);
+    draw_range_label(2, y +  5, true, "cutoff",    reese.cutoff_input.value(),    0.0, 1.0);
+    draw_range_label(2, y +  6, true, "resonance", reese.resonance_input.value(), 0.0, 1.0);
+    draw_range_label(2, y +  7, true, "lfo_rate",  reese.lfo_rate_input.value(),  0.0, 1.0);
+    draw_range_label(2, y +  8, true, "lfo_depth", reese.lfo_depth_input.value(), 0.0, 1.0);
+    draw_range_label(2, y +  9, true, "width",     reese.width_input.value(),     0.0, 1.0);
+
+    draw_range_label(2, y + 11, false, "freq_mult", reese.freq_mult_live.value(), 0.0, 2.0);
+    draw_range_label(2, y + 12, false, "detune",    reese.detune_live.value(),    -50.0, 50.0);
+    draw_range_label(2, y + 13, false, "width",     reese.width_live.value(),     0.0, 1.0);
+    draw_range_label(2, y + 14, false, "cutoff_hz", reese.cutoff_live.value(),    0.0, 18000.0);
 }
 
 
@@ -105,11 +110,16 @@ const SWARM_SCOPE_COLS: u32 = 34; // char cols -- 2 px per drawille char
 const SWARM_SCOPE_ROWS: u32 = 14; // char rows -- 4 px per drawille char
 
 fn draw_swarm_panel (y: u16, swarm: &SwarmView) {
-    draw_range_label(2, y + 2, true, "chase",  swarm.chase_factor.value(), 0.5,  1.0);
-    draw_range_label(2, y + 3, true, "radius", swarm.radius.value(),       0.0,  200.0);
-    draw_range_label(2, y + 4, true, "orbit",  swarm.orbit_speed.value(),  0.0,  2.0);
-    draw_range_label(2, y + 5, true, "phaser", swarm.phaser_depth.value(), 0.0,  1.0);
-    draw_range_label(2, y + 6, true, "xover",  swarm.xover_freq.value(),   0.0,  2000.0);
+    draw_range_label(2, y + 2, true, "chase",  swarm.chase_factor_input.value(), 0.5,  1.0);
+    draw_range_label(2, y + 3, true, "radius", swarm.radius_input.value(),       0.0,  200.0);
+    draw_range_label(2, y + 4, true, "orbit",  swarm.orbit_speed_input.value(),  0.0,  2.0);
+    draw_range_label(2, y + 5, true, "phaser", swarm.phaser_depth_input.value(), 0.0,  1.0);
+    draw_range_label(2, y + 6, true, "xover",  swarm.xover_freq_input.value(),   0.0,  2000.0);
+
+    draw_range_label(2, y +  8, false, "radius", swarm.radius_live.value(),       0.0, 200.0);
+    draw_range_label(2, y +  9, false, "orbit",  swarm.orbit_speed_live.value(),  0.0, 2.0);
+    draw_range_label(2, y + 10, false, "phaser", swarm.phaser_depth_live.value(), 0.0, 1.0);
+    draw_range_label(2, y + 11, false, "origin", swarm.origin_live.value(),       0.0, 2000.0);
 
     print!("{}{:>13} {:<14}", goto(2, y + 6), "nam_lo", swarm.nam_lo.selected_name());
     print!("{}{:>13} {:<14}", goto(2, y + 7), "nam_hi", swarm.nam_hi.selected_name());
@@ -119,8 +129,8 @@ fn draw_swarm_panel (y: u16, swarm: &SwarmView) {
     let mut canvas = Canvas::new(px_w as u32, px_h as u32);
 
     let origin = swarm.origin_live.value().max(1.0);
-    let freqs: Vec<f32> = swarm.osc_freq.iter().map(|s| s.value()).collect();
-    let pans:  Vec<f32> = swarm.osc_pan.iter().map(|s| s.value()).collect();
+    let freqs: Vec<f32> = swarm.osc_freq_live.iter().map(|s| s.value()).collect();
+    let pans:  Vec<f32> = swarm.osc_pan_live.iter().map(|s| s.value()).collect();
 
     // Autoscale the freq axis to whatever spread the oscillators are
     // actually showing right now, with a little headroom.

@@ -208,19 +208,23 @@ pub struct SwarmVoice {
     mid_hi:  Vec<f32>,
     side_hi: Vec<f32>,
 
-    pub chase_factor: Shared,
-    pub radius:       Shared,
-    pub orbit_speed:  Shared,
-    pub phaser_depth: Shared,
-    pub xover_freq:   Shared,
+    pub chase_factor_input: Shared,
+    pub radius_input:       Shared,
+    pub orbit_speed_input:  Shared,
+    pub phaser_depth_input: Shared,
+    pub xover_freq_input:   Shared,
     pub nam_lo: NamModelCycler,
     pub nam_hi: NamModelCycler,
 
+    pub radius_live:       Shared,
+    pub orbit_speed_live:  Shared,
+    pub phaser_depth_live: Shared,
+
     // Live per-oscillator freq/pan, written every tick -- read-only from the
     // UI side for the swarm scope (see ui.rs's draw_swarm_panel).
-    pub osc_freq:    [Shared; NUM_OSCS],
-    pub osc_pan:     [Shared; NUM_OSCS],
-    pub origin_live: Shared,
+    pub osc_freq_live: [Shared; NUM_OSCS],
+    pub osc_pan_live:  [Shared; NUM_OSCS],
+    pub origin_live:   Shared,
 
     sample_rate: f32,
 
@@ -234,43 +238,50 @@ pub struct SwarmVoice {
 // Read-only-from-outside view onto SwarmVoice's Shared cells -- see
 // GrowlView's doc in growl.rs for why this exists. nam_lo/nam_hi are
 // NamModelCycler, already a cheap-clone Shared+Arc<Vec<String>> bundle.
+// `_input` fields are the authored knob values; `_live` fields are
+// read-only, written by SwarmVoice each tick, and show the actual
+// post-modulation values the DSP is using -- for visualisation only.
 #[derive(Clone)]
 pub struct SwarmView {
-    pub chase_factor: Shared,
-    pub radius:       Shared,
-    pub orbit_speed:  Shared,
-    pub phaser_depth: Shared,
-    pub xover_freq:   Shared,
+    pub chase_factor_input: Shared,
+    pub radius_input:       Shared,
+    pub orbit_speed_input:  Shared,
+    pub phaser_depth_input: Shared,
+    pub xover_freq_input:   Shared,
     pub nam_lo: NamModelCycler,
     pub nam_hi: NamModelCycler,
 
-    pub osc_freq:    [Shared; NUM_OSCS],
-    pub osc_pan:     [Shared; NUM_OSCS],
-    pub origin_live: Shared,
+    pub radius_live:       Shared,
+    pub orbit_speed_live:  Shared,
+    pub phaser_depth_live: Shared,
+
+    pub osc_freq_live: [Shared; NUM_OSCS],
+    pub osc_pan_live:  [Shared; NUM_OSCS],
+    pub origin_live:   Shared,
 }
 
 impl SwarmView {
     // CC-settable fields only (see apply_cc below) -- nam_lo/nam_hi (model
-    // cyclers) and osc_freq/osc_pan/origin_live (per-tick telemetry, not
-    // user-set params) aren't persisted here.
+    // cyclers) and the `_live` fields (per-tick telemetry, not user-set
+    // params) aren't persisted here.
     pub fn fields (&self) -> Vec<(&'static str, f32)> {
         vec![
-            ("chase_factor", self.chase_factor.value()),
-            ("radius",       self.radius.value()),
-            ("orbit_speed",  self.orbit_speed.value()),
-            ("phaser_depth", self.phaser_depth.value()),
-            ("xover_freq",   self.xover_freq.value()),
+            ("chase_factor_input", self.chase_factor_input.value()),
+            ("radius_input",       self.radius_input.value()),
+            ("orbit_speed_input",  self.orbit_speed_input.value()),
+            ("phaser_depth_input", self.phaser_depth_input.value()),
+            ("xover_freq_input",   self.xover_freq_input.value()),
         ]
     }
 
     pub fn apply (&self, fields: &[(String, f32)]) {
         for (name, value) in fields {
             match name.as_str() {
-                "chase_factor" => self.chase_factor.set_value(*value),
-                "radius"       => self.radius.set_value(*value),
-                "orbit_speed"  => self.orbit_speed.set_value(*value),
-                "phaser_depth" => self.phaser_depth.set_value(*value),
-                "xover_freq"   => self.xover_freq.set_value(*value),
+                "chase_factor_input" => self.chase_factor_input.set_value(*value),
+                "radius_input"       => self.radius_input.set_value(*value),
+                "orbit_speed_input"  => self.orbit_speed_input.set_value(*value),
+                "phaser_depth_input" => self.phaser_depth_input.set_value(*value),
+                "xover_freq_input"   => self.xover_freq_input.set_value(*value),
                 _ => {},
             }
         }
@@ -280,16 +291,19 @@ impl SwarmView {
 impl SwarmVoice {
     pub fn view (&self) -> SwarmView {
         SwarmView {
-            chase_factor: self.chase_factor.clone(),
-            radius:       self.radius.clone(),
-            orbit_speed:  self.orbit_speed.clone(),
-            phaser_depth: self.phaser_depth.clone(),
-            xover_freq:   self.xover_freq.clone(),
+            chase_factor_input: self.chase_factor_input.clone(),
+            radius_input:       self.radius_input.clone(),
+            orbit_speed_input:  self.orbit_speed_input.clone(),
+            phaser_depth_input: self.phaser_depth_input.clone(),
+            xover_freq_input:   self.xover_freq_input.clone(),
             nam_lo: self.nam_lo.clone(),
             nam_hi: self.nam_hi.clone(),
-            osc_freq:    self.osc_freq.clone(),
-            osc_pan:     self.osc_pan.clone(),
-            origin_live: self.origin_live.clone(),
+            radius_live:       self.radius_live.clone(),
+            orbit_speed_live:  self.orbit_speed_live.clone(),
+            phaser_depth_live: self.phaser_depth_live.clone(),
+            osc_freq_live: self.osc_freq_live.clone(),
+            osc_pan_live:  self.osc_pan_live.clone(),
+            origin_live:   self.origin_live.clone(),
         }
     }
 
@@ -325,16 +339,20 @@ impl SwarmVoice {
             mid_hi:  vec![0.0; NAM_BLOCK_CAP],
             side_hi: vec![0.0; NAM_BLOCK_CAP],
 
-            chase_factor: shared(DEFAULT_CHASE_FACTOR),
-            radius:       shared(DEFAULT_RADIUS),
-            orbit_speed:  shared(DEFAULT_ORBIT_SPEED),
-            phaser_depth: shared(DEFAULT_PHASER_DEPTH),
-            xover_freq:   shared(DEFAULT_XOVER_FREQ),
+            chase_factor_input: shared(DEFAULT_CHASE_FACTOR),
+            radius_input:       shared(DEFAULT_RADIUS),
+            orbit_speed_input:  shared(DEFAULT_ORBIT_SPEED),
+            phaser_depth_input: shared(DEFAULT_PHASER_DEPTH),
+            xover_freq_input:   shared(DEFAULT_XOVER_FREQ),
             nam_lo, nam_hi,
 
-            osc_freq:    std::array::from_fn(|_| shared(0.0)),
-            osc_pan:     std::array::from_fn(|_| shared(0.0)),
-            origin_live: shared(110.0),
+            radius_live:       shared(0.0),
+            orbit_speed_live:  shared(0.0),
+            phaser_depth_live: shared(0.0),
+
+            osc_freq_live: std::array::from_fn(|_| shared(0.0)),
+            osc_pan_live:  std::array::from_fn(|_| shared(0.0)),
+            origin_live:   shared(110.0),
 
             sample_rate: DEFAULT_SR as f32,
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
@@ -353,14 +371,17 @@ impl AudioNode for SwarmVoice {
         let selected = input[1] as usize;
         if selected != Self::INDEX { return Frame::from([0.0, 0.0]); }
 
-        let chase_factor = self.chase_factor.value().clamp(0.0, 0.999_999);
+        let chase_factor = self.chase_factor_input.value().clamp(0.0, 0.999_999);
         self.origin_freq = lerp(self.origin_freq, freq, chase_factor);
         let origin_freq = self.origin_freq * self.thump.tick(self.thump_signal);
 
         let width_signal = self.width_signal.clamp(0.0, 1.0);
-        let radius_cents = self.radius.value().max(0.0)      * (1.0 + width_signal);
-        let orbit_speed  = self.orbit_speed.value()          * (1.0 + width_signal);
-        let phaser_depth = (self.phaser_depth.value() + width_signal + self.fuzz_signal).clamp(0.0, 1.0);
+        let radius_cents = self.radius_input.value().max(0.0) * (1.0 + width_signal);
+        let orbit_speed  = self.orbit_speed_input.value()     * (1.0 + width_signal);
+        let phaser_depth = (self.phaser_depth_input.value() + width_signal + self.fuzz_signal).clamp(0.0, 1.0);
+        self.radius_live.set_value(radius_cents);
+        self.orbit_speed_live.set_value(orbit_speed);
+        self.phaser_depth_live.set_value(phaser_depth);
 
         // cents -> Hz radius against the current origin, so a fixed cents
         // width reads the same at any pitch instead of shrinking as origin
@@ -379,8 +400,8 @@ impl AudioNode for SwarmVoice {
             let osc_freq = position.re.max(MIN_OSC_FREQ);
             let pan      = (position.im / PAN_NORM_HZ).clamp(-1.0, 1.0);
 
-            self.osc_freq[k].set_value(osc_freq);
-            self.osc_pan[k].set_value(pan);
+            self.osc_freq_live[k].set_value(osc_freq);
+            self.osc_pan_live[k].set_value(pan);
 
             let dry = self.oscs[k].filter_mono(osc_freq);
             let phaser_rate = (osc_freq / 100.0).clamp(0.05, 8.0);
@@ -397,7 +418,7 @@ impl AudioNode for SwarmVoice {
         mix_r *= norm;
 
         let filter_cutoff = self.filter_signal.clamp(0.0, 1.0);
-        let xover_hz  = self.xover_freq.value().max(1.0);
+        let xover_hz  = self.xover_freq_input.value().max(1.0);
 
         let out_l = self.chain_l.tick(mix_l, self.sample_rate, filter_cutoff, xover_hz);
         let out_r = self.chain_r.tick(mix_r, self.sample_rate, filter_cutoff, xover_hz);
@@ -468,11 +489,11 @@ impl Voice for SwarmVoice {
     fn apply_cc (&mut self, cc: u8, value: f32) {
         let value = value.clamp(0.0, 1.0);
         match cc {
-            50 | 2 => self.chase_factor.set_value(0.5 + value * 0.5),
-            51 | 3 => self.radius.set_value(value * 200.0),
-            52 | 4 => self.orbit_speed.set_value(value * 2.0),
-            53 | 5 => self.phaser_depth.set_value(value),
-            54 | 6 => self.xover_freq.set_value(value * 2000.0),
+            50 | 2 => self.chase_factor_input.set_value(0.5 + value * 0.5),
+            51 | 3 => self.radius_input.set_value(value * 200.0),
+            52 | 4 => self.orbit_speed_input.set_value(value * 2.0),
+            53 | 5 => self.phaser_depth_input.set_value(value),
+            54 | 6 => self.xover_freq_input.set_value(value * 2000.0),
             _ => {},
         }
     }

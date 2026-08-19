@@ -1,8 +1,8 @@
-detune=24
-sub_level=0.5
-drive=3
-cutoff=0.6
-resonance=1.2
-lfo_rate=0.3
-lfo_depth=0.35
-width=0.7
+detune_input=24
+sub_level_input=0.5
+drive_input=1
+cutoff_input=0.8031496
+resonance_input=1.7669291
+lfo_rate_input=0.3
+lfo_depth_input=0.35
+width_input=0.7
