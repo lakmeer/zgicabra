@@ -1,0 +1,15 @@
+#!/bin/sh
+
+# kmscon --login wipes the exec'd child's environment before running it --
+# confirmed by capturing env inside a stand-in wrapper: even PATH was gone,
+# so nothing set upstream (`sudo env VAR=val kmscon ...`, or a systemd
+# unit's `Environment=`) survives the exec. Env has to be rebuilt here,
+# immediately before the real binary runs -- this script is kmscon's
+# `-- ARGV` target in both bin/perform and sys/config.nix's boot service,
+# never the zgicabra binary directly.
+
+export PATH="/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin"
+export XDG_RUNTIME_DIR="/run/user/1000"
+export PIPEWIRE_RUNTIME_DIR="/run/user/1000"
+
+exec /home/zgicabra/zgicabra/target/release/zgicabra "$@"

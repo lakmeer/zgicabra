@@ -6,17 +6,24 @@
 // input gain for driving a model harder without touching upstream levels.
 //
 
-use std::fs;
 use std::io;
 use std::sync::{Arc, Mutex};
 
 use fundsp::prelude64::*;
+use include_dir::{include_dir, Dir};
 use nam_rs::{Model, NamModel};
 
-const NAM_DIR: &str = "nam";
 const DEFAULT_NAM_MODEL: &str = "mesa";
 const TARGET_LOUDNESS_DB: f32 = -18.0;
 const DC_BLOCKER_R: f32 = 0.9993;
+
+// NAM models embedded straight into the binary at compile time -- a few
+// hundred KB each, and the boot-time systemd service execs zgicabra from
+// target/release with no reliable way to locate a runtime nam/ folder
+// alongside it (unlike libsixense_x64.so/libstdc++.so.6, these are plain
+// JSON, not something a RUNPATH/dlopen mechanism can find). No filesystem
+// access needed at runtime, so this sidesteps that entirely.
+static NAM_MODELS: Dir = include_dir!("$CARGO_MANIFEST_DIR/nam");
 
 // Crossover split runs at the same fixed rate the model itself is pinned to
 // (see Engine::set_sample_rate's NamStage no-op and pick_output_config in
@@ -60,17 +67,14 @@ impl NamModelCycler {
     }
 }
 
-// Discovers every *.nam file in NAM_DIR (sorted for a stable, predictable
+// Discovers every embedded *.nam file (sorted for a stable, predictable
 // cycle order) and loads each one. Index 0 is always a "Bypass" slot (no
 // model, dry passthrough) so the cycler always has a way back to clean.
 pub fn load_nam_models () -> io::Result<(Vec<Option<NamModelSlot>>, Vec<String>)> {
-    let mut paths: Vec<std::path::PathBuf> = fs::read_dir(NAM_DIR)
-        .map_err(|e| io::Error::new(e.kind(), format!("failed to read NAM model directory '{NAM_DIR}': {e}")))?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("nam")))
+    let mut files: Vec<&include_dir::File> = NAM_MODELS.files()
+        .filter(|f| f.path().extension().is_some_and(|ext| ext.eq_ignore_ascii_case("nam")))
         .collect();
-    paths.sort();
+    files.sort_by_key(|f| f.path());
 
     let mut slots: Vec<Option<NamModelSlot>> = vec![None];
     let mut names: Vec<String>               = vec!["Bypass".to_string()];
@@ -81,15 +85,17 @@ pub fn load_nam_models () -> io::Result<(Vec<Option<NamModelSlot>>, Vec<String>)
 
     let mut loaded: Vec<(String, Model, Option<f32>, f32)> = Vec::new();
 
-    for path in paths {
-        let path_str = path.to_string_lossy().into_owned();
+    for file in files {
+        let path_str = file.path().display().to_string();
 
-        let nam_model = NamModel::from_file(&path_str)
+        let json = file.contents_utf8()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("embedded NAM model '{path_str}' is not valid UTF-8")))?;
+        let nam_model = NamModel::from_json_str(json)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to load NAM model '{path_str}': {e}")))?;
         let model = Model::from_nam(&nam_model)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to build NAM model '{path_str}': {e}")))?;
 
-        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or(&path_str).to_string();
+        let name = file.path().file_stem().and_then(|s| s.to_str()).unwrap_or(&path_str).to_string();
 
         // Normalize toward TARGET_LOUDNESS_DB using the file's own loudness
         // metadata. Models without it pass through unscaled.
@@ -125,13 +131,17 @@ pub fn default_model_index (names: &[String]) -> usize {
     names.iter().position(|n| n == DEFAULT_NAM_MODEL).unwrap_or(0)
 }
 
-// Loads exactly one named model by itself (nam/{name}.nam) -- no Bypass slot,
-// no relative input-gain calibration, just loudness-metadata output
+// Loads exactly one named embedded model by itself ({name}.nam) -- no Bypass
+// slot, no relative input-gain calibration, just loudness-metadata output
 // normalization. Used for the fixed "amp" stage (see mod.rs).
 pub fn load_named_model (name: &str) -> io::Result<NamModelSlot> {
-    let path_str = format!("{NAM_DIR}/{name}.nam");
+    let path_str = format!("{name}.nam");
 
-    let nam_model = NamModel::from_file(&path_str)
+    let file = NAM_MODELS.get_file(&path_str)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("embedded NAM model '{path_str}' not found")))?;
+    let json = file.contents_utf8()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("embedded NAM model '{path_str}' is not valid UTF-8")))?;
+    let nam_model = NamModel::from_json_str(json)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to load NAM model '{path_str}': {e}")))?;
     let model = Model::from_nam(&nam_model)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to build NAM model '{path_str}': {e}")))?;

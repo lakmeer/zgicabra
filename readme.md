@@ -1,13 +1,12 @@
 
 # Zgicabra RS
 
-- Binary must be run with libsixense_x64.so in working directory
 - Run `run.sh` for dev. This will watch source files.
 
 ## Usage
 
 ```sh
-zgicabra           # run with the terminal UI (default)
+zgicabra            # run with the terminal UI (default)
 zgicabra --debug    # suppress the terminal UI, print verbose diagnostics instead
 zgicabra --test     # run the audio self-test
 ```
@@ -24,12 +23,46 @@ copied to the build target folder during build. Additionally, `libsixense_x64`
 has been `patchelf`'d to modify it's rpath to `$ORIGIN`, rather than using the
 system default. An unpatched copy is retained as reference.
 
-`libstdc++.so.6` is *not* vendored alongside it — the nix C++ toolchain's own
-libstdc++ already covers the `GLIBCXX_3.4.11`-vintage symbols the Sixense blob
-needs. Don't vendor a copy; a mismatched version has caused runtime crashes.
+`libstdc++.so.6` is vendored alongside it too, copied fresh into the build
+target folder on every build (resolved via `cc -print-file-name`, not
+checked into `libs/`) so the binary can be exec'd directly — e.g. by the
+boot-time systemd service — without a system-wide `LD_LIBRARY_PATH`. A
+*stale* checked-in copy previously shadowed the real system libstdc++ and
+broke anything needing a newer symbol version (e.g. libjack.so.0's
+`CXXABI_1.3.15`); copying fresh from the active toolchain on each build
+avoids that.
 
 `libsixense.so`, and `sixense.h` are not used but are retained for reference.
 
+## NAM Models
+
+The `nam/*.nam` amp models are compiled straight into the binary
+(`src/audio/nam.rs`, via `include_dir!`) rather than read from disk at
+runtime — same motivation as vendoring `libstdc++.so.6` above: the boot-time
+systemd service execs the binary from `target/release` with no working
+directory guarantee of a sibling `nam/` folder. Add/remove a `.nam` file and
+rebuild to change the embedded set; no separate copy step needed.
+
+## Performance-mode launch (KMSCON)
+
+Both the boot-time systemd service (`sys/config.nix`) and `bin/perform`
+(manual vt3 test from the dev desktop) run zgicabra by having KMSCON
+`--login`-exec it on a VT. `--login` wipes the exec'd child's environment
+entirely — confirmed by capturing it: even `PATH` is gone. Nothing set
+upstream of `kmscon` (`sudo env VAR=val kmscon ...`, or a systemd unit's
+`Environment=`) survives.
+
+Because of this, neither launch path execs the `zgicabra` binary directly —
+both point KMSCON's `-- ARGV` at `bin/zgicabra-launch`, a small wrapper that
+rebuilds `PATH`/`XDG_RUNTIME_DIR`/`PIPEWIRE_RUNTIME_DIR` from scratch
+immediately before `exec`ing the real binary. Without a correct
+`XDG_RUNTIME_DIR`, `cpal`'s ALSA backend fails with `snd_pcm_open` reporting
+`Host is down` — it can't find the PipeWire socket to connect to.
+
+The performance box also never logs in (no keyboard, no getty), so without
+`users.users.zgicabra.linger = true;` (`sys/config.nix`) there is no
+`user@1000` session and no PipeWire daemon running at all for that wrapper
+to reach.
 
 ## Setup requirements
 
@@ -48,40 +81,17 @@ needs. Don't vendor a copy; a mismatched version has caused runtime crashes.
   `alsa.pc` via pkg-config to link `libasound`; that file lives in
   `alsa-lib`'s `dev` output, which the default `alsa-lib` output does not
   include.
-- `SDL2.dev` (not plain `SDL2`) must be in `environment.systemPackages` too,
-  same reasoning — `SDL.h`/`sdl2.pc` live in the `dev` output. `sdl3` (plain,
-  it's a single-output derivation) must also be present: `SDL2` on modern
-  nixpkgs is `sdl2-compat`, a shim that `dlopen()`s `libSDL3.so` at runtime.
-  See "SDL2 / shell.nix" below for the full story.
 - `environment.variables.PKG_CONFIG_PATH = "/run/current-system/sw/lib/pkgconfig";`
   must be set system-wide. Unlike `nix-shell -p`, `environment.systemPackages`
   does not add installed packages' pkgconfig dirs to `PKG_CONFIG_PATH`
   automatically — without this, pkg-config can't find `alsa.pc`/`sdl2.pc`
   even once they're symlinked into the system profile. Takes a fresh
   shell/login after `nixos-rebuild switch` to pick up.
-- `midir` (MIDI controller input for the mock Hydra backend, see
-  `src/hydra/midi.rs`) is scoped to macOS-only in `Cargo.toml`
-  (`target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies`).
-  The Linux performance machine always has real Hydra hardware and this
-  MusNix-based audio setup has no ALSA dev headers by default, so `midir`
-  (which needs `alsa-sys` on Linux) must never be a plain dependency here.
 - user needs these usergroups:
   ```nix
     extraGroups = [ "plugdev" "networkmanager" "wheel" "audio" "input" ];
   ```
 
-### Required system packages
-
-```nix
-
-  cargo         # from nixpkgs-unstable, not the stable channel
-  rustc         # from nixpkgs-unstable, not the stable channel
-  alsa-lib.dev
-  SDL2.dev
-  sdl3
-
-
-```
 ### `snd-virmidi`
 
 - Kernel module `snd-virmidi` is enabled in nix config as:
@@ -98,18 +108,3 @@ On the NixOS performance box, `sys/nixos-config.nix` now applies these (and
 the rest of the machine's zgicabra-specific config) automatically on
 `nixos-rebuild switch` — see `sys/README.md`. The manual steps below are
 still accurate as a fallback / for a non-NixOS setup.
-
-#### udev Setup (untested)
-
-To set up a new system, deploy the rules file to `/etc/udev/rules.d/`:
-```sh
-sudo cp sys/udev-rules /etc/udev/rules.d/99-sixense-hydra.rules
-```
-Then reload the rules:
-```sh
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-```
-
-`trigger` is not strictly necessary, but will re-announce the device which will
-allow an already-connected Hyrda to be pucked up after the rules change.

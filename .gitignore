@@ -6,3 +6,4 @@ snapshots/
 panel.html*
 vital_test
 *.vital
+config/selected

@@ -6,17 +6,17 @@
 # session in dev mode; the real boot service (sys/config.nix) uses vt1,
 # since nothing else wants it there.
 #
-# sudo + --login: kmscon needs root/CAP_SYS_TTY_CONFIG to own a VT when run
-# interactively like this (matches the hand-tested ~/kms prototype), and
-# --login is required for kmscon to actually run the `-- ARGV` we give it --
-# without it, kmscon ignores everything after `--` and always execs its own
-# hardcoded default (`/bin/login -p`).
+# ARGV is bin/zgicabra-launch, not the zgicabra binary directly -- kmscon
+# --login wipes the exec'd child's environment (confirmed: even PATH is
+# gone), so anything the real binary needs (PATH, XDG_RUNTIME_DIR,
+# PIPEWIRE_RUNTIME_DIR for the audio backend) has to be rebuilt right
+# before it runs, not set upstream of kmscon. See zgicabra-launch and
+# AGENTS.md's "Performance-mode launch" note.
 
 cd /home/zgicabra/zgicabra/target/release || exit 1
 
-exec sudo env XDG_RUNTIME_DIR="/run/user/$(id -u)" \
-  kmscon --vt=3 --login \
-    --font-engine=pango \
-    --font-name="Terminus (TTF)" \
-    --font-size=20 \
-    -- /home/zgicabra/zgicabra/target/release/zgicabra
+exec sudo kmscon --vt=3 --login \
+  --font-engine=pango \
+  --font-name="Terminus (TTF)" \
+  --font-size=20 \
+  -- /home/zgicabra/zgicabra/bin/zgicabra-launch

@@ -27,12 +27,6 @@ fn main() {
     // $ORIGIN/libs at runtime resolves relative to the final binary
     // (target/<profile>/), not the source repo's libs/ dir, so the vendored
     // Sixense blob needs a copy to live there too.
-    //
-    // Don't also vendor libstdc++.so.6 here: since $ORIGIN/libs sits first
-    // on our RUNPATH, a stale copy shadows the real system libstdc++ and
-    // breaks anything needing a newer symbol version (e.g. libjack.so.0's
-    // CXXABI_1.3.15). The nix toolchain's own libstdc++ already covers the
-    // old Sixense blob's GLIBCXX_3.4.11-vintage needs.
     let vendored_dir = target_dir.join("libs");
     fs::create_dir_all(&vendored_dir).unwrap();
 
@@ -43,4 +37,24 @@ fn main() {
     let _ = fs::remove_file(&dst);
     fs::copy(&src, &dst).unwrap_or_else(|e| panic!("copy {:?} -> {:?}: {}", src, dst, e));
     println!("cargo:rerun-if-changed={}", src.display());
+
+    // Vendor libstdc++.so.6 too, so the binary works when exec'd directly
+    // (e.g. by the boot-time systemd service) without a system-wide
+    // LD_LIBRARY_PATH hack. Resolved fresh from the active `cc` on every
+    // build (not checked into libs/) so it can never go stale relative to
+    // the toolchain actually doing the linking -- a stale vendored copy is
+    // what previously shadowed the real system libstdc++ and broke anything
+    // needing a newer symbol version (e.g. libjack.so.0's CXXABI_1.3.15).
+    let cc = env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    let output = std::process::Command::new(&cc)
+        .arg("-print-file-name=libstdc++.so.6")
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run `{} -print-file-name=libstdc++.so.6`: {}", cc, e));
+    let libstdcxx_src = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim());
+    if libstdcxx_src.is_absolute() {
+        let dst = vendored_dir.join("libstdc++.so.6");
+        let _ = fs::remove_file(&dst);
+        fs::copy(&libstdcxx_src, &dst)
+            .unwrap_or_else(|e| panic!("copy {:?} -> {:?}: {}", libstdcxx_src, dst, e));
+    }
 }

@@ -30,17 +30,6 @@
   # exactly "Terminus (TTF)" in the service below (see todo.md).
   fonts.packages = with pkgs; [ terminus_font_ttf ];
 
-  # zgicabra's own binary (built with nixpkgs-unstable rustc, see readme.md)
-  # dynamically links libstdc++.so.6, likely as a transitive NEEDED entry
-  # pulled in via linking against the vendored libsixense_x64.so blob (a
-  # plain file, not a nix derivation, so the cc-wrapper's automatic rpath
-  # injection never applies to it). systemPackages alone is NOT enough --
-  # it only symlinks binaries into /run/current-system/sw, not libs onto
-  # the dynamic linker's search path -- so LD_LIBRARY_PATH must be set
-  # explicitly too, same pattern as PKG_CONFIG_PATH below.
-  environment.systemPackages = [ pkgs.stdenv.cc.cc.lib ];
-  environment.variables.LD_LIBRARY_PATH = "/run/current-system/sw/lib";
-
   #
   # Hydra + panel udev permissions. Supersedes sys/udev-rules (folded in
   # here) and configuration.nix's old inline extraRules block -- applied
@@ -80,18 +69,31 @@
   # exist at that literal path on NixOS, hence "failed to exec child
   # /bin/login"). See `kmscon --help`'s `-l, --login` entry.
   #
+  # ARGV is bin/zgicabra-launch, not the zgicabra binary directly -- --login
+  # also wipes the exec'd child's environment entirely (even PATH), so the
+  # real binary's PATH/XDG_RUNTIME_DIR/PIPEWIRE_RUNTIME_DIR have to be
+  # rebuilt right before it runs rather than set here via Environment=. See
+  # zgicabra-launch's own comment and AGENTS.md's "Performance-mode launch"
+  # note.
+  #
+  # zgicabra never logs in on this box (no keyboard, no getty), so without
+  # lingering there's no user@1000 session and no pipewire daemon for the
+  # ALSA backend to reach -- hence `users.users.zgicabra.linger` below.
+  #
   systemd.services."getty@tty1".enable = false;
+
+  users.users.zgicabra.linger = true;
 
   systemd.services.zgicabra = {
     description = "zgicabra performance instrument (KMSCON TUI)";
     wantedBy = [ "multi-user.target" ];
-    after = [ "local-fs.target" "systemd-udev-settle.service" ];
+    after = [ "local-fs.target" "systemd-udev-settle.service" "user@1000.service" ];
     conflicts = [ "getty@tty1.service" ];
     serviceConfig = {
       ExecStart = ''
         ${pkgs.kmscon}/bin/kmscon --vt=1 --no-switchvt --login \
           --font-engine=pango --font-name="Terminus (TTF)" --font-size=20 \
-          -- /home/zgicabra/zgicabra/target/release/zgicabra
+          -- /home/zgicabra/zgicabra/bin/zgicabra-launch
       '';
       WorkingDirectory = "/home/zgicabra/zgicabra/target/release";
       Restart = "on-failure";

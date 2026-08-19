@@ -18,6 +18,7 @@ num-complex = { version = "0.4.6", default-features = false, features = ["libm"]
 cpal = "0.18.1"
 nam-rs = "0.4.0"
 rtrb = "0.3"
+include_dir = "0.7"
 
 # Native USB HID backend for the Hydra on macOS (see src/hydra/hid.rs) -- the
 # vendored Sixense SDK is Linux-only and dead anyway, so this never needs to

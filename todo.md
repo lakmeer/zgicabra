@@ -63,7 +63,7 @@
     - Specify font as "Terminus (TTF)" exactly
   - 6 NAM FF passes might be too much - test in bare env
   - Measured time-to-first-note: 
-
+  - Strip out more default services
 
 ## System setup
 
@@ -75,7 +75,7 @@
    running `zgicabra` on vt1, no login prompt, no manual steps.
 [X] Reboot with a keyboard attached → select the `dev` entry at the
    GRUB menu within the timeout → should land in X11
-[ ] From dev mode, run `bin/perform` (from the repo root) → KMSCON+zgicabra
+[X] From dev mode, run `bin/perform` (from the repo root) → KMSCON+zgicabra
    should come up on vt3 without disturbing the X session on vt1.
 [ ] `sudo systemctl kill -s SIGTERM zgicabra` mid-session (from another vt
    or SSH) → service should restart (`Restart=on-failure`) and the voice/

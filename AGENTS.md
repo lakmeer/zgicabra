@@ -42,6 +42,20 @@ Two machines, different roles — confirm which one you're on.
 | ⚠️ Static linking is an architectural goal: one binary, no external
 | runtime deps.
 
+**Performance-mode launch**: both `sys/config.nix`'s boot service and
+`bin/perform` (dev-box vt3 smoke test) run zgicabra via
+`kmscon --login -- bin/zgicabra-launch`, never the raw binary. `--login`
+wipes the exec'd child's environment entirely (even `PATH`) — confirmed by
+capture, not assumption — so anything the real binary needs (`PATH`,
+`XDG_RUNTIME_DIR`, `PIPEWIRE_RUNTIME_DIR` for `cpal`'s ALSA/PipeWire
+backend) is rebuilt inside `zgicabra-launch` right before `exec`, not set
+upstream of `kmscon`. Missing `XDG_RUNTIME_DIR` surfaces as `snd_pcm_open`
+failing with `Host is down` (can't reach the PipeWire socket). The box
+also never logs in, so `users.users.zgicabra.linger` (`sys/config.nix`) is
+what keeps a PipeWire session running at all for that wrapper to reach. If
+you touch either launch path, keep them pointed at `zgicabra-launch`, not
+the binary.
+
 ### Testing box
 - MacBook Pro, USB-C only, macOS x86_64. Hydra hardware isn't well
   supported here — `src/hydra/mock.rs` stands in. More ergonomic for
