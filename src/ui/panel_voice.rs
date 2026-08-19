@@ -70,19 +70,18 @@ pub fn draw_voice_panel (y: u16, zgicabra: &crate::zgicabra::Zgicabra, audio: &A
 //
 
 fn draw_reese_panel (y: u16, reese: &ReeseView) {
-    draw_range_label(2, y +  2, true, "detune",    reese.detune_input.value(), -50.0, 50.0);
+    draw_range_label(2, y +  2, true, "detune",    reese.detune_input.value(),  0.0, 100.0);
     draw_range_label(2, y +  3, true, "sub_level", reese.sub_level_input.value(), 0.0, 1.0);
     draw_range_label(2, y +  4, true, "drive",     reese.drive_input.value(),     0.0, 5.0);
     draw_range_label(2, y +  5, true, "cutoff",    reese.cutoff_input.value(),    0.0, 1.0);
-    draw_range_label(2, y +  6, true, "resonance", reese.resonance_input.value(), 0.0, 1.0);
+    draw_range_label(2, y +  6, true, "resonance", reese.resonance_input.value(), 0.0, 5.0);
     draw_range_label(2, y +  7, true, "lfo_rate",  reese.lfo_rate_input.value(),  0.0, 1.0);
     draw_range_label(2, y +  8, true, "lfo_depth", reese.lfo_depth_input.value(), 0.0, 1.0);
-    draw_range_label(2, y +  9, true, "width",     reese.width_input.value(),     0.0, 1.0);
 
-    draw_range_label(2, y + 11, false, "freq_mult", reese.freq_mult_live.value(), 0.0, 2.0);
-    draw_range_label(2, y + 12, false, "detune",    reese.detune_live.value(),    -50.0, 50.0);
-    draw_range_label(2, y + 13, false, "width",     reese.width_live.value(),     0.0, 1.0);
-    draw_range_label(2, y + 14, false, "cutoff_hz", reese.cutoff_live.value(),    0.0, 18000.0);
+    draw_range_label(2, y + 10, false, "drive",    reese.drive_live.value(),      0.0, 5.0);
+    draw_range_label(2, y + 11, false, "lfo_rate", reese.lfo_rate_live.value(),   0.0, 5.0);
+    draw_range_label(2, y + 12, false, "detune",   reese.detune_live.value(),   0.0, 200.0);
+    draw_range_label(2, y + 13, false, "cutoff",   reese.cutoff_live.value(),  0.0, 6000.0);
 }
 
 
@@ -96,6 +95,7 @@ fn draw_growl_panel (y: u16, growl: &GrowlView) {
     draw_range_label(2, y + 4, true, "space",      growl.space_input.value(), 0.0, 1.0);
     draw_range_label(2, y + 5, true, "warp",       growl.warp_input.value(), 0.0, 1.0);
     draw_range_label(2, y + 6, true, "nam_xover",  growl.nam_crossover_input.value(), 0.0, 10000.0);
+
     draw_range_label(2, y + 8, false, "filter",    growl.filter_live.value(), 0.0, 1.0);
     draw_range_label(2, y + 9, false, "warp",      growl.warp_live.value(), 0.0, 1.0);
 }
@@ -110,11 +110,11 @@ const SWARM_SCOPE_COLS: u32 = 34; // char cols -- 2 px per drawille char
 const SWARM_SCOPE_ROWS: u32 = 14; // char rows -- 4 px per drawille char
 
 fn draw_swarm_panel (y: u16, swarm: &SwarmView) {
-    draw_range_label(2, y + 2, true, "chase",  swarm.chase_factor_input.value(), 0.5,  1.0);
-    draw_range_label(2, y + 3, true, "radius", swarm.radius_input.value(),       0.0,  200.0);
-    draw_range_label(2, y + 4, true, "orbit",  swarm.orbit_speed_input.value(),  0.0,  2.0);
-    draw_range_label(2, y + 5, true, "phaser", swarm.phaser_depth_input.value(), 0.0,  1.0);
-    draw_range_label(2, y + 6, true, "xover",  swarm.xover_freq_input.value(),   0.0,  2000.0);
+    draw_range_label(2, y +  2, true, "chase",  swarm.chase_factor_input.value(), 0.5,  1.0);
+    draw_range_label(2, y +  3, true, "radius", swarm.radius_input.value(),       0.0,  200.0);
+    draw_range_label(2, y +  4, true, "orbit",  swarm.orbit_speed_input.value(),  0.0,  2.0);
+    draw_range_label(2, y +  5, true, "phaser", swarm.phaser_depth_input.value(), 0.0,  1.0);
+    draw_range_label(2, y +  6, true, "xover",  swarm.xover_freq_input.value(),   0.0,  2000.0);
 
     draw_range_label(2, y +  8, false, "radius", swarm.radius_live.value(),       0.0, 200.0);
     draw_range_label(2, y +  9, false, "orbit",  swarm.orbit_speed_live.value(),  0.0, 2.0);

@@ -17,6 +17,7 @@
 - Release note at trigger zenith
 
 - Voices
+  - Can ThumpMod be a trait?
   - Macro potential?
   - Basic
     - sin/tri/saw/sq select

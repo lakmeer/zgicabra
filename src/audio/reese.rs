@@ -15,28 +15,30 @@ use crate::tools::linexp;
 use crate::zgicabra::SignalState;
 use super::voice::{Voice, ThumpMod};
 
-const VOICES: usize = 7; // odd -- center voice lands at zero detune/pan
+const VOICES: usize = 8; // odd -- center voice lands at zero detune/pan
 
 const SUB_RATIO: f32 = 0.5;         // one octave down
 const SUB_DETUNE_CENTS: f32 = -6.0; // keeps the sub from phase-locking to voice 0
 
 const CUTOFF_LO: f32 = 80.0;
 const CUTOFF_HI: f32 = 6000.0;
-const LFO_DEPTH_OCTAVES: f32 = 2.5; // max cutoff swing at lfo_depth = 1
+const LFO_DEPTH: f32 = 0.15;
 const DETUNE_LFO_DEPTH: f32 = 0.35; // detune spread wobble, fraction of base detune
 
 fn cents_to_ratio (cents: f32) -> f32 { 2f32.powf(cents / 1200.0) }
 
-// Fixed defaults, formerly ReeseParams::default() -- seeded directly into
-// the Shared cells below now that there's no separate snapshot/handle shape.
 const DEFAULT_DETUNE:    f32 = 24.0; // unison spread, cents
 const DEFAULT_SUB_LEVEL: f32 = 0.5;
 const DEFAULT_DRIVE:     f32 = 3.0;  // pre-filter tanh saturation
-const DEFAULT_CUTOFF:    f32 = 0.6;  // macro 0..1, scaled by live `filter` signal (see growl.rs precedent)
+const DEFAULT_CUTOFF:    f32 = 0.6;
 const DEFAULT_RESONANCE: f32 = 1.2;  // filter Q
-const DEFAULT_LFO_RATE:  f32 = 0.3;  // Hz
-const DEFAULT_LFO_DEPTH: f32 = 0.35; // 0..1, drives both cutoff and detune wobble
-const DEFAULT_WIDTH:     f32 = 0.7;  // base stereo spread, 0..1, added to live `width` signal
+const DEFAULT_LFO_RATE:  f32 = 0.3;
+const DEFAULT_LFO_DEPTH: f32 = 0.35;
+const DEFAULT_WIDTH:     f32 = 0.7;
+
+const WIDTH_TO_LFO_RATE: f32 = 2.0;
+const WIDTH_TO_DETUNE:   f32 = 2.0;
+const FILTER_TO_CUTOFF:  f32 = 6.0;
 
 #[derive(Clone)]
 pub struct ReeseVoice {
@@ -57,12 +59,11 @@ pub struct ReeseVoice {
     pub resonance_input: Shared,
     pub lfo_rate_input:  Shared,
     pub lfo_depth_input: Shared,
-    pub width_input:     Shared,
 
-    pub freq_mult_live: Shared,
-    pub detune_live:    Shared,
-    pub width_live:     Shared,
-    pub cutoff_live:    Shared,
+    pub drive_live:      Shared,
+    pub lfo_rate_live:   Shared,
+    pub detune_live:     Shared,
+    pub cutoff_live:     Shared,
 
     thump:         ThumpMod,
     thump_signal:  f32,
@@ -85,12 +86,11 @@ pub struct ReeseView {
     pub resonance_input: Shared,
     pub lfo_rate_input:  Shared,
     pub lfo_depth_input: Shared,
-    pub width_input:     Shared,
 
-    pub freq_mult_live: Shared,
-    pub detune_live:    Shared,
-    pub width_live:     Shared,
-    pub cutoff_live:    Shared,
+    pub drive_live:      Shared,
+    pub lfo_rate_live:   Shared,
+    pub detune_live:     Shared,
+    pub cutoff_live:     Shared,
 }
 
 impl ReeseView {
@@ -105,7 +105,6 @@ impl ReeseView {
             ("resonance_input", self.resonance_input.value()),
             ("lfo_rate_input",  self.lfo_rate_input.value()),
             ("lfo_depth_input", self.lfo_depth_input.value()),
-            ("width_input",     self.width_input.value()),
         ]
     }
 
@@ -119,7 +118,6 @@ impl ReeseView {
                 "resonance_input" => self.resonance_input.set_value(*value),
                 "lfo_rate_input"  => self.lfo_rate_input.set_value(*value),
                 "lfo_depth_input" => self.lfo_depth_input.set_value(*value),
-                "width_input"     => self.width_input.set_value(*value),
                 _ => {},
             }
         }
@@ -136,10 +134,9 @@ impl ReeseVoice {
             resonance_input: self.resonance_input.clone(),
             lfo_rate_input:  self.lfo_rate_input.clone(),
             lfo_depth_input: self.lfo_depth_input.clone(),
-            width_input:     self.width_input.clone(),
-            freq_mult_live:  self.freq_mult_live.clone(),
+            drive_live:      self.drive_live.clone(),
+            lfo_rate_live:   self.lfo_rate_live.clone(),
             detune_live:     self.detune_live.clone(),
-            width_live:      self.width_live.clone(),
             cutoff_live:     self.cutoff_live.clone(),
         }
     }
@@ -165,12 +162,11 @@ impl ReeseVoice {
             resonance_input: shared(DEFAULT_RESONANCE),
             lfo_rate_input:  shared(DEFAULT_LFO_RATE),
             lfo_depth_input: shared(DEFAULT_LFO_DEPTH),
-            width_input:     shared(DEFAULT_WIDTH),
 
-            freq_mult_live: shared(0.0),
-            detune_live:    shared(0.0),
-            width_live:     shared(0.0),
-            cutoff_live:    shared(0.0),
+            drive_live:      shared(0.0),
+            lfo_rate_live:   shared(0.0),
+            detune_live:     shared(0.0),
+            cutoff_live:     shared(0.0),
 
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
             thump_signal: 0.0, filter_signal: 0.0, width_signal: 0.0, fuzz_signal: 0.0,
@@ -189,34 +185,30 @@ impl AudioNode for ReeseVoice {
         if selected != Self::INDEX { return Frame::from([0.0, 0.0]); }
 
         let freq_mult = self.thump.tick(self.thump_signal);
-        self.freq_mult_live.set_value(freq_mult);
         let freq = freq * freq_mult;
 
-        let lfo_val   = self.lfo.filter_mono(self.lfo_rate_input.value()); // -1..1
+        self.lfo_rate_live.set_value(self.lfo_rate_input.value() + (1.0 + WIDTH_TO_LFO_RATE * self.width_signal).clamp(0.0, 1.0));
+        let lfo_val   = self.lfo.filter_mono(self.lfo_rate_live.value());
         let lfo_depth = self.lfo_depth_input.value();
 
-        // Detune scales with pitch (ratio, not Hz offset), wobbled by the LFO,
-        // and widened live by hand span -- wide hands, wide unison spread.
         let width_signal = self.width_signal.clamp(0.0, 1.0);
         let detune = self.detune_input.value()
             * (1.0 + lfo_val * lfo_depth * DETUNE_LFO_DEPTH)
-            * (1.0 + width_signal);
+            * (1.0 + WIDTH_TO_DETUNE * width_signal);
         self.detune_live.set_value(detune);
-
-        // At width=0 every voice collapses to center (still beating, just mono).
-        let width = (self.width_input.value() + self.width_signal).clamp(0.0, 1.0);
-        self.width_live.set_value(width);
 
         let mut mix_l = 0.0f32;
         let mut mix_r = 0.0f32;
+
         for v in 0..VOICES {
             let spread = self.spread[v];
             let ratio  = cents_to_ratio(spread * detune);
             let sample = self.unison[v].filter_mono(freq * ratio);
-            let lr = self.unison_pan[v].tick(&Frame::from([sample, spread * width]));
+            let lr = self.unison_pan[v].tick(&Frame::from([sample, spread * DEFAULT_WIDTH]));
             mix_l += lr[0];
             mix_r += lr[1];
         }
+
         let norm = 1.0 / (VOICES as f32).sqrt();
         mix_l *= norm;
         mix_r *= norm;
@@ -228,14 +220,14 @@ impl AudioNode for ReeseVoice {
         mix_r += sub;
 
         // Live `fuzz` signal boosts drive on top of the macro knob.
-        let drive = (self.drive_input.value() * (1.0 + self.fuzz_signal.clamp(0.0, 1.0))).max(1.0);
-        let shaped_l = (mix_l * drive).tanh();
-        let shaped_r = (mix_r * drive).tanh();
+        let drive = (self.drive_input.value() * (1.0 + 2.0 * self.fuzz_signal.clamp(0.0, 1.0))).max(1.0);
+        self.drive_live.set_value(drive);
+        let shaped_l = (mix_l * self.drive_live.value()).tanh();
+        let shaped_r = (mix_r * self.drive_live.value()).tanh();
 
         // Cutoff driven by the macro knob (scaled by live `filter` signal) and the LFO.
-        let cutoff_macro = (self.cutoff_input.value() * self.filter_signal).clamp(0.0, 1.0);
-        let cutoff_base  = linexp(0.0, 1.0, CUTOFF_LO, CUTOFF_HI, cutoff_macro);
-        let cutoff_hz    = (cutoff_base * 2f32.powf(lfo_val * lfo_depth * LFO_DEPTH_OCTAVES)).clamp(20.0, 18_000.0);
+        let cutoff_base  = self.cutoff_input.value() * 2f32.powf(lfo_val * lfo_depth * LFO_DEPTH);
+        let cutoff_hz  = linexp(0.0, 1.0, CUTOFF_LO, CUTOFF_HI, cutoff_base * (1.0 + FILTER_TO_CUTOFF * self.filter_signal)).clamp(20.0, 18_000.0);
         self.cutoff_live.set_value(cutoff_hz);
         let q = self.resonance_input.value();
 
@@ -281,7 +273,6 @@ impl Voice for ReeseVoice {
             5 => self.resonance_input.set_value(0.3 + value * 2.7),
             6 => self.lfo_rate_input.set_value(0.05 + value * 2.95),
             7 => self.lfo_depth_input.set_value(value),
-            8 => self.width_input.set_value(value),
             _ => {},
         }
     }
