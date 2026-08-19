@@ -158,7 +158,7 @@ fn draw_home_button (canvas: &mut Canvas, x: f32, y: f32, radius: f32, angle: f3
 }
 
 
-fn draw_bend (canvas: &mut Canvas, sep: f32, left_angle: f32, right_angle: f32, left: u32, right: u32, y: u32, r: f32, level: f32) {
+fn draw_bend (canvas: &mut Canvas, sep: f32, left_angle: f32, right_angle: f32, left: u32, right: u32, y: u32, r: f32, trigger_total: f32) {
     let p1 = (left  as f32,  y as f32);
     let p2 = (left  as f32 + r * left_angle.cos(),  y as f32 - r * left_angle.sin());
     let p3 = (right as f32 - r * right_angle.cos(), y as f32 + r * right_angle.sin());
@@ -176,7 +176,7 @@ fn draw_bend (canvas: &mut Canvas, sep: f32, left_angle: f32, right_angle: f32, 
         canvas.set_colored(x as u32, 2 + y as u32, PixelColor::White);
 
         for n in 0..m {
-            let (j, c) = breakup(level, 4.0);
+            let (j, c) = breakup(trigger_total, 4.0);
             let c = electric(j.abs() / 3.0);
             let dy = y + 3.0 * j * (t*PI).sin().powf(2.0) - m as f32 / 2.0 + n as f32;
             canvas.set_colored(x as u32, 2 + dy as u32, c);
@@ -230,14 +230,14 @@ pub fn draw_main_panel (y: u16, width: u16, zgicabra: &Zgicabra) {
         draw_wand(&mut canvas, zgicabra.left,  width_f*1.0/4.0, height_f/2.0, width_f/6.0);
         draw_wand(&mut canvas, zgicabra.right, width_f*3.0/4.0, height_f/2.0, width_f/6.0);
 
-        if zgicabra.level > 0.0  {
+        if zgicabra.trigger_total > 0.0 {
             draw_bend(&mut canvas, zgicabra.separation,
                       zgicabra.left.twist, zgicabra.right.twist,
                       (width_f*1.0/4.0) as u32,
                       (width_f*3.0/4.0) as u32,
                       (height_f/2.0) as u32,
                       width_f/6.0,
-                      zgicabra.level);
+                      zgicabra.trigger_total);
         }
     } else {
         draw_wand_fixed(&mut canvas, zgicabra.left,  width_f*1.0/4.0, height_f/2.0, width_f/6.0);
@@ -253,9 +253,9 @@ pub fn draw_main_panel (y: u16, width: u16, zgicabra: &Zgicabra) {
     let stripe_length = (width - banner_text.len() as u16) / 2;
 
     print!("{}{}{}{}", goto(1,y),
-        barcode_string(stripe_length.into(), zgicabra.level == 0.0),
+        barcode_string(stripe_length.into(), zgicabra.trigger_total == 0.0),
         banner_text,
-        barcode_string(stripe_length.into(), zgicabra.level == 0.0));
+        barcode_string(stripe_length.into(), zgicabra.trigger_total == 0.0));
 
     let phase = zgicabra.seq_num as usize % 128;
     let step = (phase * LEVELS.len() / 128).min(LEVELS.len() - 1);

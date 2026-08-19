@@ -15,6 +15,7 @@
   value to determine index of selected voice, so that there is one place
   to rearrange the voice list (zgicabra.rs)
 - Release note at trigger zenith
+  - Re-trigger note on return before full release?
 
 - Voices
   - Can ThumpMod be a trait?

@@ -109,6 +109,11 @@ pub fn ease_out (t: f32) -> f32 {
     1.0 - ease_in(1.0 - t)
 }
 
+pub fn unlerp (a: f32, b: f32, x: f32) -> f32 {
+    if b == a { return 0.0; }
+    return (x - a) / (b - a);
+}
+
 
 // CLI
 

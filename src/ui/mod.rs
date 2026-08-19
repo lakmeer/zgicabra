@@ -43,16 +43,16 @@ pub fn draw_all (
 
     draw_main_panel(1, TEXT_WIDTH, zgicabra);
 
-    print!("{}{}", goto(1, AUDIO_PANEL_Y), barcode_string((TEXT_WIDTH - 3).into(), zgicabra.level == 0.0));
+    print!("{}{}", goto(1, AUDIO_PANEL_Y), barcode_string((TEXT_WIDTH - 3).into(), zgicabra.trigger_total == 0.0));
 
     draw_voice_panel(AUDIO_PANEL_Y, zgicabra, audio);
 
-    print!("{}{}", goto(1, DEBUG_PANEL_Y), barcode_string((TEXT_WIDTH - 0).into(), zgicabra.level == 0.0));
+    print!("{}{}", goto(1, DEBUG_PANEL_Y), barcode_string((TEXT_WIDTH - 0).into(), zgicabra.trigger_total == 0.0));
 
     draw_debug_panel(DEBUG_PANEL_Y, &zgicabra, &history, &delta_history);
 
     print!("{}{}", goto(1, BOTTOM_Y),
-        barcode_string(TEXT_WIDTH.into(), zgicabra.level == 0.0));
+        barcode_string(TEXT_WIDTH.into(), zgicabra.trigger_total == 0.0));
 
 }
 

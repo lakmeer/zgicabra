@@ -53,9 +53,6 @@ const ENVELOPE_RELEASE: f32 = 0.1;
 
 const AMP_MODEL: &str = "lowgain";
 
-// Index order matches zgicabra::Voice's enum (VoiceA=Reese, VoiceB=Growl,
-// VoiceC=Basic, VoiceD=Swarm) and Engine's voice_a/b/c/d fields -- used to
-// name persisted state files (see snapshot.rs's save_state/load_state).
 const VOICE_NAMES: [&str; 4] = ["Reese", "Growl", "Basic", "Swarm"];
 
 // Debug: captures snippet of cpal output stream to check non-zero output
@@ -211,6 +208,7 @@ impl AudioHandles {
 }
 
 pub struct AudioOutput {
+    level:             Shared,
     freq:              Shared,
     gate:              Shared,
     bend:              Shared,
@@ -242,6 +240,7 @@ impl AudioOutput {
     pub fn new () -> io::Result<AudioOutput> {
         println!("║ Starting native audio backend... ");
 
+        let level         = shared(1.0);
         let freq          = shared(110.0);
         let gate          = shared(GATE_OFF);
         let bend          = shared(0.0);
@@ -289,6 +288,7 @@ impl AudioOutput {
         let amp_model_r = nam::load_named_model(AMP_MODEL)?;
 
         let mut engine = Engine::new(
+            level.clone(),
             freq.clone(),
             gate.clone(),
             bend.clone(),
@@ -424,7 +424,7 @@ impl AudioOutput {
         println!("║ Native audio backend OK.");
 
         Ok(AudioOutput {
-            freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration,
+            level, freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration,
             handles,
             capture, errors, stream,
         })
@@ -478,6 +478,7 @@ fn pick_output_config (device: &cpal::Device, target_rate: u32) -> io::Result<cp
 // the fixed amp/reverb/limiter stages, combined with dry_sub at the very end
 // (dry_sub bypasses amp/reverb/limiter entirely).
 struct Engine {
+    level: Shared,
     freq: Shared,
     gate: Shared,
     bend: Shared,
@@ -498,16 +499,11 @@ struct Engine {
     voice_d: SwarmVoice,
     voice_selected: Shared,
 
-    // Set from build_stream (audio thread) when apply_cc touches the
-    // currently selected voice; cloned out to Handles before `self` moves
-    // into build_stream's closure (see AudioOutput::new).
     voice_dirty: [Arc<AtomicBool>; 4],
 
     main_sub_lvl:  Shared,
     dry_sub_lvl:   Shared,
 
-    // Two fully independent NamStage instances -- sharing one model across
-    // both channels would mix L/R WaveNet dilation state, not just save CPU.
     amp_l: nam::NamStage,
     amp_r: nam::NamStage,
     amp_bypass:    Shared,
@@ -525,14 +521,12 @@ struct Engine {
 
     master_vol: Shared,
 
-    // Second, independent MIDI connection carrying per-voice CC live-tuning
-    // -- see cc_input.rs. Drained once per cpal callback block in
-    // build_stream, right next to the existing on_block_start dispatch.
     cc_input: CcInput,
 }
 
 impl Engine {
     fn new (
+        level: Shared,
         freq: Shared,
         gate: Shared,
         bend: Shared,
@@ -579,7 +573,8 @@ impl Engine {
         let amp_r = nam::NamStage::new(vec![Some(amp_model_r)], shared(0.0));
 
         Engine {
-            freq, gate, bend, width, filter, fuzz, thump_amt, velocity, acceleration,
+            freq, gate,
+            level, bend, width, filter, fuzz, thump_amt, velocity, acceleration,
             main_sub_tri: triangle(),
             dry_sub:      sine(),
             envelope: Box::new(adsr_live(ENVELOPE_ATTACK, 0.0, 1.0, ENVELOPE_RELEASE)),
@@ -697,8 +692,8 @@ impl Engine {
             r = rr;
         }
 
-        // Master volume is the very last stage, applied after dry_sub rejoins.
-        let vol = self.master_vol.value();
+        // Master volume is modulated by zgicabra level
+        let vol = self.master_vol.value() * self.level.value();
 
         (
             ((l + dry_sub) * vol).clamp(-1.0, 1.0),
@@ -794,6 +789,7 @@ impl AudioOutput {
     }
 
     pub fn handle_signal (&mut self, signal: &SignalState) {
+        self.level.set_value(signal.level);
         self.bend.set_value(signal.bend);
         self.width.set_value(signal.width);
         self.filter.set_value(signal.filter);

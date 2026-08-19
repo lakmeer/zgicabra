@@ -2,6 +2,6 @@ detune_input=50
 sub_level_input=0.5
 drive_input=1
 cutoff_input=0.1496063
-resonance_input=1.9795277
+resonance_input=1.9582677
 lfo_rate_input=0.65393704
 lfo_depth_input=0.35

@@ -175,6 +175,7 @@ impl NoteState {
 // State that is piped constantly to the sound engine
 #[derive(Debug, Clone, Copy)]
 pub struct SignalState {
+    pub level:        f32,
     pub bend:         f32,
     pub filter:       f32,
     pub fuzz:         f32,
@@ -187,6 +188,7 @@ pub struct SignalState {
 impl SignalState {
     pub fn new() -> SignalState {
         SignalState {
+            level:        0.0,
             bend:         0.0,
             filter:       0.0,
             fuzz:         0.0,
@@ -221,7 +223,11 @@ pub enum DeltaEvent {
     WidthLevel(f32),
     VoiceChange(Voice),
     RootChange(Note),
-    Panic()
+    Panic(),
+    BumperDown(Hand),
+    BumperUp(Hand),
+    HomeDown(Hand),
+    HomeUp(Hand),
 }
 
 
@@ -235,8 +241,8 @@ pub struct Zgicabra {
     pub right: Wand,
     pub separation: f32,
     pub docked: bool,
-    pub level: f32,
     pub seq_num: u8,
+    pub trigger_total: f32,
     pub most_recent_wand: Hand,
     pub note: NoteState,
     pub signal: SignalState,
@@ -250,8 +256,8 @@ impl Zgicabra {
             right: Wand::new(),
             separation: 0.0,
             docked: false,
-            level: 0.0,
             seq_num: 0,
+            trigger_total: 0.0,
             most_recent_wand: Hand::Neither,
             note: NoteState::new(),
             signal: SignalState::new(),
@@ -288,7 +294,7 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     curr_state.left.scalar_acc   = (hyp(&curr_state.left.acc)   + &prev_state.left.scalar_acc)   / 2.0;
     curr_state.right.scalar_acc  = (hyp(&curr_state.right.acc)  + &prev_state.right.scalar_acc)  / 2.0;
 
-    // Width
+    // Separation
 
     curr_state.separation = (curr_state.left.pos[0] - curr_state.right.pos[0]).abs();
 
@@ -297,21 +303,27 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     curr_state.note.bend  = curr_state.left.twist/2.5 - curr_state.right.twist/2.5;
     curr_state.note.bend  = (curr_state.note.bend.powf(3.0) * 0.5).clamp(-1.0, 1.0);
 
-    let trigger_total = curr_state.left.trigger + curr_state.right.trigger;
-    curr_state.level  = smoothstep(0.0, 1.0, trigger_total.clamp(0.0, 1.0));
-
     // Trigger state
 
     let left_trigger_start  = curr_state.left.trigger  > prev_state.left.trigger  && prev_state.left.trigger  == 0.0;
-    let left_trigger_end    = prev_state.left.trigger  > curr_state.left.trigger  && curr_state.left.trigger  == 0.0;
+    let left_trigger_end    = curr_state.left.trigger  < prev_state.left.trigger  && curr_state.left.trigger  == 0.0;
+    let left_trigger_rel    = (curr_state.left.trigger - prev_state.left.trigger) < 0.0;
+
     let right_trigger_start = curr_state.right.trigger > prev_state.right.trigger && prev_state.right.trigger == 0.0;
-    let right_trigger_end   = prev_state.right.trigger > curr_state.right.trigger && curr_state.right.trigger == 0.0;
+    let right_trigger_end   = curr_state.right.trigger < prev_state.right.trigger && curr_state.right.trigger == 0.0;
+    let right_trigger_rel   = (curr_state.right.trigger - prev_state.right.trigger) < 0.0;
 
     if left_trigger_start { curr_state.most_recent_wand = Hand::Left; }
     if right_trigger_start { curr_state.most_recent_wand = Hand::Right; }
     if left_trigger_end && curr_state.right.trigger > 0.0 { curr_state.most_recent_wand = Hand::Right; }
     if right_trigger_end && curr_state.left.trigger > 0.0 { curr_state.most_recent_wand = Hand::Left; }
-    if curr_state.level == 0.0 { curr_state.most_recent_wand = Hand::Neither; }
+
+    curr_state.trigger_total = smoothstep(0.0, 1.0, (curr_state.left.trigger + curr_state.right.trigger).clamp(0.0, 1.0));
+
+    if curr_state.trigger_total == 0.0 {
+        curr_state.most_recent_wand = Hand::Neither;
+    }
+
 
     // Notes
 
@@ -324,12 +336,12 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
         }
     }
 
-    if curr_state.note.on && (left_trigger_end && curr_state.right.trigger == 0.0) {
+    if curr_state.note.on && (left_trigger_rel && curr_state.right.trigger == 0.0) {
         deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
         curr_state.note.on = false;
     }
 
-    if curr_state.note.on && (right_trigger_end && curr_state.left.trigger == 0.0) {
+    if curr_state.note.on && (right_trigger_rel && curr_state.left.trigger == 0.0) {
         deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
         curr_state.note.on = false;
     }
@@ -349,16 +361,16 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
 
     fn each_wand (prev: Wand, curr: Wand, deltas: &mut Vec<DeltaEvent>) {
         if curr.bumper && !prev.bumper {
-            //deltas.push(DeltaEvent::BumperDown(curr.hand));
+            deltas.push(DeltaEvent::BumperDown(curr.hand));
         }
         if !curr.bumper && prev.bumper {
-            //deltas.push(DeltaEvent::BumperUp(curr.hand));
+            deltas.push(DeltaEvent::BumperUp(curr.hand));
         }
         if curr.home && !prev.home {
-            //deltas.push(DeltaEvent::HomeDown(curr.hand));
+            deltas.push(DeltaEvent::HomeDown(curr.hand));
         }
         if !curr.home && prev.home {
-            //deltas.push(DeltaEvent::HomeUp(curr.hand));
+            deltas.push(DeltaEvent::HomeUp(curr.hand));
         }
     }
 
@@ -432,6 +444,8 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     }
 
 
+    // SignalState
+
     curr_state.signal.bend = curr_state.note.bend;
 
     // Filter is rot[0] of whichever wand was triggered most recently.
@@ -443,19 +457,16 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     };
     curr_state.signal.filter = 0.3 + 0.7 * filter;
 
-    // Physical hand separation ranges ~50 (fingers touching) to ~1500 (full
-    // arm span); normalized and biased down slightly to avoid DC hum.
+    // Physical hand separation ranges ~50 (fingers touching) to ~1500 (full arm span)
+    // Sets zero point at about shoulder width. Final range approx 0.3..1.0
     curr_state.signal.width = (curr_state.separation - 500.0) / 1300.0;
 
+    // Fade level as width goes below zero
+    curr_state.signal.level = smoothstep(0.0, 1.0, unlerp(-0.3, -0.16, curr_state.signal.width).clamp(0.0, 1.0));
+
     // Whichever wand is moving/accelerating harder, not just most-recently-triggered.
-    let mut velocity: f32 = 0.0;
-    let mut acceleration: f32 = 0.0;
-    if curr_state.level > 0.0 {
-        velocity     = curr_state.left.scalar_vel.max(curr_state.right.scalar_vel);
-        acceleration = curr_state.left.scalar_acc.max(curr_state.right.scalar_acc);
-    }
-    curr_state.signal.velocity     = velocity;
-    curr_state.signal.acceleration = acceleration;
+    curr_state.signal.velocity     = curr_state.left.scalar_vel.max(curr_state.right.scalar_vel);
+    curr_state.signal.acceleration = curr_state.left.scalar_acc.max(curr_state.right.scalar_acc);
 
 }
 
