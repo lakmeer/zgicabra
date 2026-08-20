@@ -2,8 +2,6 @@
 use std::f32::consts::PI;
 use rgb::RGB8;
 
-use textplots::{ColorPlot,Chart,Shape};
-
 use drawille::{Canvas,PixelColor};
 use drawille::PixelColor::TrueColor;
 

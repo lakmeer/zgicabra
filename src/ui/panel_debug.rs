@@ -1,4 +1,4 @@
-use textplots::{ColorPlot,Chart,Shape};
+use crate::plot::{ColorPlot,Chart,Shape};
 
 use crate::tools::*;
 use crate::hydra::HydraState;
@@ -13,11 +13,48 @@ use super::utils::*;
 // Debug Panel
 //
 // - Wand position & derivatives graph
-// - Raw zgicabra state 
+// - Raw zgicabra state
 // - Recent DeltaEvents
 //
 
-fn draw_graph (y: u16, history: &Vec<Zgicabra>) {
+pub fn draw_debug_panel (y: u16, zgicabra: &Zgicabra, history: &Vec<Zgicabra>, delta_history: &Vec<DeltaEvent>) {
+    const RHS:u16 = 50;
+
+    draw_graph(RHS as u32 - 4, 23, y, &history);
+
+    println!("{}Root:    {:>17}",   goto(RHS, y +  2), format_note(zgicabra.note.root));
+    println!("{}Current: {:>17}",   goto(RHS, y +  3), format_note(zgicabra.note.current));
+    println!("{}Pitch:   {:>17.4}", goto(RHS, y +  4), zgicabra.note.bend);
+    println!("{}Filter:  {:>17.4}", goto(RHS, y +  5), zgicabra.signal.filter);
+    println!("{}Fuzz:    {:>17.4}", goto(RHS, y +  6), zgicabra.signal.fuzz);
+    println!("{}Width:   {:>17.4}", goto(RHS, y +  7), zgicabra.signal.width);
+    println!("{}Thump:   {:>17.4}", goto(RHS, y +  8), zgicabra.signal.thump);
+    println!("{}Level:   {:>17.4}", goto(RHS, y +  9), zgicabra.signal.level);
+    println!("{}Total:   {:>17.4}", goto(RHS, y + 10), zgicabra.trigger_total);
+
+    print!("{}{}", goto(RHS, y), termion::color::Fg(termion::color::White));
+
+    for row in 15..25 {
+        match delta_history.iter().rev().nth(row) {
+            Some(e) => println!("{}- {:?}", goto(RHS, y + row as u16), e),
+            None    => println!("{}-",      goto(RHS, y + row as u16)),
+        }
+    }
+
+    print!("{}{:^40}", goto(0, 19), format!("[{:.3} {:.3} {:.3} {:.3}]",
+        zgicabra.left.rot[0],
+        zgicabra.left.rot[1],
+        zgicabra.left.rot[2],
+        zgicabra.left.rot[3]));
+    print!("{}{:^40}", goto(40, 19), format!("[{:.2} {:.3} {:.3} {:.3}]",
+        zgicabra.right.rot[0],
+        zgicabra.right.rot[1],
+        zgicabra.right.rot[2],
+        zgicabra.right.rot[3]));
+
+}
+
+fn draw_graph (w: u32, h: u32, y: u16, history: &Vec<Zgicabra>) {
 
     let n = history.len();
 
@@ -42,8 +79,8 @@ fn draw_graph (y: u16, history: &Vec<Zgicabra>) {
         }
     }
 
-    print!("{}", goto(1, y+2));
-    Chart::new_with_y_range(70, 90, 0.0, n as f32, -600.0, 600.0)
+    Chart::new(w, h, 0.0, n as f32, -600.0, 600.0)
+        .position(2, y + 2)
         .linecolorplot(&Shape::Lines(&left_acc),  GREEN_2)
         .linecolorplot(&Shape::Lines(&left_vel),  GREEN_1)
         .linecolorplot(&Shape::Lines(&left_pos),  GREEN_0)
@@ -51,57 +88,4 @@ fn draw_graph (y: u16, history: &Vec<Zgicabra>) {
         .linecolorplot(&Shape::Lines(&right_vel),  BLUE_0)
         .linecolorplot(&Shape::Lines(&right_pos),  BLUE_1)
         .display();
-
-    // Blank right side for next draw phase
-    for i in y+1..y+25 {
-        print!("{}{}{}", 
-            goto(38, i),
-            termion::color::Fg(termion::color::White), 
-            " ".repeat(38));
-    }
-}
-
-fn draw_events (x: u16, y: u16, delta_history: &Vec<DeltaEvent>) {
-}
-
-fn draw_note_state (x: u16, y: u16, state: &Zgicabra) {
-}
-
-
-pub fn draw_debug_panel (y: u16, zgicabra: &Zgicabra, history: &Vec<Zgicabra>, delta_history: &Vec<DeltaEvent>) {
-    const RHS:u16 = 40;
-
-    draw_graph(y, &history);
-
-    println!("{}Root:    {:>17}",   goto(RHS, y +  2), format_note(zgicabra.note.root));
-    println!("{}Current: {:>17}",   goto(RHS, y +  3), format_note(zgicabra.note.current));
-    println!("{}Pitch:   {:>17.4}", goto(RHS, y +  4), zgicabra.note.bend);
-    println!("{}Filter:  {:>17.4}", goto(RHS, y +  5), zgicabra.signal.filter);
-    println!("{}Fuzz:    {:>17.4}", goto(RHS, y +  6), zgicabra.signal.fuzz);
-    println!("{}Width:   {:>17.4}", goto(RHS, y +  7), zgicabra.signal.width);
-    println!("{}Thump:   {:>17.4}", goto(RHS, y +  8), zgicabra.signal.thump);
-    println!("{}Level:   {:>17.4}", goto(RHS, y +  9), zgicabra.signal.level);
-    println!("{}Total:   {:>17.4}", goto(RHS, y + 10), zgicabra.trigger_total);
-
-    print!("{}{}", goto(RHS, y), termion::color::Fg(termion::color::White));
-
-    for row in 12..22 {
-        match delta_history.iter().rev().nth(row) {
-            Some(e) => println!("{}- {:?}", goto(RHS, y + row as u16), e),
-            None    => println!("{}-",      goto(RHS, y + row as u16)),
-        }
-    }
-
-    /*
-    print!("{}{:^40}", goto(0, 19), format!("[{:.3} {:.3} {:.3} {:.3}]",
-        zgicabra.left.rot[0],
-        zgicabra.left.rot[1],
-        zgicabra.left.rot[2],
-        zgicabra.left.rot[3]));
-    print!("{}{:^40}", goto(40, 19), format!("[{:.2} {:.3} {:.3} {:.3}]",
-        zgicabra.right.rot[0],
-        zgicabra.right.rot[1],
-        zgicabra.right.rot[2],
-        zgicabra.right.rot[3]));
-    */
 }

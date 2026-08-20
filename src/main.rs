@@ -11,6 +11,7 @@ mod hydra;
 mod zgicabra;
 mod ui;
 mod audio;
+mod plot;
 
 use audio::AudioOutput;
 

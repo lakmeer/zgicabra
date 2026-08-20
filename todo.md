@@ -16,6 +16,7 @@
   to rearrange the voice list (zgicabra.rs)
 - Release note at trigger zenith
   - Re-trigger note on return before full release?
+- Rescale width to zero at fade point; update level to start at zero
 
 - Voices
   - Can ThumpMod be a trait?
@@ -39,6 +40,11 @@
   - SamplePlayer
     - Kick sample
     - Bass sample
+
+- Engine
+  - More specific system status
+    - Buffer underruns
+    - ALSA connection status
 
 - FX
   - OTT crusher 
