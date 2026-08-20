@@ -9,6 +9,8 @@
 // cutoff together; tanh soft-clip sits pre-filter for harmonic richness.
 //
 
+use std::sync::Arc;
+
 use fundsp::prelude64::*;
 
 use crate::tools::linexp;
@@ -16,6 +18,20 @@ use crate::zgicabra::SignalState;
 use super::voice::{Voice, ThumpMod};
 
 const VOICES: usize = 8; // odd -- center voice lands at zero detune/pan
+
+// Impact/kick sample embedded straight into the binary at compile time --
+// same reasoning as nam.rs's NAM_MODELS (see there): the boot-time systemd
+// service execs zgicabra from target/release with no reliable runtime wav/
+// folder alongside it.
+static IMPACT_SAMPLE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/wav/kick_dry.wav"));
+
+// Decodes the embedded kick sample into a one-shot mono WavePlayer via
+// fundsp's own playwave() builtin (no loop_point -- it plays through once,
+// then sits silent until reset()).
+fn load_impact_player () -> An<WavePlayer> {
+    let wave = Wave::load_slice(IMPACT_SAMPLE).expect("failed to decode embedded wav/kick_dry.wav");
+    playwave(&Arc::new(wave), 0, None)
+}
 
 const SUB_RATIO: f32 = 0.5;         // one octave down
 const SUB_DETUNE_CENTS: f32 = -6.0; // keeps the sub from phase-locking to voice 0
@@ -65,6 +81,11 @@ pub struct ReeseVoice {
     pub detune_live:     Shared,
     pub cutoff_live:     Shared,
 
+    impact_player:           An<WavePlayer>,
+    impact_trigger:          Shared, // clone of thump_trigger -- bumped once per NoteStart
+    impact_trigger_seen:     f32,
+    pub impact_level_input:  Shared,
+
     thump:         ThumpMod,
     thump_signal:  f32,
     filter_signal: f32,
@@ -91,6 +112,8 @@ pub struct ReeseView {
     pub lfo_rate_live:   Shared,
     pub detune_live:     Shared,
     pub cutoff_live:     Shared,
+
+    pub impact_level_input: Shared,
 }
 
 impl ReeseView {
@@ -105,19 +128,21 @@ impl ReeseView {
             ("resonance_input", self.resonance_input.value()),
             ("lfo_rate_input",  self.lfo_rate_input.value()),
             ("lfo_depth_input", self.lfo_depth_input.value()),
+            ("impact_level_input", self.impact_level_input.value()),
         ]
     }
 
     pub fn apply (&self, fields: &[(String, f32)]) {
         for (name, value) in fields {
             match name.as_str() {
-                "detune_input"    => self.detune_input.set_value(*value),
-                "sub_level_input" => self.sub_level_input.set_value(*value),
-                "drive_input"     => self.drive_input.set_value(*value),
-                "cutoff_input"    => self.cutoff_input.set_value(*value),
-                "resonance_input" => self.resonance_input.set_value(*value),
-                "lfo_rate_input"  => self.lfo_rate_input.set_value(*value),
-                "lfo_depth_input" => self.lfo_depth_input.set_value(*value),
+                "detune_input"       => self.detune_input.set_value(*value),
+                "sub_level_input"    => self.sub_level_input.set_value(*value),
+                "drive_input"        => self.drive_input.set_value(*value),
+                "cutoff_input"       => self.cutoff_input.set_value(*value),
+                "resonance_input"    => self.resonance_input.set_value(*value),
+                "lfo_rate_input"     => self.lfo_rate_input.set_value(*value),
+                "lfo_depth_input"    => self.lfo_depth_input.set_value(*value),
+                "impact_level_input" => self.impact_level_input.set_value(*value),
                 _ => {},
             }
         }
@@ -138,6 +163,7 @@ impl ReeseVoice {
             lfo_rate_live:   self.lfo_rate_live.clone(),
             detune_live:     self.detune_live.clone(),
             cutoff_live:     self.cutoff_live.clone(),
+            impact_level_input: self.impact_level_input.clone(),
         }
     }
 
@@ -167,6 +193,11 @@ impl ReeseVoice {
             lfo_rate_live:   shared(0.0),
             detune_live:     shared(0.0),
             cutoff_live:     shared(0.0),
+
+            impact_player:       load_impact_player(),
+            impact_trigger:      thump_trigger.clone(),
+            impact_trigger_seen: thump_trigger.value(),
+            impact_level_input:  shared(1.0),
 
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
             thump_signal: 0.0, filter_signal: 0.0, width_signal: 0.0, fuzz_signal: 0.0,
@@ -234,7 +265,15 @@ impl AudioNode for ReeseVoice {
         let out_l = self.filter_l.tick(&Frame::from([shaped_l, cutoff_hz, q]))[0];
         let out_r = self.filter_r.tick(&Frame::from([shaped_r, cutoff_hz, q]))[0];
 
-        Frame::from([out_l, out_r])
+        let trigger = self.impact_trigger.value();
+        if trigger != self.impact_trigger_seen {
+            self.impact_trigger_seen = trigger;
+            self.impact_player.reset();
+        }
+
+        let impact_out = self.impact_player.get_mono() * self.impact_level_input.value() * self.thump_signal;
+
+        Frame::from([out_l + impact_out, out_r + impact_out])
     }
 
     fn set_sample_rate (&mut self, sample_rate: f64) {
@@ -262,7 +301,8 @@ impl Voice for ReeseVoice {
     // same set of knobs (CC1 being reserved for the global Mod Wheel ->
     // filter mapping, see hydra/midi.rs) so a controller with only 8 physical
     // knobs can still reach them live -- `width` doesn't fit in that 7-slot
-    // bank, so it's only reachable via CC27 here.
+    // bank, so it's only reachable via CC27 here. impact_level_input has no
+    // CC of its own.
     fn apply_cc (&mut self, cc: u8, value: f32) {
         let value = value.clamp(0.0, 1.0);
         match cc {

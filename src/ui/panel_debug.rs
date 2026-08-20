@@ -41,16 +41,16 @@ pub fn draw_debug_panel (y: u16, zgicabra: &Zgicabra, history: &Vec<Zgicabra>, d
         }
     }
 
-    print!("{}{:^40}", goto(0, 19), format!("[{:.3} {:.3} {:.3} {:.3}]",
+    print!("{}[{:>5.2} {:>5.2} {:>5.2} {:>5.2} ]", goto(RHS, y + 12), 
         zgicabra.left.rot[0],
         zgicabra.left.rot[1],
         zgicabra.left.rot[2],
-        zgicabra.left.rot[3]));
-    print!("{}{:^40}", goto(40, 19), format!("[{:.2} {:.3} {:.3} {:.3}]",
+        zgicabra.left.rot[3]);
+    print!("{}[{:>5.2} {:>5.2} {:>5.2} {:>5.2} ]", goto(RHS, y + 13), 
         zgicabra.right.rot[0],
         zgicabra.right.rot[1],
         zgicabra.right.rot[2],
-        zgicabra.right.rot[3]));
+        zgicabra.right.rot[3]);
 
 }
 

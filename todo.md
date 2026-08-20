@@ -2,8 +2,6 @@
 # TODO
 
 - Wait for hydra docking on startup?
-- Fade master when width is negative
-- Clamp master when wands are docked
 - Filter audibly snaps back to neutral when note released
   - Still?
 - Add DeltaEvent::NoteRetrig -> voices can decide what it means
@@ -17,6 +15,7 @@
 - Release note at trigger zenith
   - Re-trigger note on return before full release?
 - Rescale width to zero at fade point; update level to start at zero
+- Add compressor visualisation
 
 - Voices
   - Can ThumpMod be a trait?
@@ -39,6 +38,7 @@
     - drive noy audible
   - SamplePlayer
     - Kick sample
+      - Pitch adjust
     - Bass sample
 
 - Engine

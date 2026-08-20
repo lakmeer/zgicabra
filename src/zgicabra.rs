@@ -461,8 +461,15 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     // Sets zero point at about shoulder width. Final range approx 0.3..1.0
     curr_state.signal.width = (curr_state.separation - 500.0) / 1300.0;
 
-    // Fade level as width goes below zero
-    curr_state.signal.level = smoothstep(0.0, 1.0, unlerp(-0.3, -0.16, curr_state.signal.width).clamp(0.0, 1.0));
+    // Fade level as width goes below zero, unless wands are docked (for midi testing)
+    curr_state.signal.level =
+        if curr_state.docked {
+            1.0
+        } else {
+            smoothstep(0.0, 1.0, 
+                unlerp(-0.3, -0.16, curr_state.signal.width)
+                .clamp(0.0, 1.0))
+        };
 
     // Whichever wand is moving/accelerating harder, not just most-recently-triggered.
     curr_state.signal.velocity     = curr_state.left.scalar_vel.max(curr_state.right.scalar_vel);
