@@ -12,6 +12,7 @@ use crate::tools::*;
 
 mod tw;
 mod utils;
+mod comp_meter;
 mod panel_debug;
 mod panel_main;
 mod panel_voice;

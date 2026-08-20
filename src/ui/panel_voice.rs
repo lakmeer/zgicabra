@@ -4,6 +4,7 @@ use crate::zgicabra::Voice;
 use crate::audio::{AudioHandles,AudioErrors,SwarmView,GrowlView,ReeseView};
 
 use super::utils::*;
+use super::comp_meter::render_compressor_meter;
 
 
 //
@@ -78,11 +79,19 @@ fn draw_reese_panel (y: u16, reese: &ReeseView) {
     draw_range_label(2, y +  7, true, "lfo_rate",  reese.lfo_rate_input.value(),  0.0, 1.0);
     draw_range_label(2, y +  8, true, "lfo_depth", reese.lfo_depth_input.value(), 0.0, 1.0);
     draw_range_label(2, y +  9, true, "impact_level", reese.impact_level_input.value(), 0.0, 1.0);
+    draw_range_label(2, y + 10, true, "crush",        reese.crush_input.value(), -36.0, 0.0);
 
-    draw_range_label(2, y + 11, false, "drive",    reese.drive_live.value(),      0.0, 5.0);
-    draw_range_label(2, y + 12, false, "lfo_rate", reese.lfo_rate_live.value(),   0.0, 5.0);
-    draw_range_label(2, y + 13, false, "detune",   reese.detune_live.value(),   0.0, 200.0);
-    draw_range_label(2, y + 14, false, "cutoff",   reese.cutoff_live.value(),  0.0, 6000.0);
+    draw_range_label(2, y + 12, false, "drive",    reese.drive_live.value(),      0.0, 5.0);
+    draw_range_label(2, y + 13, false, "lfo_rate", reese.lfo_rate_live.value(),   0.0, 5.0);
+    draw_range_label(2, y + 14, false, "detune",   reese.detune_live.value(),   0.0, 200.0);
+    draw_range_label(2, y + 15, false, "cutoff",   reese.cutoff_live.value(),  0.0, 6000.0);
+
+    let meter = render_compressor_meter(
+        reese.crush_env_live.value(),
+        reese.crush_out_live.value(),
+        reese.crush_input.value(),
+        reese.crush_gr_live.value());
+    print!("{}{:>13} {}", goto(2, y + 17), "crush", meter);
 }
 
 

@@ -16,6 +16,7 @@ use fundsp::prelude64::*;
 use crate::tools::linexp;
 use crate::zgicabra::SignalState;
 use super::voice::{Voice, ThumpMod};
+use super::crusher::Crusher;
 
 const VOICES: usize = 8; // odd -- center voice lands at zero detune/pan
 
@@ -61,6 +62,18 @@ const IMPACT_ENV_RELEASE: f32 = 0.01;   // trails off with the sample's decay
 const IMPACT_CUTOFF_POP:  f32 = 1000.0; // Hz added to cutoff at full impact envelope
 const IMPACT_DRIVE_POP:   f32 = 1.5;    // extra drive multiplier at full impact envelope
 
+const CRUSH_RATIO_DOWN:     f32 = 3.0;
+const CRUSH_THRESHOLD_UP:   f32 = -30.0;
+const CRUSH_RATIO_UP:       f32 = 2.0;
+const CRUSH_RELEASE:        f32 = 0.12;
+const CRUSH_MIX:            f32 = 0.5;
+const CRUSH_ATTACK:         f32 = 0.01;
+const CRUSH_DEPTH:          f32 = 1.0;
+const CRUSH_MAKEUP_DB:      f32 = 0.0;
+const DEFAULT_CRUSH_THRESH: f32 = -12.0; // dB
+const CRUSH_THRESH_MIN_DB:  f32 = -36.0; // CC8 = 1.0 -> heaviest crush
+const CRUSH_THRESH_MAX_DB:  f32 = 0.0;   // CC8 = 0.0 -> compressor barely engages
+
 #[derive(Clone)]
 pub struct ReeseVoice {
     unison:     [An<WaveSynth<U1>>; VOICES],
@@ -92,6 +105,14 @@ pub struct ReeseVoice {
     impact_trigger_seen:     f32,
     pub impact_level_input:  Shared,
 
+    crusher_l: Crusher,
+    crusher_r: Crusher,
+    pub crush_input: Shared, // threshold_down, dB -- CC8
+
+    pub crush_env_live: Shared, // meter telemetry, from crusher_l -- see ui panel
+    pub crush_out_live: Shared,
+    pub crush_gr_live:  Shared,
+
     thump:         ThumpMod,
     thump_signal:  f32,
     filter_signal: f32,
@@ -120,6 +141,12 @@ pub struct ReeseView {
     pub cutoff_live:     Shared,
 
     pub impact_level_input: Shared,
+
+    pub crush_input: Shared,
+
+    pub crush_env_live: Shared,
+    pub crush_out_live: Shared,
+    pub crush_gr_live:  Shared,
 }
 
 impl ReeseView {
@@ -135,6 +162,7 @@ impl ReeseView {
             ("lfo_rate_input",  self.lfo_rate_input.value()),
             ("lfo_depth_input", self.lfo_depth_input.value()),
             ("impact_level_input", self.impact_level_input.value()),
+            ("crush_input",        self.crush_input.value()),
         ]
     }
 
@@ -149,6 +177,7 @@ impl ReeseView {
                 "lfo_rate_input"     => self.lfo_rate_input.set_value(*value),
                 "lfo_depth_input"    => self.lfo_depth_input.set_value(*value),
                 "impact_level_input" => self.impact_level_input.set_value(*value),
+                "crush_input"        => self.crush_input.set_value(*value),
                 _ => {},
             }
         }
@@ -170,6 +199,10 @@ impl ReeseVoice {
             detune_live:     self.detune_live.clone(),
             cutoff_live:     self.cutoff_live.clone(),
             impact_level_input: self.impact_level_input.clone(),
+            crush_input:     self.crush_input.clone(),
+            crush_env_live:  self.crush_env_live.clone(),
+            crush_out_live:  self.crush_out_live.clone(),
+            crush_gr_live:   self.crush_gr_live.clone(),
         }
     }
 
@@ -205,6 +238,14 @@ impl ReeseVoice {
             impact_trigger:      thump_trigger.clone(),
             impact_trigger_seen: thump_trigger.value(),
             impact_level_input:  shared(1.0),
+
+            crusher_l: Crusher::new(CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_MIX),
+            crusher_r: Crusher::new(CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_MIX),
+            crush_input: shared(DEFAULT_CRUSH_THRESH),
+
+            crush_env_live: shared(0.0),
+            crush_out_live: shared(0.0),
+            crush_gr_live:  shared(0.0),
 
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
             thump_signal: 0.0, filter_signal: 0.0, width_signal: 0.0, fuzz_signal: 0.0,
@@ -292,7 +333,19 @@ impl AudioNode for ReeseVoice {
         let out_l = self.filter_l.tick(&Frame::from([shaped_l, cutoff_hz, q]))[0];
         let out_r = self.filter_r.tick(&Frame::from([shaped_r, cutoff_hz, q]))[0];
 
-        Frame::from([out_l, out_r])
+        // Crusher sits last in the chain, per-channel so the unison stack's
+        // stereo width survives it (see crusher.rs -- its own tick() mixes
+        // l/r to mono internally, so one instance per channel rather than
+        // one shared instance is what keeps L/R independent here).
+        let crush_thresh = self.crush_input.value();
+        let crushed_l = self.crusher_l.tick(&Frame::from([out_l, out_l, 1.0, crush_thresh, CRUSH_ATTACK, CRUSH_DEPTH, CRUSH_MAKEUP_DB]))[0];
+        let crushed_r = self.crusher_r.tick(&Frame::from([out_r, out_r, 1.0, crush_thresh, CRUSH_ATTACK, CRUSH_DEPTH, CRUSH_MAKEUP_DB]))[0];
+
+        self.crush_env_live.set_value(self.crusher_l.env_db());
+        self.crush_out_live.set_value(self.crusher_l.output_db());
+        self.crush_gr_live.set_value(self.crusher_l.gr_peak_db());
+
+        Frame::from([crushed_l, crushed_r])
     }
 
     fn set_sample_rate (&mut self, sample_rate: f64) {
@@ -302,6 +355,8 @@ impl AudioNode for ReeseVoice {
         self.filter_l.set_sample_rate(sample_rate);
         self.filter_r.set_sample_rate(sample_rate);
         self.impact_env.set_sample_rate(sample_rate);
+        self.crusher_l.set_sample_rate(sample_rate);
+        self.crusher_r.set_sample_rate(sample_rate);
         self.thump.set_sample_rate(sample_rate);
     }
 }
@@ -322,7 +377,7 @@ impl Voice for ReeseVoice {
     // filter mapping, see hydra/midi.rs) so a controller with only 8 physical
     // knobs can still reach them live -- `width` doesn't fit in that 7-slot
     // bank, so it's only reachable via CC27 here. impact_level_input has no
-    // CC of its own.
+    // CC of its own -- CC8 drives crush_input (crusher threshold) instead.
     fn apply_cc (&mut self, cc: u8, value: f32) {
         let value = value.clamp(0.0, 1.0);
         match cc {
@@ -333,6 +388,7 @@ impl Voice for ReeseVoice {
             5 => self.resonance_input.set_value(0.3 + value * 2.7),
             6 => self.lfo_rate_input.set_value(0.05 + value * 2.95),
             7 => self.lfo_depth_input.set_value(value),
+            8 => self.crush_input.set_value(CRUSH_THRESH_MAX_DB + value * (CRUSH_THRESH_MIN_DB - CRUSH_THRESH_MAX_DB)),
             _ => {},
         }
     }

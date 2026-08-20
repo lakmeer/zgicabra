@@ -3,7 +3,6 @@
 
 - Wait for hydra docking on startup?
 - Filter audibly snaps back to neutral when note released
-  - Still?
 - Add DeltaEvent::NoteRetrig -> voices can decide what it means
 - Is it appropriate to vendor NAM model files? Check tone3000 license info
 - Reintroduce T3K IR but as finishing stage, replace final NAM pair
@@ -12,10 +11,7 @@
 - When consuming DeltaEvent::VoiceChange(voice), use the actual voice
   value to determine index of selected voice, so that there is one place
   to rearrange the voice list (zgicabra.rs)
-- Release note at trigger zenith
-  - Re-trigger note on return before full release?
 - Rescale width to zero at fade point; update level to start at zero
-- Add compressor visualisation
 
 - Voices
   - Can ThumpMod be a trait?
@@ -25,6 +21,7 @@
     - multivoice
     - use to test midi tweaking/persistence
   - Growl
+    - Bass sample
     - Needs dedicated sub
       - Power 5?
     - Multiband distortion
@@ -32,14 +29,11 @@
       - hi: `mesa`
     - Phaser ^ width
   - Reese
+    + comb filter
     - Octave layers ^ width
-    - vel ^ width_param
+    - vel ^ comb
     - lfo_rate ^ pitch
-    - drive noy audible
-  - SamplePlayer
-    - Kick sample
-      - Pitch adjust
-    - Bass sample
+    - check compressor
 
 - Engine
   - More specific system status
