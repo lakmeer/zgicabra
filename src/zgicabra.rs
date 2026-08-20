@@ -11,11 +11,18 @@ use crate::hydra::{HydraState,ControllerFrame};
 use crate::tools::*;
 
 const JOYSTICK_DEADZONE: f32 = 0.15;
+const TRIGGER_MODE: TriggerMode = TriggerMode::Instant;
 
 
 //
 // Data Types
 //
+
+// Trigger behaviour
+enum TriggerMode {
+    Full,     // Triggers start and end a note only when it reaches zero
+    Instant,  // Triggers start and end a note as soon as it changes direction
+}
 
 // Which sound engine patch to use
 #[derive(Debug, Clone, Copy)]
@@ -305,13 +312,27 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
 
     // Trigger state
 
-    let left_trigger_start  = curr_state.left.trigger  > prev_state.left.trigger  && prev_state.left.trigger  == 0.0;
-    let left_trigger_end    = curr_state.left.trigger  < prev_state.left.trigger  && curr_state.left.trigger  == 0.0;
-    let left_trigger_rel    = (curr_state.left.trigger - prev_state.left.trigger) < 0.0;
+    let (left_trigger_start, left_trigger_end) = match TRIGGER_MODE {
+        TriggerMode::Full => (
+            curr_state.left.trigger > prev_state.left.trigger && prev_state.left.trigger == 0.0,
+            curr_state.left.trigger < prev_state.left.trigger && curr_state.left.trigger == 0.0
+        ),
+        TriggerMode::Instant => (
+            curr_state.left.trigger > prev_state.left.trigger,
+            curr_state.left.trigger < prev_state.left.trigger
+        ),
+    };
 
-    let right_trigger_start = curr_state.right.trigger > prev_state.right.trigger && prev_state.right.trigger == 0.0;
-    let right_trigger_end   = curr_state.right.trigger < prev_state.right.trigger && curr_state.right.trigger == 0.0;
-    let right_trigger_rel   = (curr_state.right.trigger - prev_state.right.trigger) < 0.0;
+    let (right_trigger_start, right_trigger_end) = match TRIGGER_MODE {
+        TriggerMode::Full => (
+            curr_state.right.trigger > prev_state.right.trigger && prev_state.right.trigger == 0.0,
+            curr_state.right.trigger < prev_state.right.trigger && curr_state.right.trigger == 0.0
+        ),
+        TriggerMode::Instant => (
+            curr_state.right.trigger > prev_state.right.trigger,
+            curr_state.right.trigger < prev_state.right.trigger
+        ),
+    };
 
     if left_trigger_start { curr_state.most_recent_wand = Hand::Left; }
     if right_trigger_start { curr_state.most_recent_wand = Hand::Right; }
@@ -336,12 +357,12 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
         }
     }
 
-    if curr_state.note.on && (left_trigger_rel && curr_state.right.trigger == 0.0) {
+    if curr_state.note.on && (left_trigger_end && curr_state.right.trigger == 0.0) {
         deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
         curr_state.note.on = false;
     }
 
-    if curr_state.note.on && (right_trigger_rel && curr_state.left.trigger == 0.0) {
+    if curr_state.note.on && (right_trigger_end && curr_state.left.trigger == 0.0) {
         deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
         curr_state.note.on = false;
     }

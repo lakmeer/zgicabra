@@ -56,6 +56,11 @@ const WIDTH_TO_LFO_RATE: f32 = 2.0;
 const WIDTH_TO_DETUNE:   f32 = 2.0;
 const FILTER_TO_CUTOFF:  f32 = 6.0;
 
+const IMPACT_ENV_ATTACK:  f32 = 0.0005; // near-instant catch on the transient
+const IMPACT_ENV_RELEASE: f32 = 0.01;   // trails off with the sample's decay
+const IMPACT_CUTOFF_POP:  f32 = 1000.0; // Hz added to cutoff at full impact envelope
+const IMPACT_DRIVE_POP:   f32 = 1.5;    // extra drive multiplier at full impact envelope
+
 #[derive(Clone)]
 pub struct ReeseVoice {
     unison:     [An<WaveSynth<U1>>; VOICES],
@@ -82,6 +87,7 @@ pub struct ReeseVoice {
     pub cutoff_live:     Shared,
 
     impact_player:           An<WavePlayer>,
+    impact_env:              An<AFollow<f64>>, // tracks impact sample's amplitude, drives cutoff/drive pop
     impact_trigger:          Shared, // clone of thump_trigger -- bumped once per NoteStart
     impact_trigger_seen:     f32,
     pub impact_level_input:  Shared,
@@ -195,6 +201,7 @@ impl ReeseVoice {
             cutoff_live:     shared(0.0),
 
             impact_player:       load_impact_player(),
+            impact_env:          afollow(IMPACT_ENV_ATTACK, IMPACT_ENV_RELEASE),
             impact_trigger:      thump_trigger.clone(),
             impact_trigger_seen: thump_trigger.value(),
             impact_level_input:  shared(1.0),
@@ -228,6 +235,19 @@ impl AudioNode for ReeseVoice {
             * (1.0 + WIDTH_TO_DETUNE * width_signal);
         self.detune_live.set_value(detune);
 
+        let trigger = self.impact_trigger.value();
+        if trigger != self.impact_trigger_seen {
+            self.impact_trigger_seen = trigger;
+            self.impact_player.reset();
+        }
+
+        // Raw impact sample plus its tracked envelope -- the envelope drives
+        // the cutoff/drive pops below, the raw sample gets folded into the
+        // pre-drive mix so it shares the synth's saturation and filter sweep
+        // rather than sitting on top as a separate dry layer.
+        let impact_raw = self.impact_player.get_mono() * self.impact_level_input.value() * self.thump_signal;
+        let impact_env = self.impact_env.filter_mono(impact_raw.abs());
+
         let mut mix_l = 0.0f32;
         let mut mix_r = 0.0f32;
 
@@ -250,30 +270,29 @@ impl AudioNode for ReeseVoice {
         mix_l += sub;
         mix_r += sub;
 
-        // Live `fuzz` signal boosts drive on top of the macro knob.
-        let drive = (self.drive_input.value() * (1.0 + 2.0 * self.fuzz_signal.clamp(0.0, 1.0))).max(1.0);
+        mix_l += impact_raw;
+        mix_r += impact_raw;
+
+        // Live `fuzz` signal and the impact envelope both boost drive on top
+        // of the macro knob -- the kick's transient briefly adds extra grit.
+        let drive = (self.drive_input.value()
+            * (1.0 + 2.0 * self.fuzz_signal.clamp(0.0, 1.0))
+            * (1.0 + IMPACT_DRIVE_POP * impact_env)).max(1.0);
         self.drive_live.set_value(drive);
         let shaped_l = (mix_l * self.drive_live.value()).tanh();
         let shaped_r = (mix_r * self.drive_live.value()).tanh();
 
-        // Cutoff driven by the macro knob (scaled by live `filter` signal) and the LFO.
+        // Cutoff driven by the macro knob (scaled by live `filter` signal), the
+        // LFO, and a pop from the impact envelope that opens the filter on hit.
         let cutoff_base  = self.cutoff_input.value() * 2f32.powf(lfo_val * lfo_depth * LFO_DEPTH);
-        let cutoff_hz  = linexp(0.0, 1.0, CUTOFF_LO, CUTOFF_HI, cutoff_base * (1.0 + FILTER_TO_CUTOFF * self.filter_signal)).clamp(20.0, 18_000.0);
+        let cutoff_hz  = (linexp(0.0, 1.0, CUTOFF_LO, CUTOFF_HI, cutoff_base * (1.0 + FILTER_TO_CUTOFF * self.filter_signal)) + IMPACT_CUTOFF_POP * impact_env).clamp(20.0, 18_000.0);
         self.cutoff_live.set_value(cutoff_hz);
         let q = self.resonance_input.value();
 
         let out_l = self.filter_l.tick(&Frame::from([shaped_l, cutoff_hz, q]))[0];
         let out_r = self.filter_r.tick(&Frame::from([shaped_r, cutoff_hz, q]))[0];
 
-        let trigger = self.impact_trigger.value();
-        if trigger != self.impact_trigger_seen {
-            self.impact_trigger_seen = trigger;
-            self.impact_player.reset();
-        }
-
-        let impact_out = self.impact_player.get_mono() * self.impact_level_input.value() * self.thump_signal;
-
-        Frame::from([out_l + impact_out, out_r + impact_out])
+        Frame::from([out_l, out_r])
     }
 
     fn set_sample_rate (&mut self, sample_rate: f64) {
@@ -282,6 +301,7 @@ impl AudioNode for ReeseVoice {
         self.lfo.set_sample_rate(sample_rate);
         self.filter_l.set_sample_rate(sample_rate);
         self.filter_r.set_sample_rate(sample_rate);
+        self.impact_env.set_sample_rate(sample_rate);
         self.thump.set_sample_rate(sample_rate);
     }
 }
