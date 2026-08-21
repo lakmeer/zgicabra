@@ -108,3 +108,28 @@ On the NixOS performance box, `sys/nixos-config.nix` now applies these (and
 the rest of the machine's zgicabra-specific config) automatically on
 `nixos-rebuild switch` — see `sys/README.md`. The manual steps below are
 still accurate as a fallback / for a non-NixOS setup.
+
+
+## Accreditation
+
+### NAM Models
+
+This project uses [Neural Amp Modeller](https://github.com/sdatkinson/NeuralAmpModelerPlugin)
+by Steven Atkinson, under the MIT license. It also includes several model files from
+various community uploaders to the library at [TONE3000](https://tone3000.com/search):
+
+| File | Model Name | Author/Uploader | Source URL |
+|---|---|---|---|
+| 6505.nam     | Bass Driver 6505+                            | Ratchetstrap Media   | https://www.tone3000.com/tones/metal-bass-pack-5278 |
+| bass.nam     | Ampeg SVT - Gain 10 Ultra Lo and Hi SM57     | tone3000 (official)  | https://www.tone3000.com/tones/ampeg-svt-classic-with-6x10-28202 |
+| lowgain.nam  | LowGain BASS drive                           | sergiogbass          | https://www.tone3000.com/tones/metal-punchy-bass-tone-66292 |
+| mesa.nam     | FR MBDR MW Red Mdn - 1 - 4FB LL SM57a        | outmodedelectronics  | https://www.tone3000.com/tones/mesa-dual-rectifier-mw-red-modern-mesa-4x12-full-rig-69206 |
+| pickle.nam   | Hartke LH1000 Bass Amp Head Full Rigs Pack 1 | StudioAmpCaptures918 | https://www.tone3000.com/tones/hartke-lh1000-bass-amp-gallien-krueger-4x10-cab-bass-rigs-amp-head-63862 |
+| sansamp.nam  | Sansamp Bass Driver (Driven)                 | everipper            | https://www.tone3000.com/tones/tech21-sansamp-bass-driver-31010 |
+| wetbass.nam  | WETBASS                                      | chechogonzalez2016   | https://www.tone3000.com/tones/metal-punchy-bass-tone-66292 |
+
+These models are included in this repo since they have been selected
+specifically as an integral part of the sound design. If you are the author of
+a model that is included here, and you would rather not have your work
+redistributed, please contact me or open an issue and I will remove it.
+

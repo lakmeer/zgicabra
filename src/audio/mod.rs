@@ -38,7 +38,7 @@ use reese::ReeseVoice;
 use basic::BasicVoice;
 use cc_input::CcInput;
 pub use growl::GrowlView;
-pub use reese::ReeseView;
+pub use reese::{ReeseView, CRUSH_THRESHOLD_DOWN};
 pub use basic::BasicView;
 pub use swarm::SwarmView;
 

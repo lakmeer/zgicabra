@@ -67,13 +67,10 @@ const CRUSH_RATIO_DOWN:     f32 = 3.0;
 const CRUSH_THRESHOLD_UP:   f32 = -30.0;
 const CRUSH_RATIO_UP:       f32 = 2.0;
 const CRUSH_RELEASE:        f32 = 0.12;
-const CRUSH_MIX:            f32 = 0.5;
 const CRUSH_ATTACK:         f32 = 0.01;
-const CRUSH_DEPTH:          f32 = 1.0;
 const CRUSH_MAKEUP_DB:      f32 = 0.0;
-const DEFAULT_CRUSH_THRESH: f32 = -12.0; // dB
-const CRUSH_THRESH_MIN_DB:  f32 = -36.0; // CC8 = 1.0 -> heaviest crush
-const CRUSH_THRESH_MAX_DB:  f32 = 0.0;   // CC8 = 0.0 -> compressor barely engages
+pub const CRUSH_THRESHOLD_DOWN: f32 = -12.0; // dB, fixed
+const DEFAULT_CRUSH_DEPTH:  f32 = 1.0; // CC8 = 1.0 -> heaviest crush, 0.0 -> bypassed
 
 #[derive(Clone, Voice)]
 #[voice(index = 0, id = 0x7A_11, label = "Reese", new = manual)]
@@ -109,8 +106,8 @@ pub struct ReeseVoice {
 
     #[node] crusher_l: Crusher,
     #[node] crusher_r: Crusher,
-    #[input(cc = "8", range = -36.0..0.0, set = |v| CRUSH_THRESH_MAX_DB + v * (CRUSH_THRESH_MIN_DB - CRUSH_THRESH_MAX_DB))]
-    pub crush_input: Shared, // threshold_down, dB -- CC8
+    #[input(cc = "8", range = 0.0..1.0, set = |v| v)]
+    pub crush_input: Shared, // depth -- CC8
 
     #[live(range = -60.0..0.0)] pub crush_env_live: Shared, // meter telemetry, from crusher_l -- see ui panel
     #[live(range = -60.0..0.0)] pub crush_out_live: Shared,
@@ -164,16 +161,16 @@ impl ReeseVoice {
             impact_level_input:  shared(1.0),
 
             crusher_l: Crusher::new(
-                CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_MIX,
+                CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_THRESHOLD_DOWN,
                 crush_env_live.clone(), crush_out_live.clone(), crush_gr_live.clone(),
             ),
             // Right channel's meters go nowhere -- the UI panel shows the left
             // channel only, same as before.
             crusher_r: Crusher::new(
-                CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_MIX,
+                CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_THRESHOLD_DOWN,
                 shared(0.0), shared(0.0), shared(0.0),
             ),
-            crush_input: shared(DEFAULT_CRUSH_THRESH),
+            crush_input: shared(DEFAULT_CRUSH_DEPTH),
 
             crush_env_live, crush_out_live, crush_gr_live,
 
@@ -255,10 +252,10 @@ impl VoiceDsp for ReeseVoice {
         // Crusher sits last in the chain, one instance per channel so each
         // side keeps its own envelope and the unison stack's stereo width
         // survives it.
-        let crush_thresh = self.crush_input.value();
+        let crush_depth = self.crush_input.value();
         Frame::from([
-            self.crusher_l.tick(out_l, crush_thresh, CRUSH_ATTACK, CRUSH_DEPTH, CRUSH_MAKEUP_DB),
-            self.crusher_r.tick(out_r, crush_thresh, CRUSH_ATTACK, CRUSH_DEPTH, CRUSH_MAKEUP_DB),
+            self.crusher_l.tick(out_l, crush_depth, CRUSH_ATTACK, CRUSH_MAKEUP_DB),
+            self.crusher_r.tick(out_r, crush_depth, CRUSH_ATTACK, CRUSH_MAKEUP_DB),
         ])
     }
 }

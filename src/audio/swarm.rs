@@ -96,15 +96,14 @@ const LIMITER_THRESH_DB: f32 = -24.0; // "low threshold" -- squashes hard to nor
 
 // Fixed Crusher/moog character -- not GUI-exposed, the spec only calls out
 // crossover_freq/filter as live-tunable for this stage.
-const CRUSH_RATIO_DOWN:   f32 = 3.0;
-const CRUSH_THRESHOLD_UP: f32 = -30.0;
-const CRUSH_RATIO_UP:     f32 = 2.0;
-const CRUSH_RELEASE:      f32 = 0.12;
-const CRUSH_MIX:          f32 = 0.5;
-const CRUSH_THRESH_DOWN:  f32 = -12.0;
-const CRUSH_ATTACK:       f32 = 0.01;
-const CRUSH_DEPTH:        f32 = 1.0;
-const CRUSH_MAKEUP_DB:    f32 = 0.0;
+const CRUSH_RATIO_DOWN:      f32 = 3.0;
+const CRUSH_THRESHOLD_UP:    f32 = -30.0;
+const CRUSH_RATIO_UP:        f32 = 2.0;
+const CRUSH_RELEASE:         f32 = 0.12;
+const CRUSH_THRESHOLD_DOWN:  f32 = -12.0;
+const CRUSH_ATTACK:          f32 = 0.01;
+const CRUSH_DEPTH:           f32 = 1.0;
+const CRUSH_MAKEUP_DB:       f32 = 0.0;
 
 // 0..1, no GUI knob specified for this. MoogFilterFx (filter.rs) remaps this
 // into a raw Moog Q of 0.1..4.0 -- simulating that ladder's own feedback
@@ -147,7 +146,7 @@ impl ChannelChain {
             moog:    MoogFilterFx::new(),
             // Swarm has no compressor panel, so the meter cells go nowhere.
             crusher: Crusher::new(
-                CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_MIX,
+                CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_THRESHOLD_DOWN,
                 shared(0.0), shared(0.0), shared(0.0),
             ),
         }
@@ -166,7 +165,7 @@ impl ChannelChain {
 
     fn post (&mut self, x: f32, filter_cutoff: f32) -> f32 {
         let filtered = self.moog.tick(x, filter_cutoff, MOOG_RESONANCE);
-        self.crusher.tick(filtered, CRUSH_THRESH_DOWN, CRUSH_ATTACK, CRUSH_DEPTH, CRUSH_MAKEUP_DB)
+        self.crusher.tick(filtered, CRUSH_DEPTH, CRUSH_ATTACK, CRUSH_MAKEUP_DB)
     }
 }
 
