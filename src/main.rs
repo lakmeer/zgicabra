@@ -154,9 +154,7 @@ fn run_engine_loop (
             );
         }
 
-        let voice_cycle = hydra::take_voice_cycle(&mut hydra_state);
-        let tune_cycle  = hydra::take_tune_cycle(&mut hydra_state);
-        zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state, voice_cycle, tune_cycle, &mut delta_events);
+        zgicabra::update(&mut zgicabra, &history.last().unwrap(), &hydra_state, &mut delta_events);
         delta_events.extend(hydra::take_midi_notes(&mut hydra_state));
 
         if hydra_state.midi.connected {

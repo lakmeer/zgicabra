@@ -12,6 +12,7 @@ use crate::tools::*;
 
 const JOYSTICK_DEADZONE: f32 = 0.15;
 const TRIGGER_MODE: TriggerMode = TriggerMode::Instant;
+const REPEAT_MODE: RepeatMode = RepeatMode { on_stick: false, on_swap: false, on_trigger: true };
 
 
 //
@@ -23,6 +24,14 @@ enum TriggerMode {
     Full,     // Triggers start and end a note only when it reaches zero
     Instant,  // Triggers start and end a note as soon as it changes direction
 }
+
+// Note Repeat behaviour
+struct RepeatMode {
+    on_stick: bool,
+    on_swap: bool,
+    on_trigger: bool,
+}
+
 
 // Which sound engine patch to use
 #[derive(Debug, Clone, Copy)]
@@ -130,6 +139,7 @@ pub struct Wand {
     pub scalar_vel: f32,
     pub scalar_acc: f32,
     pub trigger: f32,
+    pub trigger_delta: f32,
     pub bumper: bool,
     pub home: bool,
     pub buttons: [bool; 4],
@@ -149,6 +159,7 @@ impl Wand {
             scalar_vel: 0.0,
             scalar_acc: 0.0,
             trigger: 0.0,
+            trigger_delta: 0.0,
             bumper: false,
             home: false,
             buttons: [false, false, false, false],
@@ -226,7 +237,6 @@ pub enum DeltaEvent {
     NoteStart(Note),
     NoteChange(Note, Note),
     NoteEnd(Note),
-    NoteRetrig(Note),
     WidthLevel(f32),
     VoiceChange(Voice),
     RootChange(Note),
@@ -235,6 +245,7 @@ pub enum DeltaEvent {
     BumperUp(Hand),
     HomeDown(Hand),
     HomeUp(Hand),
+    Debug(&'static str),
 }
 
 
@@ -278,7 +289,7 @@ impl Zgicabra {
 // Module Functions
 //
 
-pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &HydraState, voice_cycle: i8, tune_cycle: i8, deltas: &mut Vec<DeltaEvent>) {
+pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &HydraState, deltas: &mut Vec<DeltaEvent>) {
 
     curr_state.seq_num = hydra_state.controllers[0].sequence_number;
     curr_state.docked = hydra_state.controllers[0].is_docked != 0
@@ -312,14 +323,29 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
 
     // Trigger state
 
+    // only change the delta if trigger value is not static
+    curr_state.left.trigger_delta  = 
+        if curr_state.left.trigger == prev_state.left.trigger {
+          prev_state.left.trigger_delta
+        } else {
+          (curr_state.left.trigger - prev_state.left.trigger).sign()
+        };
+
+    curr_state.right.trigger_delta =
+        if curr_state.right.trigger == prev_state.right.trigger {
+          prev_state.right.trigger_delta
+        } else {
+          (curr_state.right.trigger - prev_state.right.trigger).sign()
+        };
+
     let (left_trigger_start, left_trigger_end) = match TRIGGER_MODE {
         TriggerMode::Full => (
             curr_state.left.trigger > prev_state.left.trigger && prev_state.left.trigger == 0.0,
             curr_state.left.trigger < prev_state.left.trigger && curr_state.left.trigger == 0.0
         ),
         TriggerMode::Instant => (
-            curr_state.left.trigger > prev_state.left.trigger,
-            curr_state.left.trigger < prev_state.left.trigger
+            curr_state.left.trigger_delta > 0.0 && curr_state.left.trigger_delta != prev_state.left.trigger_delta,
+            curr_state.left.trigger_delta < 0.0 && curr_state.left.trigger_delta != prev_state.left.trigger_delta
         ),
     };
 
@@ -346,35 +372,67 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     }
 
 
-    // Notes
-
-    if left_trigger_start || right_trigger_start {
-        if !curr_state.note.on {
-            deltas.push(DeltaEvent::NoteStart(curr_state.note.current));
-            curr_state.note.on = true;
-        } else {
-            deltas.push(DeltaEvent::NoteRetrig(curr_state.note.current));
-        }
-    }
-
-    if curr_state.note.on && (left_trigger_end && curr_state.right.trigger == 0.0) {
-        deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
-        curr_state.note.on = false;
-    }
-
-    if curr_state.note.on && (right_trigger_end && curr_state.left.trigger == 0.0) {
-        deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
-        curr_state.note.on = false;
-    }
+    // Notes & Repeats
 
     let new_note = (curr_state.note.root as i8
         + stick_to_note_offset(&curr_state.left)
         + stick_to_note_modifier(&curr_state.right)) as u8;
 
-    if curr_state.note.current != new_note && curr_state.note.on {
-        deltas.push(DeltaEvent::NoteChange(curr_state.note.current, new_note));
-        curr_state.note.current = new_note;
+    // If a note is not on, and any trigger started this frame, start a new note
+    if !curr_state.note.on {
+
+        if left_trigger_start || right_trigger_start {
+            deltas.push(DeltaEvent::NoteStart(new_note));
+            curr_state.note.on = true;
+        }
+
+    } else {
+
+        // If a note is on, and any trigger ended this frame, and the other trigger
+        // is at zero, end the current note
+        if (left_trigger_end && curr_state.right.trigger == 0.0)
+        || (right_trigger_end && curr_state.left.trigger == 0.0) {
+            deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
+            curr_state.note.on = false;
+        }
+
+        // If a note is on, but the new note is different
+        // repeat note only if RepeatMode.on_stick
+        if curr_state.note.current != new_note {
+            if REPEAT_MODE.on_stick {
+                deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
+                deltas.push(DeltaEvent::NoteStart(new_note));
+            } else {
+                deltas.push(DeltaEvent::NoteChange(curr_state.note.current, new_note));
+            }
+        }
+
+        // If a note is on, and any trigger started this frame, and the active wand
+        // was swapped this frame, repeat note only if RepeatMode.on_trigger
+        if REPEAT_MODE.on_trigger {
+            if left_trigger_start || right_trigger_start
+            && curr_state.most_recent_wand != prev_state.most_recent_wand {
+                deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
+                deltas.push(DeltaEvent::NoteStart(new_note));
+            }
+        }
+
+        // If a note is on, and any trigger ended this frame, and the other trigger
+        // is NOT at zero, and we are not swapping wands, repeat note if RepeatMode.on_swap
+        if REPEAT_MODE.on_swap {
+            if (left_trigger_end && curr_state.right.trigger > 0.0)
+            || (right_trigger_end && curr_state.left.trigger > 0.0) 
+            && curr_state.most_recent_wand != prev_state.most_recent_wand {
+                deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
+                deltas.push(DeltaEvent::NoteStart(new_note));
+            }
+        }
     }
+
+    curr_state.note.current = new_note;
+
+
+    // Buttons
 
     if curr_state.left.stick.clicked && curr_state.right.stick.clicked {
         deltas.push(DeltaEvent::Panic());
@@ -398,6 +456,7 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     each_wand(prev_state.left,  curr_state.left,  deltas);
     each_wand(prev_state.right, curr_state.right, deltas);
 
+
     //                       ╭─────[ - Tune + ]─────╮
     //           ┏━━━┓     ┏━┷━┓                  ┏━┷━┓     ┏━━━┓
     //         ╭─┨ 4 ┃     ┃ 1 ┃        ││        ┃ 1 ┃     ┃ 4 ┠─╮
@@ -408,7 +467,9 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     //             ┗━━━┛ ┗━┯━┛                      ┗━┯━┛ ┗━━━┛
     //                     ╰──────[ - Voices + ]──────╯
 
-    // Rocking triggers on button release, direction from which hand let go last.
+    // Rocking
+    // Triggers on button release, direction from which hand let go last.
+
     for i in 0..4 {
         if curr_state.left.buttons[i] && curr_state.right.buttons[i] &&
             (!prev_state.left.buttons[i] || !prev_state.right.buttons[i]) {
@@ -433,19 +494,7 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
         }
     }
 
-    // Keyboard dev shortcuts ('a'/'s'), same effect as the physical Rocking
-    // voice button -- see hydra::take_voice_cycle.
-    if voice_cycle != 0 {
-        curr_state.voice = curr_state.voice.cycle(voice_cycle);
-        deltas.push(DeltaEvent::VoiceChange(curr_state.voice));
-    }
-
-    // Keyboard dev shortcuts ('-'/'='), same effect as the physical Rocking
-    // tune button -- see hydra::take_tune_cycle.
-    if tune_cycle != 0 {
-        curr_state.note.root = ((curr_state.note.root as i8) + tune_cycle) as u8;
-        deltas.push(DeltaEvent::RootChange(curr_state.note.root));
-    }
+    // Thumbsmashes
 
     for hand in [Hand::Left, Hand::Right].iter() {
         let curr = if *hand == Hand::Left { &curr_state.left } else { &curr_state.right };
@@ -614,5 +663,16 @@ fn joystick_octant (stick: &Joystick) -> Direction {
 
 fn derivative_r3 (a: &[f32;3], b: &[f32;3], delta: f32) -> [f32;3] {
     [ (a[0] - b[0]) / delta, (a[1] - b[1]) / delta, (a[2] - b[2]) / delta ]
+}
+
+// Hax
+trait Sign {
+    fn sign (self) -> f32;
+}
+
+impl Sign for f32 {
+    fn sign (self) -> f32 {
+        if self > 0.0 { 1.0 } else if self < 0.0 { -1.0 } else { 0.0 }
+    }
 }
 

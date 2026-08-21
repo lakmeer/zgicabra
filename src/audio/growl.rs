@@ -258,6 +258,62 @@ impl WavetableGen {
 // as everything else in this engine, plus a bolted-on NAM amp stage.
 //
 
+// Thump sample embedded straight into the binary at compile time -- same
+// reasoning as reese.rs's IMPACT_SAMPLE (see there).
+static PLUCK_SAMPLE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/wav/pluck.wav"));
+
+// The sample's own recorded pitch, standard tuning (A4 = 440Hz) -- playback
+// rate is scaled from this to track the voice's incoming freq.
+const PLUCK_BASE_FREQ: f32 = 61.7354; // B1
+
+fn load_pluck_wave () -> Arc<Wave> {
+    Arc::new(Wave::load_slice(PLUCK_SAMPLE).expect("failed to decode embedded wav/pluck.wav"))
+}
+
+#[derive(Clone)]
+struct PluckPlayer {
+    wave:         Arc<Wave>,
+    pos:          f64,
+    sample_rate:  f64,
+    trigger:      Shared,
+    last_trigger: f32,
+}
+
+impl PluckPlayer {
+    fn new (wave: Arc<Wave>, trigger: Shared) -> PluckPlayer {
+        let last_trigger = trigger.value();
+        PluckPlayer { wave, pos: 0.0, sample_rate: DEFAULT_SR, trigger, last_trigger }
+    }
+
+    fn set_sample_rate (&mut self, sample_rate: f64) {
+        self.sample_rate = sample_rate;
+    }
+
+    fn tick (&mut self, freq: f32) -> f32 {
+        let trigger = self.trigger.value();
+        if trigger != self.last_trigger {
+            self.last_trigger = trigger;
+            self.pos = 0.0;
+        }
+
+        let len = self.wave.length();
+        let i0 = self.pos as usize;
+        if i0 + 1 >= len {
+            return 0.0;
+        }
+
+        let frac = (self.pos - i0 as f64) as f32;
+        let s0 = self.wave.at(0, i0);
+        let s1 = self.wave.at(0, i0 + 1);
+        let sample = s0 + (s1 - s0) * frac;
+
+        let rate = (freq / PLUCK_BASE_FREQ) as f64 * (self.wave.sample_rate() / self.sample_rate);
+        self.pos += rate;
+
+        sample
+    }
+}
+
 // Fixed defaults, formerly GrowlParams::default() -- seeded directly into
 // the Shared cells below now that there's no separate snapshot/handle shape.
 const DEFAULT_BASS_DRIVE:    f32 = 0.8;
@@ -265,6 +321,7 @@ const DEFAULT_FILTER:        f32 = 0.9;
 const DEFAULT_SPACE:         f32 = 0.25;
 const DEFAULT_WARP:          f32 = 0.3;
 const DEFAULT_NAM_CROSSOVER: f32 = 0.0;
+const DEFAULT_PLUCK_LEVEL:   f32 = 1.0;
 
 const TRI_BASE_LEVEL:  f32 = 0.0;
 const TRI_FIFTH_LEVEL: f32 = 0.0;
@@ -331,6 +388,9 @@ pub struct GrowlVoice {
     #[node] tri_fifth: An<WaveSynth<U1>>,
     #[node] tri_env:   TriEnv,
 
+    #[node] pluck: PluckPlayer,
+    #[input(range = 0.0..1.0)] pub pluck_level_input: Shared, // persisted, no CC of its own
+
     #[input(cc = "1", range = 0.0..1.0,     set = |v| v)]           pub bass_drive_input:    Shared,
     #[input(cc = "2", range = 0.0..1.0,     set = |v| v)]           pub filter_input:        Shared,
     #[input(cc = "3", range = 0.0..1.0,     set = |v| v)]           pub space_input:         Shared,
@@ -344,7 +404,6 @@ pub struct GrowlVoice {
     // inside the NAM graph.
     #[live(range = 0.0..1.0)] pub nam_live:       Shared,
 
-    thump: ThumpMod,
     sig:   SignalState,
 }
 
@@ -371,6 +430,9 @@ impl GrowlVoice {
             tri_fifth: triangle(),
             tri_env:   TriEnv::new(thump_trigger.clone()),
 
+            pluck:             PluckPlayer::new(load_pluck_wave(), thump_trigger.clone()),
+            pluck_level_input: shared(DEFAULT_PLUCK_LEVEL),
+
             bass_drive_input:    shared(DEFAULT_BASS_DRIVE),
             filter_input:        shared(DEFAULT_FILTER),
             space_input:         shared(DEFAULT_SPACE),
@@ -382,7 +444,6 @@ impl GrowlVoice {
             freq_mult_live: shared(0.0),
             nam_live,
 
-            thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
             sig:   SignalState::new(),
         }
     }
@@ -405,6 +466,8 @@ impl VoiceDsp for GrowlVoice {
         let tri_env = self.tri_env.tick();
         raw += self.tri_base.filter_mono(freq) * TRI_BASE_LEVEL * tri_env;
         raw += self.tri_fifth.filter_mono(freq * TRI_FIFTH_RATIO) * TRI_FIFTH_LEVEL * tri_env;
+
+        raw += self.pluck.tick(freq) * self.pluck_level_input.value() * self.sig.thump;
 
         // The graph reads blend and crossover cutoff from Shared cells.
         self.nam_blend.set_value(self.sig.fuzz.clamp(0.0, 1.0));

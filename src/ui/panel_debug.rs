@@ -1,13 +1,3 @@
-use crate::plot::{ColorPlot,Chart,Shape};
-
-use crate::tools::*;
-use crate::hydra::HydraState;
-use crate::zgicabra::{DeltaEvent,Zgicabra,Wand,Hand,SignalState};
-
-use crate::HISTORY_WINDOW;
-
-use super::utils::*;
-
 
 //
 // Debug Panel
@@ -16,6 +6,15 @@ use super::utils::*;
 // - Raw zgicabra state
 // - Recent DeltaEvents
 //
+
+use crate::tools::*;
+use crate::hydra::HydraState;
+use crate::zgicabra::{DeltaEvent,Zgicabra,Wand,Hand,SignalState};
+use crate::plot::{ColorPlot,Chart,Shape};
+use crate::HISTORY_WINDOW;
+
+use super::tw;
+use super::utils::*;
 
 pub fn draw_debug_panel (y: u16, zgicabra: &Zgicabra, history: &Vec<Zgicabra>, delta_history: &Vec<DeltaEvent>) {
     const RHS:u16 = 50;
@@ -32,14 +31,9 @@ pub fn draw_debug_panel (y: u16, zgicabra: &Zgicabra, history: &Vec<Zgicabra>, d
     println!("{}Level:   {:>17.4}", goto(RHS, y +  9), zgicabra.signal.level);
     println!("{}Total:   {:>17.4}", goto(RHS, y + 10), zgicabra.trigger_total);
 
-    print!("{}{}", goto(RHS, y), termion::color::Fg(termion::color::White));
+    let default_color = termion::color::Fg(termion::color::White);
 
-    for row in 15..25 {
-        match delta_history.iter().rev().nth(row) {
-            Some(e) => println!("{}- {:?}", goto(RHS, y + row as u16), e),
-            None    => println!("{}-",      goto(RHS, y + row as u16)),
-        }
-    }
+    print!("{}{}", goto(RHS, y), default_color);
 
     print!("{}[{:>5.2} {:>5.2} {:>5.2} {:>5.2} ]", goto(RHS, y + 12), 
         zgicabra.left.rot[0],
@@ -52,6 +46,16 @@ pub fn draw_debug_panel (y: u16, zgicabra: &Zgicabra, history: &Vec<Zgicabra>, d
         zgicabra.right.rot[2],
         zgicabra.right.rot[3]);
 
+    for row in 0..10 {
+        println!("{}{}", goto(RHS, y + 15 + row as u16), " ".repeat(25));
+        let color = if row == 0 { fg(tw::WHITE) } else { fg(tw::SLATE_500) };
+        match delta_history.iter().rev().nth(row) {
+            Some(e) => println!("{}{}- {:?}", goto(RHS, y + 15 + row as u16), color, e),
+            None    => println!("{}{}- ",     goto(RHS, y + 15 + row as u16), color),
+        }
+    }
+
+    print!("{}{}", goto(RHS, y), default_color);
 }
 
 fn draw_graph (w: u32, h: u32, y: u16, history: &Vec<Zgicabra>) {

@@ -296,6 +296,9 @@ pub fn draw_main_panel (y: u16, width: u16, zgicabra: &Zgicabra) {
         print!("{}{}▪{}", goto(41, y + 18), fg(BLUE_0), FG_RESET);
     }
 
+    print!("{}{:>13} {}", goto(2, y + 16), "delta", zgicabra.left.trigger_delta);
+    print!("{}{:>13} {}", goto(40, y + 16), "delta", zgicabra.right.trigger_delta);
+
     draw_toggle_box(        5, y + 18, GREEN_0, zgicabra.signal.thump > 0.0);
     draw_toggle_box(width - 8, y + 18, RED_0,   zgicabra.signal.fuzz > 0.0);
 
