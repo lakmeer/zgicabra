@@ -27,8 +27,11 @@ use std::sync::Arc;
 use fundsp::prelude64::*;
 use num_complex::Complex32;
 
+use zgicabra_voice_macro::Voice;
+
 use crate::tools::linexp;
-use super::voice::{Voice, ThumpMod};
+use crate::zgicabra::SignalState;
+use super::voice::{Voice, VoiceDsp, ThumpMod};
 use super::nam::{NamStage, NamModelCycler, NamModelSlot, NAM_BLOCK_CAP};
 use super::filter::MoogFilterFx;
 use super::crusher::Crusher;
@@ -116,6 +119,7 @@ const CRUSH_MAKEUP_DB:    f32 = 0.0;
 // which is the whine -- not the filter reacting to the swarm, oscillating
 // on its own. Kept well under the onset margin instead.
 const MOOG_RESONANCE: f32 = 0.08;
+// TODO: Map to signal width
 
 const PAN_NORM_HZ:          f32 = 20.0;
 const DEFAULT_CHASE_FACTOR: f32 = 0.99;
@@ -186,127 +190,59 @@ impl ChannelChain {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Voice)]
+#[voice(index = 3, id = 0x7A_50, label = "Swarm", new = manual, thump = manual)]
 pub struct SwarmVoice {
-    oscs:    [An<WaveSynth<U1>>; NUM_OSCS],
-    phasers: [Phaser; NUM_OSCS],
+    #[node(each)] oscs:    [An<WaveSynth<U1>>; NUM_OSCS],
+    #[node(each)] phasers: [Phaser; NUM_OSCS],
     angle:   [f32; NUM_OSCS], // running orbit phase per oscillator, radians
 
-    origin_freq: f32, // chased origin, Hz -- see ThumpMod::tick's own doc for why thump applies after
+    origin_freq: f32, // chased origin, Hz -- thump = manual: applied to this, not the raw freq
 
-    chain_l: ChannelChain,
-    chain_r: ChannelChain,
+    #[node] chain_l: ChannelChain,
+    #[node] chain_r: ChannelChain,
 
     // Mid/side NAM stages -- one instance per band, shared across both
     // channels (see file doc comment). mid_lo/side_lo/mid_hi/side_hi are
     // scratch for the merge/split around them, sized once at construction,
     // never reallocated on the audio thread.
-    nam_lo_stage: NamStage,
-    nam_hi_stage: NamStage,
+    #[node] nam_lo_stage: NamStage,
+    #[node] nam_hi_stage: NamStage,
     mid_lo:  Vec<f32>,
     side_lo: Vec<f32>,
     mid_hi:  Vec<f32>,
     side_hi: Vec<f32>,
 
-    pub chase_factor_input: Shared,
-    pub radius_input:       Shared,
-    pub orbit_speed_input:  Shared,
-    pub phaser_depth_input: Shared,
-    pub xover_freq_input:   Shared,
-    pub nam_lo: NamModelCycler,
-    pub nam_hi: NamModelCycler,
+    #[input(cc = "50|2", range = 0.5..1.0,    set = |v| 0.5 + v * 0.5)] pub chase_factor_input: Shared,
+    #[input(cc = "51|3", range = 0.0..200.0,  set = |v| v * 200.0)]     pub radius_input:       Shared,
+    #[input(cc = "52|4", range = 0.0..2.0,    set = |v| v * 2.0)]       pub orbit_speed_input:  Shared,
+    #[input(cc = "53|5", range = 0.0..1.0,    set = |v| v)]             pub phaser_depth_input: Shared,
+    #[input(cc = "54|6", range = 0.0..2000.0, set = |v| v * 2000.0)]    pub xover_freq_input:   Shared,
+    #[view] pub nam_lo: NamModelCycler,
+    #[view] pub nam_hi: NamModelCycler,
 
-    pub radius_live:       Shared,
-    pub orbit_speed_live:  Shared,
-    pub phaser_depth_live: Shared,
+    #[live(range = 0.0..200.0)] pub radius_live:       Shared,
+    #[live(range = 0.0..2.0)]   pub orbit_speed_live:  Shared,
+    #[live(range = 0.0..1.0)]   pub phaser_depth_live: Shared,
 
     // Live per-oscillator freq/pan, written every tick -- read-only from the
-    // UI side for the swarm scope (see ui.rs's draw_swarm_panel).
-    pub osc_freq_live: [Shared; NUM_OSCS],
-    pub osc_pan_live:  [Shared; NUM_OSCS],
-    pub origin_live:   Shared,
+    // UI side for the swarm scope (see ui.rs's draw_swarm_panel). Arrays, so
+    // #[view] (passthrough) rather than #[live].
+    #[view] pub osc_freq_live: [Shared; NUM_OSCS],
+    #[view] pub osc_pan_live:  [Shared; NUM_OSCS],
+    #[live(range = 0.0..2000.0)] pub origin_live: Shared,
 
     sample_rate: f32,
 
     thump: ThumpMod,
-    thump_signal:  f32,
-    filter_signal: f32,
-    fuzz_signal:   f32,
-    width_signal:  f32,
+    sig:   SignalState,
 }
 
-// Read-only-from-outside view onto SwarmVoice's Shared cells -- see
-// GrowlView's doc in growl.rs for why this exists. nam_lo/nam_hi are
-// NamModelCycler, already a cheap-clone Shared+Arc<Vec<String>> bundle.
-// `_input` fields are the authored knob values; `_live` fields are
-// read-only, written by SwarmVoice each tick, and show the actual
-// post-modulation values the DSP is using -- for visualisation only.
-#[derive(Clone)]
-pub struct SwarmView {
-    pub chase_factor_input: Shared,
-    pub radius_input:       Shared,
-    pub orbit_speed_input:  Shared,
-    pub phaser_depth_input: Shared,
-    pub xover_freq_input:   Shared,
-    pub nam_lo: NamModelCycler,
-    pub nam_hi: NamModelCycler,
-
-    pub radius_live:       Shared,
-    pub orbit_speed_live:  Shared,
-    pub phaser_depth_live: Shared,
-
-    pub osc_freq_live: [Shared; NUM_OSCS],
-    pub osc_pan_live:  [Shared; NUM_OSCS],
-    pub origin_live:   Shared,
-}
-
-impl SwarmView {
-    // CC-settable fields only (see apply_cc below) -- nam_lo/nam_hi (model
-    // cyclers) and the `_live` fields (per-tick telemetry, not user-set
-    // params) aren't persisted here.
-    pub fn fields (&self) -> Vec<(&'static str, f32)> {
-        vec![
-            ("chase_factor_input", self.chase_factor_input.value()),
-            ("radius_input",       self.radius_input.value()),
-            ("orbit_speed_input",  self.orbit_speed_input.value()),
-            ("phaser_depth_input", self.phaser_depth_input.value()),
-            ("xover_freq_input",   self.xover_freq_input.value()),
-        ]
-    }
-
-    pub fn apply (&self, fields: &[(String, f32)]) {
-        for (name, value) in fields {
-            match name.as_str() {
-                "chase_factor_input" => self.chase_factor_input.set_value(*value),
-                "radius_input"       => self.radius_input.set_value(*value),
-                "orbit_speed_input"  => self.orbit_speed_input.set_value(*value),
-                "phaser_depth_input" => self.phaser_depth_input.set_value(*value),
-                "xover_freq_input"   => self.xover_freq_input.set_value(*value),
-                _ => {},
-            }
-        }
-    }
-}
-
+// SwarmView + view()/fields()/apply()/UI_RANGES + the AudioNode/Voice impls
+// are generated by #[derive(Voice)]. new() stays hand-written (new = manual):
+// it takes the NAM model list, resolves default model indices by name, and
+// sizes the mid/side scratch buffers before the struct literal.
 impl SwarmVoice {
-    pub fn view (&self) -> SwarmView {
-        SwarmView {
-            chase_factor_input: self.chase_factor_input.clone(),
-            radius_input:       self.radius_input.clone(),
-            orbit_speed_input:  self.orbit_speed_input.clone(),
-            phaser_depth_input: self.phaser_depth_input.clone(),
-            xover_freq_input:   self.xover_freq_input.clone(),
-            nam_lo: self.nam_lo.clone(),
-            nam_hi: self.nam_hi.clone(),
-            radius_live:       self.radius_live.clone(),
-            orbit_speed_live:  self.orbit_speed_live.clone(),
-            phaser_depth_live: self.phaser_depth_live.clone(),
-            osc_freq_live: self.osc_freq_live.clone(),
-            osc_pan_live:  self.osc_pan_live.clone(),
-            origin_live:   self.origin_live.clone(),
-        }
-    }
-
     pub fn new (
         nam_models: Vec<Option<NamModelSlot>>,
         nam_names: Arc<Vec<String>>,
@@ -356,29 +292,24 @@ impl SwarmVoice {
 
             sample_rate: DEFAULT_SR as f32,
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
-            thump_signal: 0.0, filter_signal: 0.0, fuzz_signal: 0.0, width_signal: 0.0,
+            sig:   SignalState::new(),
         }
     }
 }
 
-impl AudioNode for SwarmVoice {
-    const ID: u64 = 0x7A_50;
-    type Inputs = U2;
-    type Outputs = U2;
-
-    fn tick (&mut self, input: &Frame<f32, U2>) -> Frame<f32, U2> {
-        let freq     = input[0];
-        let selected = input[1] as usize;
-        if selected != Self::INDEX { return Frame::from([0.0, 0.0]); }
-
+impl VoiceDsp for SwarmVoice {
+    // thump = manual: SwarmVoice chases an origin freq from the raw input,
+    // then applies thump to that origin (not the incoming freq), so it does
+    // its own thump.tick here -- the generated tick hands over the raw freq.
+    fn render (&mut self, freq: f32, _thump_mult: f32) -> Frame<f32, U2> {
         let chase_factor = self.chase_factor_input.value().clamp(0.0, 0.999_999);
         self.origin_freq = lerp(self.origin_freq, freq, chase_factor);
-        let origin_freq = self.origin_freq * self.thump.tick(self.thump_signal);
+        let origin_freq = self.origin_freq * self.thump.tick(self.sig.thump);
 
-        let width_signal = self.width_signal.clamp(0.0, 1.0);
+        let width_signal = self.sig.width.clamp(0.0, 1.0);
         let radius_cents = self.radius_input.value().max(0.0) * (1.0 + width_signal);
         let orbit_speed  = self.orbit_speed_input.value()     * (1.0 + width_signal);
-        let phaser_depth = (self.phaser_depth_input.value() + width_signal + self.fuzz_signal).clamp(0.0, 1.0);
+        let phaser_depth = (self.phaser_depth_input.value() + width_signal + self.sig.fuzz).clamp(0.0, 1.0);
         self.radius_live.set_value(radius_cents);
         self.orbit_speed_live.set_value(orbit_speed);
         self.phaser_depth_live.set_value(phaser_depth);
@@ -417,7 +348,7 @@ impl AudioNode for SwarmVoice {
         mix_l *= norm;
         mix_r *= norm;
 
-        let filter_cutoff = self.filter_signal.clamp(0.0, 1.0);
+        let filter_cutoff = self.sig.filter.clamp(0.0, 1.0);
         let xover_hz  = self.xover_freq_input.value().max(1.0);
 
         let out_l = self.chain_l.tick(mix_l, self.sample_rate, filter_cutoff, xover_hz);
@@ -426,27 +357,8 @@ impl AudioNode for SwarmVoice {
         Frame::from([out_l, out_r])
     }
 
-    fn set_sample_rate (&mut self, sample_rate: f64) {
+    fn on_set_sample_rate (&mut self, sample_rate: f64) {
         self.sample_rate = sample_rate as f32;
-        for osc in self.oscs.iter_mut() { osc.set_sample_rate(sample_rate); }
-        for phaser in self.phasers.iter_mut() { phaser.set_sample_rate(sample_rate); }
-        self.chain_l.set_sample_rate(sample_rate);
-        self.chain_r.set_sample_rate(sample_rate);
-        self.nam_lo_stage.set_sample_rate(sample_rate);
-        self.nam_hi_stage.set_sample_rate(sample_rate);
-        self.thump.set_sample_rate(sample_rate);
-    }
-}
-
-impl Voice for SwarmVoice {
-    const INDEX: usize = 3;
-    fn name (&self) -> &'static str { "Swarm" }
-
-    fn set_signal (&mut self, _bend: f32, filter: f32, fuzz: f32, width: f32, thump: f32) {
-        self.thump_signal  = thump;
-        self.filter_signal = filter;
-        self.fuzz_signal   = fuzz;
-        self.width_signal  = width;
     }
 
     // Merge last block's per-channel low/high dry buffers to mid/side, run
@@ -467,7 +379,7 @@ impl Voice for SwarmVoice {
             self.side_hi[i] = (l - r) * 0.5;
         }
 
-        let blend = self.fuzz_signal.clamp(0.0, 1.0);
+        let blend = self.sig.fuzz.clamp(0.0, 1.0);
         self.nam_lo_stage.process_block(&mut self.mid_lo[..n], 1.0, blend, 1.0, 0.0);
         self.nam_hi_stage.process_block(&mut self.mid_hi[..n], 1.0, blend, 1.0, 0.0);
 
@@ -480,21 +392,5 @@ impl Voice for SwarmVoice {
 
         self.chain_l.on_block_start();
         self.chain_r.on_block_start();
-    }
-
-    // CC 50-54, 0..1 normalized input scaled to each param's own range.
-    // CC2-6 is the same set of knobs (CC1 being reserved for the global Mod
-    // Wheel -> filter mapping, see hydra/midi.rs) so a controller with only
-    // 8 physical knobs can still reach them live.
-    fn apply_cc (&mut self, cc: u8, value: f32) {
-        let value = value.clamp(0.0, 1.0);
-        match cc {
-            50 | 2 => self.chase_factor_input.set_value(0.5 + value * 0.5),
-            51 | 3 => self.radius_input.set_value(value * 200.0),
-            52 | 4 => self.orbit_speed_input.set_value(value * 2.0),
-            53 | 5 => self.phaser_depth_input.set_value(value),
-            54 | 6 => self.xover_freq_input.set_value(value * 2000.0),
-            _ => {},
-        }
     }
 }

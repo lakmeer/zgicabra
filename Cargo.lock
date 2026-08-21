@@ -1973,6 +1973,16 @@ dependencies = [
  "rgb",
  "rtrb",
  "termion",
+ "zgicabra-voice-macro",
+]
+
+[[package]]
+name = "zgicabra-voice-macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

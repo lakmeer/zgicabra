@@ -624,22 +624,29 @@ impl Engine {
     // (dry_l, dry_r, dry_sub) -- split out of a single tick() so build_stream
     // can batch dry_l/dry_r across a block and run the amp stage once per
     // block instead of once per sample (see run_nam / NamStage::process_block).
-    fn tick_pre_nam (&mut self) -> (f32, f32, f32) {
+    // Snapshot the live performance signals and push a read-only copy into
+    // every voice. Called once per block from build_stream (knob-rate: the
+    // main thread only rewrites these cells per frame, so within a block they
+    // never change) -- each voice keeps its own SignalState copy and reads the
+    // fields it cares about in render().
+    fn update_voice_signals (&mut self) {
         let signal = SignalState {
             bend: self.bend.value(), width: self.width.value(), thump: self.thump_amt.value(),
             filter: self.filter.value(), fuzz: self.fuzz.value(),
             velocity: self.velocity.value(), acceleration: self.acceleration.value(),
             ..SignalState::new()
         };
+        self.voice_a.set_signal(&signal);
+        self.voice_b.set_signal(&signal);
+        self.voice_c.set_signal(&signal);
+        self.voice_d.set_signal(&signal);
+    }
 
-        let bend_mult = 2f32.powf(signal.bend);
+    fn tick_pre_nam (&mut self) -> (f32, f32, f32) {
+        let bend_mult = 2f32.powf(self.bend.value());
         let base_freq = self.freq.value() * bend_mult;
 
         let sel = self.voice_selected.value();
-        self.voice_a.set_signal(signal.bend, signal.filter, signal.fuzz, signal.width, signal.thump);
-        self.voice_b.set_signal(signal.bend, signal.filter, signal.fuzz, signal.width, signal.thump);
-        self.voice_c.set_signal(signal.bend, signal.filter, signal.fuzz, signal.width, signal.thump);
-        self.voice_d.set_signal(signal.bend, signal.filter, signal.fuzz, signal.width, signal.thump);
         let voice_a_out = self.voice_a.tick(&Frame::from([base_freq, sel]));
         let voice_b_out = self.voice_b.tick(&Frame::from([base_freq, sel]));
         let voice_c_out = self.voice_c.tick(&Frame::from([base_freq, sel]));
@@ -743,6 +750,8 @@ where
                 if selected == GrowlVoice::INDEX { engine.voice_b.on_block_start(n); }
                 if selected == BasicVoice::INDEX { engine.voice_c.on_block_start(n); }
                 if selected == SwarmVoice::INDEX { engine.voice_d.on_block_start(n); }
+
+                engine.update_voice_signals();
 
                 // Drain the CC ring buffer and retarget each message to
                 // whichever voice is currently selected -- switching voices

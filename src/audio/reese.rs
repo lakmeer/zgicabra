@@ -12,10 +12,11 @@
 use std::sync::Arc;
 
 use fundsp::prelude64::*;
+use zgicabra_voice_macro::Voice;
 
 use crate::tools::linexp;
 use crate::zgicabra::SignalState;
-use super::voice::{Voice, ThumpMod};
+use super::voice::{Voice, VoiceDsp, ThumpMod};
 use super::crusher::Crusher;
 
 const VOICES: usize = 8; // odd -- center voice lands at zero detune/pan
@@ -74,138 +75,56 @@ const DEFAULT_CRUSH_THRESH: f32 = -12.0; // dB
 const CRUSH_THRESH_MIN_DB:  f32 = -36.0; // CC8 = 1.0 -> heaviest crush
 const CRUSH_THRESH_MAX_DB:  f32 = 0.0;   // CC8 = 0.0 -> compressor barely engages
 
-#[derive(Clone)]
+#[derive(Clone, Voice)]
+#[voice(index = 0, id = 0x7A_11, label = "Reese", new = manual)]
 pub struct ReeseVoice {
-    unison:     [An<WaveSynth<U1>>; VOICES],
+    #[node(each)] unison: [An<WaveSynth<U1>>; VOICES],
     unison_pan: [An<Panner<U2>>; VOICES],
     spread:     [f32; VOICES], // -1..1, fixed per-voice detune/pan weight
 
-    sub: An<WaveSynth<U1>>,
-    lfo: An<Sine<f64>>,
+    #[node] sub: An<WaveSynth<U1>>,
+    #[node] lfo: An<Sine<f64>>,
 
-    filter_l: An<Svf<f64, LowpassMode<f64>>>,
-    filter_r: An<Svf<f64, LowpassMode<f64>>>,
+    #[node] filter_l: An<Svf<f64, LowpassMode<f64>>>,
+    #[node] filter_r: An<Svf<f64, LowpassMode<f64>>>,
 
-    pub detune_input:    Shared,
-    pub sub_level_input: Shared,
-    pub drive_input:     Shared,
-    pub cutoff_input:    Shared,
-    pub resonance_input: Shared,
-    pub lfo_rate_input:  Shared,
-    pub lfo_depth_input: Shared,
+    #[input(cc = "1", range = 0.0..50.0,  set = |v| v * 50.0)]        pub detune_input:    Shared,
+    #[input(cc = "2", range = 0.0..1.0,   set = |v| v)]               pub sub_level_input: Shared,
+    #[input(cc = "3", range = 1.0..8.0,   set = |v| 1.0 + v * 7.0)]   pub drive_input:     Shared,
+    #[input(cc = "4", range = 0.0..1.0,   set = |v| v)]               pub cutoff_input:    Shared,
+    #[input(cc = "5", range = 0.3..3.0,   set = |v| 0.3 + v * 2.7)]   pub resonance_input: Shared,
+    #[input(cc = "6", range = 0.05..3.0,  set = |v| 0.05 + v * 2.95)] pub lfo_rate_input:  Shared,
+    #[input(cc = "7", range = 0.0..1.0,   set = |v| v)]               pub lfo_depth_input: Shared,
 
-    pub drive_live:      Shared,
-    pub lfo_rate_live:   Shared,
-    pub detune_live:     Shared,
-    pub cutoff_live:     Shared,
+    #[live(range = 0.0..5.0)]    pub drive_live:      Shared,
+    #[live(range = 0.0..5.0)]    pub lfo_rate_live:   Shared,
+    #[live(range = 0.0..200.0)]  pub detune_live:     Shared,
+    #[live(range = 0.0..6000.0)] pub cutoff_live:     Shared,
 
     impact_player:           An<WavePlayer>,
-    impact_env:              An<AFollow<f64>>, // tracks impact sample's amplitude, drives cutoff/drive pop
+    #[node] impact_env:      An<AFollow<f64>>, // tracks impact sample's amplitude, drives cutoff/drive pop
     impact_trigger:          Shared, // clone of thump_trigger -- bumped once per NoteStart
     impact_trigger_seen:     f32,
-    pub impact_level_input:  Shared,
+    #[input(range = 0.0..1.0)] pub impact_level_input: Shared, // persisted, no CC of its own
 
-    crusher_l: Crusher,
-    crusher_r: Crusher,
+    #[node] crusher_l: Crusher,
+    #[node] crusher_r: Crusher,
+    #[input(cc = "8", range = -36.0..0.0, set = |v| CRUSH_THRESH_MAX_DB + v * (CRUSH_THRESH_MIN_DB - CRUSH_THRESH_MAX_DB))]
     pub crush_input: Shared, // threshold_down, dB -- CC8
 
-    pub crush_env_live: Shared, // meter telemetry, from crusher_l -- see ui panel
-    pub crush_out_live: Shared,
-    pub crush_gr_live:  Shared,
+    #[live(range = -60.0..0.0)] pub crush_env_live: Shared, // meter telemetry, from crusher_l -- see ui panel
+    #[live(range = -60.0..0.0)] pub crush_out_live: Shared,
+    #[live(range = -60.0..0.0)] pub crush_gr_live:  Shared,
 
-    thump:         ThumpMod,
-    thump_signal:  f32,
-    filter_signal: f32,
-    width_signal:  f32,
-    fuzz_signal:   f32,
+    thump: ThumpMod,
+    sig:   SignalState,
 }
 
-// Read-only-from-outside view onto ReeseVoice's Shared cells -- see
-// GrowlView's doc in growl.rs for why this exists. `_input` fields are the
-// authored knob values; `_live` fields are read-only, written by ReeseVoice
-// each tick, and show the actual post-modulation values the DSP is using --
-// for visualisation only.
-#[derive(Clone)]
-pub struct ReeseView {
-    pub detune_input:    Shared,
-    pub sub_level_input: Shared,
-    pub drive_input:     Shared,
-    pub cutoff_input:    Shared,
-    pub resonance_input: Shared,
-    pub lfo_rate_input:  Shared,
-    pub lfo_depth_input: Shared,
-
-    pub drive_live:      Shared,
-    pub lfo_rate_live:   Shared,
-    pub detune_live:     Shared,
-    pub cutoff_live:     Shared,
-
-    pub impact_level_input: Shared,
-
-    pub crush_input: Shared,
-
-    pub crush_env_live: Shared,
-    pub crush_out_live: Shared,
-    pub crush_gr_live:  Shared,
-}
-
-impl ReeseView {
-    // CC-settable fields only (see apply_cc below) -- `_live` fields are
-    // computed per-tick from the live signal, not persisted.
-    pub fn fields (&self) -> Vec<(&'static str, f32)> {
-        vec![
-            ("detune_input",    self.detune_input.value()),
-            ("sub_level_input", self.sub_level_input.value()),
-            ("drive_input",     self.drive_input.value()),
-            ("cutoff_input",    self.cutoff_input.value()),
-            ("resonance_input", self.resonance_input.value()),
-            ("lfo_rate_input",  self.lfo_rate_input.value()),
-            ("lfo_depth_input", self.lfo_depth_input.value()),
-            ("impact_level_input", self.impact_level_input.value()),
-            ("crush_input",        self.crush_input.value()),
-        ]
-    }
-
-    pub fn apply (&self, fields: &[(String, f32)]) {
-        for (name, value) in fields {
-            match name.as_str() {
-                "detune_input"       => self.detune_input.set_value(*value),
-                "sub_level_input"    => self.sub_level_input.set_value(*value),
-                "drive_input"        => self.drive_input.set_value(*value),
-                "cutoff_input"       => self.cutoff_input.set_value(*value),
-                "resonance_input"    => self.resonance_input.set_value(*value),
-                "lfo_rate_input"     => self.lfo_rate_input.set_value(*value),
-                "lfo_depth_input"    => self.lfo_depth_input.set_value(*value),
-                "impact_level_input" => self.impact_level_input.set_value(*value),
-                "crush_input"        => self.crush_input.set_value(*value),
-                _ => {},
-            }
-        }
-    }
-}
-
+// ReeseView + view()/fields()/apply()/UI_RANGES + the AudioNode/Voice impls
+// are generated by #[derive(Voice)]. new() stays hand-written (new = manual)
+// because the per-voice detune/pan `spread` weights are computed before the
+// struct literal.
 impl ReeseVoice {
-    pub fn view (&self) -> ReeseView {
-        ReeseView {
-            detune_input:    self.detune_input.clone(),
-            sub_level_input: self.sub_level_input.clone(),
-            drive_input:     self.drive_input.clone(),
-            cutoff_input:    self.cutoff_input.clone(),
-            resonance_input: self.resonance_input.clone(),
-            lfo_rate_input:  self.lfo_rate_input.clone(),
-            lfo_depth_input: self.lfo_depth_input.clone(),
-            drive_live:      self.drive_live.clone(),
-            lfo_rate_live:   self.lfo_rate_live.clone(),
-            detune_live:     self.detune_live.clone(),
-            cutoff_live:     self.cutoff_live.clone(),
-            impact_level_input: self.impact_level_input.clone(),
-            crush_input:     self.crush_input.clone(),
-            crush_env_live:  self.crush_env_live.clone(),
-            crush_out_live:  self.crush_out_live.clone(),
-            crush_gr_live:   self.crush_gr_live.clone(),
-        }
-    }
-
     pub fn new (thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared) -> ReeseVoice {
         let spread: [f32; VOICES] = std::array::from_fn(|i| {
             if VOICES == 1 { 0.0 } else { (2.0 * i as f32 / (VOICES - 1) as f32) - 1.0 }
@@ -248,29 +167,18 @@ impl ReeseVoice {
             crush_gr_live:  shared(0.0),
 
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
-            thump_signal: 0.0, filter_signal: 0.0, width_signal: 0.0, fuzz_signal: 0.0,
+            sig:   SignalState::new(),
         }
     }
 }
 
-impl AudioNode for ReeseVoice {
-    const ID: u64 = 0x7A_11;
-    type Inputs = U2;
-    type Outputs = U2;
-
-    fn tick (&mut self, input: &Frame<f32, U2>) -> Frame<f32, U2> {
-        let freq     = input[0];
-        let selected = input[1] as usize;
-        if selected != Self::INDEX { return Frame::from([0.0, 0.0]); }
-
-        let freq_mult = self.thump.tick(self.thump_signal);
-        let freq = freq * freq_mult;
-
-        self.lfo_rate_live.set_value(self.lfo_rate_input.value() + (1.0 + WIDTH_TO_LFO_RATE * self.width_signal).clamp(0.0, 1.0));
+impl VoiceDsp for ReeseVoice {
+    fn render (&mut self, freq: f32, _thump_mult: f32) -> Frame<f32, U2> {
+        self.lfo_rate_live.set_value(self.lfo_rate_input.value() + (1.0 + WIDTH_TO_LFO_RATE * self.sig.width).clamp(0.0, 1.0));
         let lfo_val   = self.lfo.filter_mono(self.lfo_rate_live.value());
         let lfo_depth = self.lfo_depth_input.value();
 
-        let width_signal = self.width_signal.clamp(0.0, 1.0);
+        let width_signal = self.sig.width.clamp(0.0, 1.0);
         let detune = self.detune_input.value()
             * (1.0 + lfo_val * lfo_depth * DETUNE_LFO_DEPTH)
             * (1.0 + WIDTH_TO_DETUNE * width_signal);
@@ -286,7 +194,7 @@ impl AudioNode for ReeseVoice {
         // the cutoff/drive pops below, the raw sample gets folded into the
         // pre-drive mix so it shares the synth's saturation and filter sweep
         // rather than sitting on top as a separate dry layer.
-        let impact_raw = self.impact_player.get_mono() * self.impact_level_input.value() * self.thump_signal;
+        let impact_raw = self.impact_player.get_mono() * self.impact_level_input.value() * self.sig.thump;
         let impact_env = self.impact_env.filter_mono(impact_raw.abs());
 
         let mut mix_l = 0.0f32;
@@ -317,7 +225,7 @@ impl AudioNode for ReeseVoice {
         // Live `fuzz` signal and the impact envelope both boost drive on top
         // of the macro knob -- the kick's transient briefly adds extra grit.
         let drive = (self.drive_input.value()
-            * (1.0 + 2.0 * self.fuzz_signal.clamp(0.0, 1.0))
+            * (1.0 + 2.0 * self.sig.fuzz.clamp(0.0, 1.0))
             * (1.0 + IMPACT_DRIVE_POP * impact_env)).max(1.0);
         self.drive_live.set_value(drive);
         let shaped_l = (mix_l * self.drive_live.value()).tanh();
@@ -326,7 +234,7 @@ impl AudioNode for ReeseVoice {
         // Cutoff driven by the macro knob (scaled by live `filter` signal), the
         // LFO, and a pop from the impact envelope that opens the filter on hit.
         let cutoff_base  = self.cutoff_input.value() * 2f32.powf(lfo_val * lfo_depth * LFO_DEPTH);
-        let cutoff_hz  = (linexp(0.0, 1.0, CUTOFF_LO, CUTOFF_HI, cutoff_base * (1.0 + FILTER_TO_CUTOFF * self.filter_signal)) + IMPACT_CUTOFF_POP * impact_env).clamp(20.0, 18_000.0);
+        let cutoff_hz  = (linexp(0.0, 1.0, CUTOFF_LO, CUTOFF_HI, cutoff_base * (1.0 + FILTER_TO_CUTOFF * self.sig.filter)) + IMPACT_CUTOFF_POP * impact_env).clamp(20.0, 18_000.0);
         self.cutoff_live.set_value(cutoff_hz);
         let q = self.resonance_input.value();
 
@@ -346,50 +254,5 @@ impl AudioNode for ReeseVoice {
         self.crush_gr_live.set_value(self.crusher_l.gr_peak_db());
 
         Frame::from([crushed_l, crushed_r])
-    }
-
-    fn set_sample_rate (&mut self, sample_rate: f64) {
-        for osc in self.unison.iter_mut() { osc.set_sample_rate(sample_rate); }
-        self.sub.set_sample_rate(sample_rate);
-        self.lfo.set_sample_rate(sample_rate);
-        self.filter_l.set_sample_rate(sample_rate);
-        self.filter_r.set_sample_rate(sample_rate);
-        self.impact_env.set_sample_rate(sample_rate);
-        self.crusher_l.set_sample_rate(sample_rate);
-        self.crusher_r.set_sample_rate(sample_rate);
-        self.thump.set_sample_rate(sample_rate);
-    }
-}
-
-impl Voice for ReeseVoice {
-    const INDEX: usize = 0;
-    fn name (&self) -> &'static str { "Reese" }
-    fn set_signal (&mut self, _bend: f32, filter: f32, fuzz: f32, width: f32, thump: f32) {
-        self.thump_signal  = thump;
-        self.filter_signal = filter;
-        self.width_signal  = width;
-        self.fuzz_signal   = fuzz;
-    }
-
-    // CC 20-27, 0..1 normalized input scaled to each param's own range.
-    // CC2-8 is the
-    // same set of knobs (CC1 being reserved for the global Mod Wheel ->
-    // filter mapping, see hydra/midi.rs) so a controller with only 8 physical
-    // knobs can still reach them live -- `width` doesn't fit in that 7-slot
-    // bank, so it's only reachable via CC27 here. impact_level_input has no
-    // CC of its own -- CC8 drives crush_input (crusher threshold) instead.
-    fn apply_cc (&mut self, cc: u8, value: f32) {
-        let value = value.clamp(0.0, 1.0);
-        match cc {
-            1 => self.detune_input.set_value(value * 50.0),
-            2 => self.sub_level_input.set_value(value),
-            3 => self.drive_input.set_value(1.0 + value * 7.0),
-            4 => self.cutoff_input.set_value(value),
-            5 => self.resonance_input.set_value(0.3 + value * 2.7),
-            6 => self.lfo_rate_input.set_value(0.05 + value * 2.95),
-            7 => self.lfo_depth_input.set_value(value),
-            8 => self.crush_input.set_value(CRUSH_THRESH_MAX_DB + value * (CRUSH_THRESH_MIN_DB - CRUSH_THRESH_MAX_DB)),
-            _ => {},
-        }
     }
 }

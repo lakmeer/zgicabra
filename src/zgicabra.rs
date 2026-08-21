@@ -471,12 +471,11 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
 
     // Filter is rot[0] of whichever wand was triggered most recently.
     // TODO: tune lower bound
-    let filter = match curr_state.most_recent_wand {
-        Hand::Left  => curr_state.left.rot[0],
-        Hand::Right => curr_state.right.rot[0],
-        Hand::Neither => 0.0,
+    curr_state.signal.filter = match curr_state.most_recent_wand {
+        Hand::Left  => 0.3 + 0.7 * curr_state.left.rot[0],
+        Hand::Right => 0.3 + 0.7 * curr_state.right.rot[0],
+        Hand::Neither => prev_state.signal.filter,
     };
-    curr_state.signal.filter = 0.3 + 0.7 * filter;
 
     // Physical hand separation ranges ~50 (fingers touching) to ~1500 (full arm span)
     // Sets zero point at about shoulder width. Final range approx 0.3..1.0
