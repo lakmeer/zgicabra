@@ -72,7 +72,7 @@ Dynamics & Envelopes
   afollow               - Asymmetric smoothing filter
   follow                - Smoothing filter with response time
   limiter / limiter_stereo - Look-ahead limiter
-  declick(_s)            - Fade-in declick
+  declick(_s)           - Fade-in declick
 
 Reverb & Spatial
   reverb_stereo         - FDN stereo reverb
@@ -84,51 +84,51 @@ Reverb & Spatial
 
 Special Processing
   resynth               - Frequency domain resynthesis
-  convolve               - Convolution filter
-  pluck                  - Karplus-Strong plucked string
-  shape / shape_fn        - Waveshaper distortion
-  clip / clip_to          - Signal clipping
-  meter                   - Signal metering
-  monitor                 - Monitoring pass-through
-  hold(_hz)               - Sample-and-hold
+  convolve              - Convolution filter
+  pluck                 - Karplus-Strong plucked string
+  shape / shape_fn      - Waveshaper distortion
+  clip / clip_to        - Signal clipping
+  meter                 - Signal metering
+  monitor               - Monitoring pass-through
+  hold(_hz)             - Sample-and-hold
 
 Oscillator Modulation
   lorenz                - Lorenz system oscillator
   rossler               - Rössler system oscillator
-  envelope / lfo         - Time-varying control
-  envelope2 / lfo2        - Input-dependent control
-  envelope3 / lfo3        - 2-input dependent control
-  envelope_in / lfo_in    - Frame-based control
+  envelope / lfo        - Time-varying control
+  envelope2 / lfo2      - Input-dependent control
+  envelope3 / lfo3      - 2-input dependent control
+  envelope_in / lfo_in  - Frame-based control
 
 Signal Routing & Combination
-  pass / multipass       - Pass-through signal
-  sink / multisink        - Consume signal
-  split / multisplit      - Split to multichannel
-  join / multijoin        - Join multichannel
-  reverse                 - Reverse channel order
-  add / sub / mul          - Arithmetic operations
-  product / sum            - Multiply/sum two nodes
-  pipe(i/f)                - Serial chaining
-  branch(i/f)               - Parallel branching
-  bus(i/f)                  - Signal busing
-  stack(i/f)                - Parallel stacking
-  thru                      - Pass-through with parameter adjustment
+  pass / multipass      - Pass-through signal
+  sink / multisink      - Consume signal
+  split / multisplit    - Split to multichannel
+  join / multijoin      - Join multichannel
+  reverse               - Reverse channel order
+  add / sub / mul       - Arithmetic operations
+  product / sum         - Multiply/sum two nodes
+  pipe(i/f)             - Serial chaining
+  branch(i/f)           - Parallel branching
+  bus(i/f)              - Signal busing
+  stack(i/f)            - Parallel stacking
+  thru                  - Pass-through with parameter adjustment
 
 Wave & Sample Playback
-  playwave(_at)             - Play back wave data
-  resample                  - Resample generator at variable speed
-  resample_fir               - FIR-based sinc resampling
+  playwave(_at)         - Play back wave data
+  resample              - Resample generator at variable speed
+  resample_fir          - FIR-based sinc resampling
 
 Control & Feedback
-  feedback / feedback2       - Single-sample feedback loop
-  fdn / fdn2                 - Feedback Delay Network
-  listen                     - Setting listener wrapper
-  update                     - Update node with interval
-  var / var_fn                - Shared variable output
-  timer                       - Stream time tracking
-  oversample                  - 2x oversampling
-  biquad_bank                 - SIMD-accelerated biquad bank
-  chorus                      - Chorus effect
-  map                         - Custom channel mapping
-  unit                        - Convert AudioUnit to AudioNode
+  feedback / feedback2  - Single-sample feedback loop
+  fdn / fdn2            - Feedback Delay Network
+  listen                - Setting listener wrapper
+  update                - Update node with interval
+  var / var_fn          - Shared variable output
+  timer                 - Stream time tracking
+  oversample            - 2x oversampling
+  biquad_bank           - SIMD-accelerated biquad bank
+  chorus                - Chorus effect
+  map                   - Custom channel mapping
+  unit                  - Convert AudioUnit to AudioNode
 

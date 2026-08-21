@@ -1,7 +1,8 @@
 use drawille::{Canvas,PixelColor};
 
 use crate::zgicabra::Voice;
-use crate::audio::{AudioHandles,AudioErrors,SwarmView,GrowlView,ReeseView,CRUSH_THRESHOLD_DOWN};
+use crate::audio::{AudioHandles,AudioErrors,SwarmView,GrowlView,ReeseView};
+use crate::audio::crusher::{CRUSH_THRESHOLD};
 
 use super::utils::*;
 use super::comp_meter::render_compressor_meter;
@@ -89,7 +90,7 @@ fn draw_reese_panel (y: u16, reese: &ReeseView) {
     let meter = render_compressor_meter(
         reese.crush_env_live.value(),
         reese.crush_out_live.value(),
-        CRUSH_THRESHOLD_DOWN,
+        CRUSH_THRESHOLD,
         reese.crush_gr_live.value());
     print!("{}{:>13} {}", goto(2, y + 17), "crush", meter);
 }

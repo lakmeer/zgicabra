@@ -17,7 +17,7 @@ use zgicabra_voice_macro::Voice;
 use crate::tools::linexp;
 use crate::zgicabra::SignalState;
 use super::voice::{Voice, VoiceDsp, ThumpMod};
-use super::crusher::Crusher;
+use super::crusher::crusher;
 
 const VOICES: usize = 8; // odd -- center voice lands at zero detune/pan
 
@@ -63,13 +63,6 @@ const IMPACT_ENV_RELEASE: f32 = 0.01;   // trails off with the sample's decay
 const IMPACT_CUTOFF_POP:  f32 = 1000.0; // Hz added to cutoff at full impact envelope
 const IMPACT_DRIVE_POP:   f32 = 1.5;    // extra drive multiplier at full impact envelope
 
-const CRUSH_RATIO_DOWN:     f32 = 3.0;
-const CRUSH_THRESHOLD_UP:   f32 = -30.0;
-const CRUSH_RATIO_UP:       f32 = 2.0;
-const CRUSH_RELEASE:        f32 = 0.12;
-const CRUSH_ATTACK:         f32 = 0.01;
-const CRUSH_MAKEUP_DB:      f32 = 0.0;
-pub const CRUSH_THRESHOLD_DOWN: f32 = -12.0; // dB, fixed
 const DEFAULT_CRUSH_DEPTH:  f32 = 1.0; // CC8 = 1.0 -> heaviest crush, 0.0 -> bypassed
 
 #[derive(Clone, Voice)]
@@ -92,6 +85,7 @@ pub struct ReeseVoice {
     #[input(cc = "5", range = 0.3..3.0,   set = |v| 0.3 + v * 2.7)]   pub resonance_input: Shared,
     #[input(cc = "6", range = 0.05..3.0,  set = |v| 0.05 + v * 2.95)] pub lfo_rate_input:  Shared,
     #[input(cc = "7", range = 0.0..1.0,   set = |v| v)]               pub lfo_depth_input: Shared,
+    #[input(cc = "8", range = 0.0..1.0,   set = |v| v)]               pub crush_input:     Shared,
 
     #[live(range = 0.0..5.0)]    pub drive_live:      Shared,
     #[live(range = 0.0..5.0)]    pub lfo_rate_live:   Shared,
@@ -104,10 +98,8 @@ pub struct ReeseVoice {
     impact_trigger_seen:     f32,
     #[input(range = 0.0..1.0)] pub impact_level_input: Shared, // persisted, no CC of its own
 
-    #[node] crusher_l: Crusher,
-    #[node] crusher_r: Crusher,
-    #[input(cc = "8", range = 0.0..1.0, set = |v| v)]
-    pub crush_input: Shared, // depth -- CC8
+    #[node] crusher_l: Box<dyn AudioUnit>,
+    #[node] crusher_r: Box<dyn AudioUnit>,
 
     #[live(range = -60.0..0.0)] pub crush_env_live: Shared, // meter telemetry, from crusher_l -- see ui panel
     #[live(range = -60.0..0.0)] pub crush_out_live: Shared,
@@ -131,6 +123,7 @@ impl ReeseVoice {
         let crush_env_live = shared(0.0);
         let crush_out_live = shared(0.0);
         let crush_gr_live  = shared(0.0);
+        let crush_input    = shared(DEFAULT_CRUSH_DEPTH);
 
         ReeseVoice {
             unison: std::array::from_fn(|_| saw()),
@@ -148,6 +141,7 @@ impl ReeseVoice {
             resonance_input: shared(DEFAULT_RESONANCE),
             lfo_rate_input:  shared(DEFAULT_LFO_RATE),
             lfo_depth_input: shared(DEFAULT_LFO_DEPTH),
+            crush_input:     crush_input.clone(),
 
             drive_live:      shared(0.0),
             lfo_rate_live:   shared(0.0),
@@ -160,17 +154,9 @@ impl ReeseVoice {
             impact_trigger_seen: thump_trigger.value(),
             impact_level_input:  shared(1.0),
 
-            crusher_l: Crusher::new(
-                CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_THRESHOLD_DOWN,
-                crush_env_live.clone(), crush_out_live.clone(), crush_gr_live.clone(),
-            ),
-            // Right channel's meters go nowhere -- the UI panel shows the left
-            // channel only, same as before.
-            crusher_r: Crusher::new(
-                CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_THRESHOLD_DOWN,
-                shared(0.0), shared(0.0), shared(0.0),
-            ),
-            crush_input: shared(DEFAULT_CRUSH_DEPTH),
+            crusher_l: Box::new(crusher(&crush_input, crush_env_live.clone(), crush_out_live.clone(), crush_gr_live.clone(),)),
+            // Right channel's meters not wired
+            crusher_r: Box::new(crusher(&crush_input, shared(0.0), shared(0.0), shared(0.0),)),
 
             crush_env_live, crush_out_live, crush_gr_live,
 
@@ -251,11 +237,13 @@ impl VoiceDsp for ReeseVoice {
 
         // Crusher sits last in the chain, one instance per channel so each
         // side keeps its own envelope and the unison stack's stereo width
-        // survives it.
-        let crush_depth = self.crush_input.value();
-        Frame::from([
-            self.crusher_l.tick(out_l, crush_depth, CRUSH_ATTACK, CRUSH_MAKEUP_DB),
-            self.crusher_r.tick(out_r, crush_depth, CRUSH_ATTACK, CRUSH_MAKEUP_DB),
-        ])
+        // survives it. Depth (crush_input) is read internally by the graph
+        // itself now, every tick -- see crusher.rs.
+        let mut wet_l = [0.0f32];
+        let mut wet_r = [0.0f32];
+        self.crusher_l.tick(&[out_l], &mut wet_l);
+        self.crusher_r.tick(&[out_r], &mut wet_r);
+
+        Frame::from([wet_l[0], wet_r[0]])
     }
 }

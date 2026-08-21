@@ -22,7 +22,7 @@ mod reese;
 mod fm;
 mod filter;
 mod reverb;
-mod crusher;
+pub mod crusher;
 mod compressor;
 mod voice;
 mod cc_input;
@@ -38,7 +38,7 @@ use reese::ReeseVoice;
 use basic::BasicVoice;
 use cc_input::CcInput;
 pub use growl::GrowlView;
-pub use reese::{ReeseView, CRUSH_THRESHOLD_DOWN};
+pub use reese::ReeseView;
 pub use basic::BasicView;
 pub use swarm::SwarmView;
 
