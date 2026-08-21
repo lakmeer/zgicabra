@@ -161,14 +161,14 @@ pub fn load_named_model (name: &str) -> io::Result<NamModelSlot> {
 // touches it.
 #[derive(Clone)]
 pub struct NamModelSlot {
-    model:       Arc<Mutex<Model>>,
+    pub(super) model:       Arc<Mutex<Model>>,
     // Relative to the .nam's own input_level_dbu metadata, trimmed toward a
     // common target so every model gets driven at roughly the level it was
     // captured at (see load_nam_models).
-    input_gain:  f32,
+    pub(super) input_gain:  f32,
     // Toward TARGET_LOUDNESS_DB from the .nam's own loudness metadata, so
     // cycling models doesn't jump wildly in level.
-    output_gain: f32,
+    pub(super) output_gain: f32,
 }
 
 // Scratch/chunk cap for NamStage::process_block. nam-rs's own process_buffer

@@ -130,6 +130,11 @@ impl ReeseVoice {
             if VOICES == 1 { 0.0 } else { (2.0 * i as f32 / (VOICES - 1) as f32) - 1.0 }
         });
 
+        // Crusher writes these itself every tick -- see crusher.rs.
+        let crush_env_live = shared(0.0);
+        let crush_out_live = shared(0.0);
+        let crush_gr_live  = shared(0.0);
+
         ReeseVoice {
             unison: std::array::from_fn(|_| saw()),
             unison_pan: std::array::from_fn(|_| panner()),
@@ -158,13 +163,19 @@ impl ReeseVoice {
             impact_trigger_seen: thump_trigger.value(),
             impact_level_input:  shared(1.0),
 
-            crusher_l: Crusher::new(CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_MIX),
-            crusher_r: Crusher::new(CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_MIX),
+            crusher_l: Crusher::new(
+                CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_MIX,
+                crush_env_live.clone(), crush_out_live.clone(), crush_gr_live.clone(),
+            ),
+            // Right channel's meters go nowhere -- the UI panel shows the left
+            // channel only, same as before.
+            crusher_r: Crusher::new(
+                CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_MIX,
+                shared(0.0), shared(0.0), shared(0.0),
+            ),
             crush_input: shared(DEFAULT_CRUSH_THRESH),
 
-            crush_env_live: shared(0.0),
-            crush_out_live: shared(0.0),
-            crush_gr_live:  shared(0.0),
+            crush_env_live, crush_out_live, crush_gr_live,
 
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
             sig:   SignalState::new(),
@@ -241,18 +252,13 @@ impl VoiceDsp for ReeseVoice {
         let out_l = self.filter_l.tick(&Frame::from([shaped_l, cutoff_hz, q]))[0];
         let out_r = self.filter_r.tick(&Frame::from([shaped_r, cutoff_hz, q]))[0];
 
-        // Crusher sits last in the chain, per-channel so the unison stack's
-        // stereo width survives it (see crusher.rs -- its own tick() mixes
-        // l/r to mono internally, so one instance per channel rather than
-        // one shared instance is what keeps L/R independent here).
+        // Crusher sits last in the chain, one instance per channel so each
+        // side keeps its own envelope and the unison stack's stereo width
+        // survives it.
         let crush_thresh = self.crush_input.value();
-        let crushed_l = self.crusher_l.tick(&Frame::from([out_l, out_l, 1.0, crush_thresh, CRUSH_ATTACK, CRUSH_DEPTH, CRUSH_MAKEUP_DB]))[0];
-        let crushed_r = self.crusher_r.tick(&Frame::from([out_r, out_r, 1.0, crush_thresh, CRUSH_ATTACK, CRUSH_DEPTH, CRUSH_MAKEUP_DB]))[0];
-
-        self.crush_env_live.set_value(self.crusher_l.env_db());
-        self.crush_out_live.set_value(self.crusher_l.output_db());
-        self.crush_gr_live.set_value(self.crusher_l.gr_peak_db());
-
-        Frame::from([crushed_l, crushed_r])
+        Frame::from([
+            self.crusher_l.tick(out_l, crush_thresh, CRUSH_ATTACK, CRUSH_DEPTH, CRUSH_MAKEUP_DB),
+            self.crusher_r.tick(out_r, crush_thresh, CRUSH_ATTACK, CRUSH_DEPTH, CRUSH_MAKEUP_DB),
+        ])
     }
 }

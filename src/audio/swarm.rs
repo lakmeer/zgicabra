@@ -32,7 +32,9 @@ use zgicabra_voice_macro::Voice;
 use crate::tools::linexp;
 use crate::zgicabra::SignalState;
 use super::voice::{Voice, VoiceDsp, ThumpMod};
-use super::nam::{NamStage, NamModelCycler, NamModelSlot, NAM_BLOCK_CAP};
+use super::nam::{NamModelCycler, NamModelSlot};
+use super::nam_graph::nam_mid_side;
+use super::nam_node::NAM_WINDOW;
 use super::filter::MoogFilterFx;
 use super::crusher::Crusher;
 use super::compressor::Compressor;
@@ -88,13 +90,6 @@ impl Phaser {
     }
 }
 
-// One-pole (6dB/oct) lowpass coefficient, same shape as NamStage::xover_alpha
-// -- duplicated locally since that one's private to nam.rs and this is only
-// a couple lines of math.
-fn xover_alpha (fc: f32, sample_rate: f32) -> f32 {
-    1.0 - (-2.0 * PI * fc / sample_rate).exp()
-}
-
 fn lerp (a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
 
 const LIMITER_THRESH_DB: f32 = -24.0; // "low threshold" -- squashes hard to normalize into the crossover
@@ -132,31 +127,29 @@ fn model_index_by_name (names: &[String], name: &str) -> usize {
     names.iter().position(|n| n == name).unwrap_or(0)
 }
 
-// One output channel's post-swarm chain: limiter -> xover -> moog filter ->
-// crusher. NAM inference happens once per block, mid/side across both
-// channels (see SwarmVoice::on_block_start) -- this struct only owns the
-// per-sample stages plus the one-block-latency raw/wet scratch ring that
-// the swarm-level NAM pass reads and rewrites in place between blocks.
+// One output channel's per-sample stages, split around the NAM graph:
+// `pre` is everything upstream of it (the limiter), `post` everything
+// downstream (moog filter -> crusher). The crossover, mid/side collapse and
+// inference that used to sit between them -- along with the one-block
+// latency ring that made a block kernel reachable from a per-sample tick --
+// are all nam_graph::nam_mid_side now.
 #[derive(Clone)]
 struct ChannelChain {
-    limiter:  Compressor,
-    xover_lp: f32,
-    moog:     MoogFilterFx,
-    crusher:  Crusher,
-    raw_lo:   Vec<f32>,
-    raw_hi:   Vec<f32>,
-    pos:      usize,
+    limiter: Compressor,
+    moog:    MoogFilterFx,
+    crusher: Crusher,
 }
 
 impl ChannelChain {
     fn new () -> ChannelChain {
         ChannelChain {
             limiter: Compressor::new(),
-            xover_lp: 0.0,
             moog:    MoogFilterFx::new(),
-            crusher: Crusher::new(CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_MIX),
-            raw_lo: vec![0.0; NAM_BLOCK_CAP], raw_hi: vec![0.0; NAM_BLOCK_CAP],
-            pos: 0,
+            // Swarm has no compressor panel, so the meter cells go nowhere.
+            crusher: Crusher::new(
+                CRUSH_RATIO_DOWN, CRUSH_THRESHOLD_UP, CRUSH_RATIO_UP, CRUSH_RELEASE, CRUSH_MIX,
+                shared(0.0), shared(0.0), shared(0.0),
+            ),
         }
     }
 
@@ -166,27 +159,14 @@ impl ChannelChain {
         self.crusher.set_sample_rate(sample_rate);
     }
 
-    fn tick (&mut self, x: f32, sample_rate: f32, filter_cutoff: f32, xover_hz: f32) -> f32 {
-        let (limited, _) = self.limiter.tick(x, x, LIMITER_THRESH_DB);
-
-        let alpha = xover_alpha(xover_hz, sample_rate);
-        self.xover_lp += alpha * (limited - self.xover_lp);
-        let low  = self.xover_lp;
-        let high = limited - self.xover_lp;
-
-        let wet_low  = self.raw_lo.get(self.pos).copied().unwrap_or(0.0);
-        let wet_high = self.raw_hi.get(self.pos).copied().unwrap_or(0.0);
-        if let Some(cell) = self.raw_lo.get_mut(self.pos) { *cell = low; }
-        if let Some(cell) = self.raw_hi.get_mut(self.pos) { *cell = high; }
-        self.pos += 1;
-
-        let combined = wet_low + wet_high;
-        let filtered = self.moog.tick(&Frame::from([combined, combined, 1.0, filter_cutoff, MOOG_RESONANCE, 0.0, 0.0]))[0];
-        self.crusher.tick(&Frame::from([filtered, filtered, 1.0, CRUSH_THRESH_DOWN, CRUSH_ATTACK, CRUSH_DEPTH, CRUSH_MAKEUP_DB]))[0]
+    // Squash hard into the crossover -- see LIMITER_THRESH_DB.
+    fn pre (&mut self, x: f32) -> f32 {
+        self.limiter.tick(x, x, LIMITER_THRESH_DB).0
     }
 
-    fn on_block_start (&mut self) {
-        self.pos = 0;
+    fn post (&mut self, x: f32, filter_cutoff: f32) -> f32 {
+        let filtered = self.moog.tick(x, filter_cutoff, MOOG_RESONANCE);
+        self.crusher.tick(filtered, CRUSH_THRESH_DOWN, CRUSH_ATTACK, CRUSH_DEPTH, CRUSH_MAKEUP_DB)
     }
 }
 
@@ -202,28 +182,31 @@ pub struct SwarmVoice {
     #[node] chain_l: ChannelChain,
     #[node] chain_r: ChannelChain,
 
-    // Mid/side NAM stages -- one instance per band, shared across both
-    // channels (see file doc comment). mid_lo/side_lo/mid_hi/side_hi are
-    // scratch for the merge/split around them, sized once at construction,
-    // never reallocated on the audio thread.
-    #[node] nam_lo_stage: NamStage,
-    #[node] nam_hi_stage: NamStage,
-    mid_lo:  Vec<f32>,
-    side_lo: Vec<f32>,
-    mid_hi:  Vec<f32>,
-    side_hi: Vec<f32>,
+    // The whole mid/side NAM stage: crossover, mid/side collapse, one model
+    // per band on the mid signal, rebuild, band sum. Boxed because the
+    // combinator type is unnameable and impl Trait can't be a field type;
+    // Box<dyn AudioUnit> is Clone via dyn_clone, so #[derive(Clone)] still
+    // works. See nam_graph.rs.
+    #[node] nam: Box<dyn AudioUnit>,
+    // Dry/wet, written from sig.fuzz each sample -- the graph reads it.
+    nam_blend: Shared,
 
-    #[input(cc = "50|2", range = 0.5..1.0,    set = |v| 0.5 + v * 0.5)] pub chase_factor_input: Shared,
-    #[input(cc = "51|3", range = 0.0..200.0,  set = |v| v * 200.0)]     pub radius_input:       Shared,
-    #[input(cc = "52|4", range = 0.0..2.0,    set = |v| v * 2.0)]       pub orbit_speed_input:  Shared,
-    #[input(cc = "53|5", range = 0.0..1.0,    set = |v| v)]             pub phaser_depth_input: Shared,
-    #[input(cc = "54|6", range = 0.0..2000.0, set = |v| v * 2000.0)]    pub xover_freq_input:   Shared,
+    #[input(cc = "1", range = 0.5..1.0,    set = |v| 0.5 + v * 0.5)] pub chase_factor_input: Shared,
+    #[input(cc = "2", range = 0.0..200.0,  set = |v| v * 200.0)]     pub radius_input:       Shared,
+    #[input(cc = "3", range = 0.0..2.0,    set = |v| v * 2.0)]       pub orbit_speed_input:  Shared,
+    #[input(cc = "4", range = 0.0..1.0,    set = |v| v)]             pub phaser_depth_input: Shared,
+    #[input(cc = "5", range = 0.0..2000.0, set = |v| v * 2000.0)]    pub xover_freq_input:   Shared,
     #[view] pub nam_lo: NamModelCycler,
     #[view] pub nam_hi: NamModelCycler,
 
     #[live(range = 0.0..200.0)] pub radius_live:       Shared,
     #[live(range = 0.0..2.0)]   pub orbit_speed_live:  Shared,
     #[live(range = 0.0..1.0)]   pub phaser_depth_live: Shared,
+
+    // Post-blend peak of each band, written by monitor() nodes inside the
+    // NAM graph rather than by hand here.
+    #[live(range = 0.0..1.0)] pub nam_lo_live: Shared,
+    #[live(range = 0.0..1.0)] pub nam_hi_live: Shared,
 
     // Live per-oscillator freq/pan, written every tick -- read-only from the
     // UI side for the swarm scope (see ui.rs's draw_swarm_panel). Arrays, so
@@ -255,10 +238,35 @@ impl SwarmVoice {
         });
         let angle: [f32; NUM_OSCS] = std::array::from_fn(|i| i as f32 * TAU / NUM_OSCS as f32);
 
-        let lo_index = model_index_by_name(&nam_names, "wetbass") as f32;
-        let hi_index = model_index_by_name(&nam_names, "sansamp") as f32;
-        let nam_lo = NamModelCycler::new(shared(lo_index), nam_names.clone());
-        let nam_hi = NamModelCycler::new(shared(hi_index), nam_names);
+        let lo_index = model_index_by_name(&nam_names, "wetbass");
+        let hi_index = model_index_by_name(&nam_names, "sansamp");
+        let nam_lo = NamModelCycler::new(shared(lo_index as f32), nam_names.clone());
+        let nam_hi = NamModelCycler::new(shared(hi_index as f32), nam_names);
+
+        // Each band gets its own model instance, so neither band's WaveNet
+        // dilation state can bleed into the other's even if both cyclers land
+        // on the same model -- which the old shared Vec<Arc<Model>> allowed.
+        //
+        // Note the tradeoff: the model choice is now baked into the graph at
+        // construction, where NamStage read it from a Shared every block.
+        // Nothing actually drove that Shared (NamModelCycler::cycle has no
+        // caller -- see nam.rs), so this loses no working behaviour, but
+        // making model choice live again would mean Net::crossfade rather than
+        // a Shared write. That is the cost of expressing the path as a graph.
+        let nam_blend        = shared(0.0);
+        let xover_freq_input = shared(DEFAULT_XOVER_FREQ);
+        let nam_lo_live = shared(0.0);
+        let nam_hi_live = shared(0.0);
+        let slot_lo = nam_models.get(lo_index).and_then(Option::as_ref)
+            .expect("swarm lo NAM model slot");
+        let slot_hi = nam_models.get(hi_index).and_then(Option::as_ref)
+            .expect("swarm hi NAM model slot");
+        let nam = Box::new(nam_mid_side(
+            slot_lo, slot_hi,
+            &nam_blend, &xover_freq_input,
+            &nam_lo_live, &nam_hi_live,
+            NAM_WINDOW,
+        ));
 
         SwarmVoice {
             oscs,
@@ -268,23 +276,21 @@ impl SwarmVoice {
             chain_l: ChannelChain::new(),
             chain_r: ChannelChain::new(),
 
-            nam_lo_stage: NamStage::new(nam_models.clone(), nam_lo.shared()),
-            nam_hi_stage: NamStage::new(nam_models, nam_hi.shared()),
-            mid_lo:  vec![0.0; NAM_BLOCK_CAP],
-            side_lo: vec![0.0; NAM_BLOCK_CAP],
-            mid_hi:  vec![0.0; NAM_BLOCK_CAP],
-            side_hi: vec![0.0; NAM_BLOCK_CAP],
+            nam,
+            nam_blend,
 
             chase_factor_input: shared(DEFAULT_CHASE_FACTOR),
             radius_input:       shared(DEFAULT_RADIUS),
             orbit_speed_input:  shared(DEFAULT_ORBIT_SPEED),
             phaser_depth_input: shared(DEFAULT_PHASER_DEPTH),
-            xover_freq_input:   shared(DEFAULT_XOVER_FREQ),
+            xover_freq_input,
             nam_lo, nam_hi,
 
             radius_live:       shared(0.0),
             orbit_speed_live:  shared(0.0),
             phaser_depth_live: shared(0.0),
+            nam_lo_live,
+            nam_hi_live,
 
             osc_freq_live: std::array::from_fn(|_| shared(0.0)),
             osc_pan_live:  std::array::from_fn(|_| shared(0.0)),
@@ -349,48 +355,24 @@ impl VoiceDsp for SwarmVoice {
         mix_r *= norm;
 
         let filter_cutoff = self.sig.filter.clamp(0.0, 1.0);
-        let xover_hz  = self.xover_freq_input.value().max(1.0);
 
-        let out_l = self.chain_l.tick(mix_l, self.sample_rate, filter_cutoff, xover_hz);
-        let out_r = self.chain_r.tick(mix_r, self.sample_rate, filter_cutoff, xover_hz);
+        // The graph reads blend and crossover cutoff from Shared cells, so
+        // the only thing to hand it is audio. Crossover cutoff is already a
+        // Shared (xover_freq_input); blend has to be published from the
+        // per-block performance signal.
+        self.nam_blend.set_value(self.sig.fuzz.clamp(0.0, 1.0));
 
-        Frame::from([out_l, out_r])
+        let mut namd = [0.0f32; 2];
+        self.nam.tick(&[self.chain_l.pre(mix_l), self.chain_r.pre(mix_r)], &mut namd);
+
+        Frame::from([
+            self.chain_l.post(namd[0], filter_cutoff),
+            self.chain_r.post(namd[1], filter_cutoff),
+        ])
     }
 
     fn on_set_sample_rate (&mut self, sample_rate: f64) {
         self.sample_rate = sample_rate as f32;
     }
 
-    // Merge last block's per-channel low/high dry buffers to mid/side, run
-    // one NAM instance per band on the mid signal only (side stays dry),
-    // then rebuild L/R in place before this block's tick() calls start
-    // reading them as wet. See file doc comment for why mid/side instead of
-    // one NamStage per channel.
-    fn on_block_start (&mut self, block_len: usize) {
-        let n = std::cmp::min(block_len, NAM_BLOCK_CAP);
-
-        for i in 0..n {
-            let (l, r) = (self.chain_l.raw_lo[i], self.chain_r.raw_lo[i]);
-            self.mid_lo[i]  = (l + r) * 0.5;
-            self.side_lo[i] = (l - r) * 0.5;
-
-            let (l, r) = (self.chain_l.raw_hi[i], self.chain_r.raw_hi[i]);
-            self.mid_hi[i]  = (l + r) * 0.5;
-            self.side_hi[i] = (l - r) * 0.5;
-        }
-
-        let blend = self.sig.fuzz.clamp(0.0, 1.0);
-        self.nam_lo_stage.process_block(&mut self.mid_lo[..n], 1.0, blend, 1.0, 0.0);
-        self.nam_hi_stage.process_block(&mut self.mid_hi[..n], 1.0, blend, 1.0, 0.0);
-
-        for i in 0..n {
-            self.chain_l.raw_lo[i] = self.mid_lo[i] + self.side_lo[i];
-            self.chain_r.raw_lo[i] = self.mid_lo[i] - self.side_lo[i];
-            self.chain_l.raw_hi[i] = self.mid_hi[i] + self.side_hi[i];
-            self.chain_r.raw_hi[i] = self.mid_hi[i] - self.side_hi[i];
-        }
-
-        self.chain_l.on_block_start();
-        self.chain_r.on_block_start();
-    }
 }

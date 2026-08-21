@@ -12,12 +12,12 @@ use fundsp::prelude64::*;
 use crate::zgicabra::{DeltaEvent, SignalState};
 
 mod nam;
+mod nam_node;
+mod nam_graph;
 mod stutter;
 mod growl;
 mod swarm;
 mod basic;
-mod gen_node;
-mod fx_node;
 mod reese;
 mod fm;
 mod filter;
@@ -688,9 +688,9 @@ impl Engine {
         // Skip the call entirely rather than driving level=0 -- ReverbFx mono-sums
         // its input, so this is the only way to preserve stereo width while bypassed.
         if self.reverb_bypass.value() < 1.0 {
-            let out = self.reverb.tick(&Frame::from([l, r, 1.0, self.reverb_dry.value(), 0.0, 0.0, 0.0]));
-            l = out[0];
-            r = out[1];
+            let (rl, rr) = self.reverb.tick(l, r, self.reverb_dry.value());
+            l = rl;
+            r = rr;
         }
 
         if self.limiter_bypass.value() < 1.0 {

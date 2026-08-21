@@ -1,53 +1,17 @@
 
 //
-// Stutter generator: triangle sub-oscillator ring-modulated by white
-// noise, gating the noise on/off with pitch instead of a fixed-frequency
-// hiss. GenNode (6 in, 2 out), no params beyond freq/level. Not currently
-// wired into Engine (see mod.rs).
+// Stutter generator: triangle sub-oscillator ring-modulated by white noise,
+// so the noise is gated on and off with pitch instead of being a
+// fixed-frequency hiss. Currently unused -- kept as a graph expression
+// because that is now what a generator looks like here.
+//
+// 1 in (freq) -> 1 out (mono). Level is the caller's business.
 //
 
 use fundsp::prelude64::*;
 
-use super::gen_node::GenNode;
-
 const DRIVE: f32 = 4.0;
 
-pub struct StutterGen {
-    tri:   An<WaveSynth<U1>>,
-    noise: Box<dyn AudioUnit>,
-}
-
-impl StutterGen {
-    pub fn new () -> StutterGen {
-        StutterGen { tri: triangle(), noise: Box::new(white()) }
-    }
-}
-
-impl Clone for StutterGen {
-    fn clone (&self) -> StutterGen { StutterGen::new() }
-}
-
-impl AudioNode for StutterGen {
-    const ID: u64 = 0x7A_14;
-    type Inputs = U6;
-    type Outputs = U2;
-
-    fn tick (&mut self, input: &Frame<f32, U6>) -> Frame<f32, U2> {
-        let freq  = input[0];
-        let level = input[1];
-
-        let dry  = self.tri.filter_mono(freq) * self.noise.get_mono();
-        let mono = (dry * DRIVE).tanh() * level;
-        Frame::from([mono, mono])
-    }
-
-    fn set_sample_rate (&mut self, sample_rate: f64) {
-        self.tri.set_sample_rate(sample_rate);
-        self.noise.set_sample_rate(sample_rate);
-    }
-}
-
-impl GenNode for StutterGen {
-    fn name (&self) -> &'static str { "Stutter" }
-    fn param_names (&self) -> [&'static str; 4] { ["", "", "", ""] }
+pub fn stutter () -> An<impl AudioNode<Inputs = U1, Outputs = U1>> {
+    (triangle() * white()) >> shape_fn(|x| (x * DRIVE).tanh())
 }

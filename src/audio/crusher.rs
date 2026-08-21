@@ -1,10 +1,12 @@
 
 //
-// Crusher: OTT-style single-band simultaneous upward + downward compressor
-// (FxNode, 7 in / 2 out). Not currently wired into Engine (see mod.rs).
+// Crusher: OTT-style single-band simultaneous upward + downward compressor.
+// Used inside voices (see reese.rs, swarm.rs). Mono in, mono out, with
+// named params -- it was never composed with anything, so the old 7-in/2-out
+// FxNode shape was padding.
 // Pulls quiet signal up toward threshold_up and pushes loud signal down
-// toward threshold_down at the same time, scaled by depth, blended dry/wet
-// by `level`. Gain is recomputed from a smoothed envelope every sample
+// toward threshold_down at the same time, scaled by depth, blended against
+// dry by the fixed `mix`. Gain is recomputed from a smoothed envelope every sample
 // rather than smoothing gain separately, to avoid double-smoothing.
 //
 
@@ -15,9 +17,14 @@ use fundsp::prelude64::*;
 // anything meter-related. disp_env_db/disp_out_db re-smooth the
 // (already-followed) envelope and its post-gain counterpart at
 // meter-friendly attack/release rates; gr_peak_db is a held-and-decaying
-// peak of their gap, exactly like a real GR meter's peak readout. Exposed
-// via env_db()/output_db()/gr_peak_db() below -- callers (e.g. ReeseVoice)
-// relay these into their own `_live` Shared cells for the UI to read.
+// peak of their gap, exactly like a real GR meter's peak readout.
+//
+// These are written straight into caller-supplied Shared cells rather than
+// exposed as getters, so the meters survive the node being moved into a
+// graph (a getter is unreachable through Box<dyn AudioUnit>) and the caller
+// no longer needs a relay line per meter. fundsp's monitor() can't do this
+// job: Meter::Peak is a plain smoothed peak with no hold-and-decay, and
+// gain reduction isn't a property of a single signal.
 const METER_ATTACK_MS:        f32 = 3.0;
 const METER_RELEASE_MS:       f32 = 400.0;
 const GR_PEAK_HOLD_S:         f32 = 1.2;
@@ -44,10 +51,18 @@ pub struct Crusher {
     disp_out_db:      f32,
     gr_peak_db:       f32,
     gr_peak_hold_s:   f32,
+
+    meter_env: Shared,
+    meter_out: Shared,
+    meter_gr:  Shared,
 }
 
 impl Crusher {
-    pub fn new (ratio_down: f32, threshold_up: f32, ratio_up: f32, release: f32, mix: f32) -> Crusher {
+    // meter_env/meter_out/meter_gr are written every tick for ui/comp_meter.rs.
+    pub fn new (
+        ratio_down: f32, threshold_up: f32, ratio_up: f32, release: f32, mix: f32,
+        meter_env: Shared, meter_out: Shared, meter_gr: Shared,
+    ) -> Crusher {
         Crusher {
             ratio_down, threshold_up, ratio_up, release, mix,
             follower: AFollow::new(0.005, 0.15),
@@ -56,29 +71,17 @@ impl Crusher {
             disp_out_db:    METER_FLOOR_DB,
             gr_peak_db:     0.0,
             gr_peak_hold_s: 0.0,
+            meter_env, meter_out, meter_gr,
         }
     }
 
-    // Meter telemetry -- see ui/comp_meter.rs. Read-only from outside,
-    // updated once per tick() call below.
-    pub fn env_db (&self) -> f32 { self.disp_env_db }
-    pub fn output_db (&self) -> f32 { self.disp_out_db }
-    pub fn gr_peak_db (&self) -> f32 { self.gr_peak_db }
-}
+    pub fn set_sample_rate (&mut self, sample_rate: f64) {
+        self.follower.set_sample_rate(sample_rate);
+        self.sample_rate = sample_rate as f32;
+    }
 
-impl AudioNode for Crusher {
-    const ID: u64 = 0x7A_21;
-    type Inputs = U7;
-    type Outputs = U2;
-
-    fn tick (&mut self, input: &Frame<f32, U7>) -> Frame<f32, U2> {
-        let x = (input[0] + input[1]) * 0.5;
-        let level = input[2];
-
-        let threshold_down = input[3];
-        let attack          = input[4].max(0.0001);
-        let depth            = input[5];
-        let makeup_db         = input[6];
+    pub fn tick (&mut self, x: f32, threshold_down: f32, attack: f32, depth: f32, makeup_db: f32) -> f32 {
+        let attack = attack.max(0.0001);
 
         self.follower.set_time(attack, self.release);
 
@@ -98,9 +101,8 @@ impl AudioNode for Crusher {
         let total_change_db = (gain_down_db + gain_up_db) * depth;
         let gain = db_amp(total_change_db + makeup_db);
 
-        let wet  = x * gain;
-        let dry_wet = x * (1.0 - self.mix) + wet * self.mix;
-        let mono = x * (1.0 - level) + dry_wet * level;
+        let wet = x * gain;
+        let mono = x * (1.0 - self.mix) + wet * self.mix;
 
         let dt_s = 1.0 / self.sample_rate.max(1.0);
         self.disp_env_db = meter_ballistic(self.disp_env_db, env_db, dt_s);
@@ -116,16 +118,10 @@ impl AudioNode for Crusher {
             self.gr_peak_db = (self.gr_peak_db - GR_PEAK_DECAY_DB_PER_S * dt_s).max(gr_now);
         }
 
-        Frame::from([mono, mono])
-    }
+        self.meter_env.set_value(self.disp_env_db);
+        self.meter_out.set_value(self.disp_out_db);
+        self.meter_gr.set_value(self.gr_peak_db);
 
-    fn set_sample_rate (&mut self, sample_rate: f64) {
-        self.follower.set_sample_rate(sample_rate);
-        self.sample_rate = sample_rate as f32;
+        mono
     }
-}
-
-impl super::fx_node::FxNode for Crusher {
-    fn name (&self) -> &'static str { "Crusher" }
-    fn param_names (&self) -> [&'static str; 4] { ["thresh", "attack", "depth", "boost"] }
 }
