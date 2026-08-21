@@ -208,7 +208,9 @@ fn breakup (n: f32, r: f32) -> (f32, PixelColor) {
     (j / 3.0, c)
 }
 
-
+fn delta_char (delta: f32) -> &'static str {
+    if delta < 0.0 { "↑▴" } else if delta > 0.0 { "↓▾" } else { "▪" }
+}
 
 
 //
@@ -273,7 +275,7 @@ pub fn draw_main_panel (y: u16, width: u16, zgicabra: &Zgicabra) {
 
     print!("{}▌{}▐", goto(width - 2, y), led);
 
-    // Voice, width, root, thump/fuzz, most-recent-wand
+    // Voice, width, root,
 
     print!("{}{}{}",
         goto(37, y + 18),
@@ -289,6 +291,9 @@ pub fn draw_main_panel (y: u16, width: u16, zgicabra: &Zgicabra) {
 
     print!("{}{:^76}", goto(0, y + 20), format!("{:?}", zgicabra.voice));
 
+
+    // Most-recent-wand, trigger_deltas
+
     if zgicabra.most_recent_wand == Hand::Left {
         print!("{}{}▪{}", goto(35, y + 18), fg(BLUE_0), FG_RESET);
     }
@@ -296,8 +301,11 @@ pub fn draw_main_panel (y: u16, width: u16, zgicabra: &Zgicabra) {
         print!("{}{}▪{}", goto(41, y + 18), fg(BLUE_0), FG_RESET);
     }
 
-    print!("{}{:>13} {}", goto(2, y + 16), "delta", zgicabra.left.trigger_delta);
-    print!("{}{:>13} {}", goto(40, y + 16), "delta", zgicabra.right.trigger_delta);
+    print!("{}{}{}", goto(20, y + 17), fg(tw::SLATE_500), delta_char(zgicabra.left.trigger_delta));
+    print!("{}{}{}", goto(57, y + 17), fg(tw::SLATE_500), delta_char(zgicabra.right.trigger_delta));
+
+
+    // Thump / Fuzz
 
     draw_toggle_box(        5, y + 18, GREEN_0, zgicabra.signal.thump > 0.0);
     draw_toggle_box(width - 8, y + 18, RED_0,   zgicabra.signal.fuzz > 0.0);

@@ -122,15 +122,18 @@ fn expand (input: DeriveInput) -> syn::Result<TokenStream2> {
         }
     }
 
-    let thump = v.thump.clone().ok_or_else(|| syn::Error::new_spanned(
-        &input, "Voice derive needs a `thump: ThumpMod` field"))?;
+    // thump is optional: a voice with no `thump: ThumpMod` field just never
+    // pitch-thumps (freq passed through unchanged, thump_mult always 1.0) --
+    // same generated behaviour as `thump = manual` on a voice that does have
+    // the field but applies it itself.
+    let thump = v.thump.clone();
     let sig = v.sig.clone().ok_or_else(|| syn::Error::new_spanned(
         &input, "Voice derive needs a `sig: SignalState` field"))?;
 
     let view_struct = gen_view_struct(&name, &v);
     let view_impl   = gen_view_impl(&name, &v);
-    let voice_inh   = gen_inherent(&name, &v, !manual_new, &thump)?;
-    let audionode   = gen_audionode(&name, &id, &index, &v, &thump, manual_thump);
+    let voice_inh   = gen_inherent(&name, &v, !manual_new, thump.as_ref())?;
+    let audionode   = gen_audionode(&name, &id, &index, &v, thump.as_ref(), manual_thump);
     let voice_trait = gen_voice_trait(&name, &index, &label, &v, &sig);
 
     Ok(quote! {
@@ -308,7 +311,7 @@ fn gen_view_impl (name: &Ident, v: &Voice) -> TokenStream2 {
     }
 }
 
-fn gen_inherent (name: &Ident, v: &Voice, generate_new: bool, thump: &Ident) -> syn::Result<TokenStream2> {
+fn gen_inherent (name: &Ident, v: &Voice, generate_new: bool, thump: Option<&Ident>) -> syn::Result<TokenStream2> {
     let view_name = view_name(name);
 
     // view() clones every view-visible cell.
@@ -352,7 +355,11 @@ fn gen_inherent (name: &Ident, v: &Voice, generate_new: bool, thump: &Ident) -> 
     })
 }
 
-fn gen_new (v: &Voice, thump: &Ident) -> syn::Result<TokenStream2> {
+fn gen_new (v: &Voice, thump: Option<&Ident>) -> syn::Result<TokenStream2> {
+    let thump = thump.ok_or_else(|| syn::Error::new(
+        proc_macro2::Span::call_site(),
+        "generated new() needs a `thump: ThumpMod` field (or #[voice(new = manual)])"))?;
+
     // Every field must be constructible from defaults/inits or a generated new
     // can't work -- point the author at #[voice(new = manual)] otherwise.
     if !v.plains.is_empty() {
@@ -404,22 +411,27 @@ fn gen_new (v: &Voice, thump: &Ident) -> syn::Result<TokenStream2> {
     })
 }
 
-fn gen_audionode (name: &Ident, id: &Expr, index: &Expr, v: &Voice, thump: &Ident, manual_thump: bool) -> TokenStream2 {
+fn gen_audionode (name: &Ident, id: &Expr, index: &Expr, v: &Voice, thump: Option<&Ident>, manual_thump: bool) -> TokenStream2 {
     let scalar_nodes = v.nodes.iter().filter(|f| !f.each).map(|f| &f.ident);
     let each_nodes   = v.nodes.iter().filter(|f| f.each).map(|f| &f.ident);
 
     // The common case: the macro applies thump to the incoming freq. thump =
     // manual voices (SwarmVoice chases an origin first, then thumps that) get
-    // the raw freq + apply thump themselves inside render().
-    let body = if manual_thump {
-        quote! { crate::audio::voice::VoiceDsp::render(self, freq, 1.0) }
-    } else {
-        quote! {
+    // the raw freq + apply thump themselves inside render(). Voices with no
+    // thump field at all (no pitch-thump modulation) get the same pass-
+    // through body.
+    let body = match thump {
+        Some(thump) if !manual_thump => quote! {
             let thump_mult = self.#thump.tick(self.sig.thump);
             let freq = freq * thump_mult;
             crate::audio::voice::VoiceDsp::render(self, freq, thump_mult)
-        }
+        },
+        _ => quote! { crate::audio::voice::VoiceDsp::render(self, freq, 1.0) },
     };
+
+    let thump_set_sample_rate = thump.map(|thump| quote! {
+        self.#thump.set_sample_rate(sample_rate);
+    });
 
     quote! {
         impl AudioNode for #name {
@@ -440,7 +452,7 @@ fn gen_audionode (name: &Ident, id: &Expr, index: &Expr, v: &Voice, thump: &Iden
             fn set_sample_rate (&mut self, sample_rate: f64) {
                 #( self.#scalar_nodes.set_sample_rate(sample_rate); )*
                 #( for n in self.#each_nodes.iter_mut() { n.set_sample_rate(sample_rate); } )*
-                self.#thump.set_sample_rate(sample_rate);
+                #thump_set_sample_rate
                 crate::audio::voice::VoiceDsp::on_set_sample_rate(self, sample_rate);
             }
         }

@@ -412,7 +412,7 @@ pub struct GrowlVoice {
 // because it loads the NAM model and builds the NAM graph before the struct
 // literal.
 impl GrowlVoice {
-    pub fn new (thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared) -> GrowlVoice {
+    pub fn new (thump_trigger: Shared, _thump_peak: Shared, _thump_decay: Shared) -> GrowlVoice {
         let model = super::nam::load_named_model(NAM_MODEL).unwrap();
         let nam_blend           = shared(0.0);
         let nam_crossover_input = shared(DEFAULT_NAM_CROSSOVER);
@@ -511,4 +511,3 @@ mod tests {
         }
     }
 }
-fn __force_recompile_marker_zzz() {}

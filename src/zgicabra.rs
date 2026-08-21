@@ -389,9 +389,10 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     } else {
 
         // If a note is on, and any trigger ended this frame, and the other trigger
-        // is at zero, end the current note
+        // is at zero, OR if both triggers are at zero for any reason, end the current note
         if (left_trigger_end && curr_state.right.trigger == 0.0)
-        || (right_trigger_end && curr_state.left.trigger == 0.0) {
+        || (right_trigger_end && curr_state.left.trigger == 0.0)
+        || curr_state.most_recent_wand == Hand::Neither {
             deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
             curr_state.note.on = false;
         }

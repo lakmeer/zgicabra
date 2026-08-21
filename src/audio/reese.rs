@@ -235,10 +235,6 @@ impl VoiceDsp for ReeseVoice {
         let out_l = self.filter_l.tick(&Frame::from([shaped_l, cutoff_hz, q]))[0];
         let out_r = self.filter_r.tick(&Frame::from([shaped_r, cutoff_hz, q]))[0];
 
-        // Crusher sits last in the chain, one instance per channel so each
-        // side keeps its own envelope and the unison stack's stereo width
-        // survives it. Depth (crush_input) is read internally by the graph
-        // itself now, every tick -- see crusher.rs.
         let mut wet_l = [0.0f32];
         let mut wet_r = [0.0f32];
         self.crusher_l.tick(&[out_l], &mut wet_l);
