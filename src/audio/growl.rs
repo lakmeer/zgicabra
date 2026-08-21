@@ -448,3 +448,4 @@ mod tests {
         }
     }
 }
+fn __force_recompile_marker_zzz() {}
