@@ -1,7 +1,10 @@
 
-# Zgicabra RS
+# Zgicabra
 
-- Run `run.sh` for dev. This will watch source files.
+Zgicabra is a musical instrument built on the Sixense Hydra SDK.
+
+It is designed to run headlessly on a small NUC for live stage performance as a
+bass monosynth, and displays a textmode UI for a portable USB monitor.
 
 ## Usage
 
@@ -20,97 +23,34 @@ voice events, raw HID read errors) instead.
 
 `src/hydra.rs` depends on `libsixense_x64.so`, kept in the `libs` folder and
 copied to the build target folder during build. Additionally, `libsixense_x64`
-has been `patchelf`'d to modify it's rpath to `$ORIGIN`, rather than using the
+has been `patchelf`'d to modify its rpath to `$ORIGIN`, rather than using the
 system default. An unpatched copy is retained as reference.
 
 `libstdc++.so.6` is vendored alongside it too, copied fresh into the build
 target folder on every build (resolved via `cc -print-file-name`, not
 checked into `libs/`) so the binary can be exec'd directly — e.g. by the
-boot-time systemd service — without a system-wide `LD_LIBRARY_PATH`. A
-*stale* checked-in copy previously shadowed the real system libstdc++ and
-broke anything needing a newer symbol version (e.g. libjack.so.0's
-`CXXABI_1.3.15`); copying fresh from the active toolchain on each build
-avoids that.
+boot-time systemd service — without a system-wide `LD_LIBRARY_PATH`. 
 
 `libsixense.so`, and `sixense.h` are not used but are retained for reference.
 
-## NAM Models
-
-The `nam/*.nam` amp models are compiled straight into the binary
-(`src/audio/nam.rs`, via `include_dir!`) rather than read from disk at
-runtime — same motivation as vendoring `libstdc++.so.6` above: the boot-time
-systemd service execs the binary from `target/release` with no working
-directory guarantee of a sibling `nam/` folder. Add/remove a `.nam` file and
-rebuild to change the embedded set; no separate copy step needed.
-
-## Performance-mode launch (KMSCON)
-
-Both the boot-time systemd service (`sys/config.nix`) and `bin/perform`
-(manual vt3 test from the dev desktop) run zgicabra by having KMSCON
-`--login`-exec it on a VT. `--login` wipes the exec'd child's environment
-entirely — confirmed by capturing it: even `PATH` is gone. Nothing set
-upstream of `kmscon` (`sudo env VAR=val kmscon ...`, or a systemd unit's
-`Environment=`) survives.
-
-Because of this, neither launch path execs the `zgicabra` binary directly —
-both point KMSCON's `-- ARGV` at `bin/zgicabra-launch`, a small wrapper that
-rebuilds `PATH`/`XDG_RUNTIME_DIR`/`PIPEWIRE_RUNTIME_DIR` from scratch
-immediately before `exec`ing the real binary. Without a correct
-`XDG_RUNTIME_DIR`, `cpal`'s ALSA backend fails with `snd_pcm_open` reporting
-`Host is down` — it can't find the PipeWire socket to connect to.
-
-The performance box also never logs in (no keyboard, no getty), so without
-`users.users.zgicabra.linger = true;` (`sys/config.nix`) there is no
-`user@1000` session and no PipeWire daemon running at all for that wrapper
-to reach.
-
 ## Setup requirements
 
-- cargo-watch
-
-### Build toolchain (NixOS / Linux performance machine)
-
-- Nixpkgs' stable-channel `rustc`/`cargo` (e.g. 24.05's 1.77) is too old for
-  this project's `Cargo.lock` — a transitive dep (`moxcms`, via `image`)
-  requires `edition2024`, unsupported before rustc ~1.85. Pull `cargo`/
-  `rustc` from `nixpkgs-unstable` instead of `environment.systemPackages`'
-  plain `pkgs.cargo`/`pkgs.rustc` — see the `unstable` overlay in
-  `configuration.nix`.
-- `alsa-lib.dev` (not plain `alsa-lib`) must be in
-  `environment.systemPackages`. `cpal`'s `alsa-sys` build script needs
-  `alsa.pc` via pkg-config to link `libasound`; that file lives in
-  `alsa-lib`'s `dev` output, which the default `alsa-lib` output does not
-  include.
-- `environment.variables.PKG_CONFIG_PATH = "/run/current-system/sw/lib/pkgconfig";`
-  must be set system-wide. Unlike `nix-shell -p`, `environment.systemPackages`
-  does not add installed packages' pkgconfig dirs to `PKG_CONFIG_PATH`
-  automatically — without this, pkg-config can't find `alsa.pc`/`sdl2.pc`
-  even once they're symlinked into the system profile. Takes a fresh
-  shell/login after `nixos-rebuild switch` to pick up.
-- user needs these usergroups:
-  ```nix
-    extraGroups = [ "plugdev" "networkmanager" "wheel" "audio" "input" ];
-  ```
-
-### `snd-virmidi`
-
-- Kernel module `snd-virmidi` is enabled in nix config as:
-```nix
-boot.kernelModules = [ "snd-virmidi" ];
-```
-
-### udev Rules
-
-Userspace needs permission to access the USB device that connects to the Hydra.
-Rules are provided in `sys/udev-rules` to allow this.
-
-On the NixOS performance box, `sys/nixos-config.nix` now applies these (and
-the rest of the machine's zgicabra-specific config) automatically on
-`nixos-rebuild switch` — see `sys/README.md`. The manual steps below are
-still accurate as a fallback / for a non-NixOS setup.
-
+Apply `sys/nixos-config.nix` to your performance machine to create a
+boot-to-instrument target for systemd. Includes a `dev` specialisation
+that adds an alternative grub entry for full desktop development.
 
 ## Accreditation
+
+### Vital Synth
+
+Part of the audio chain is derived from the [Vital](https://github.com/mtytel/vital),
+which is GPL3. While this repo doesn't contain any source code from Vital, some
+internal algorithms were directly adapted from the original Vital codebase. In
+accordance with Vital's [readme](https://github.com/mtytel/vital#what-can-you-do-with-the-source)
+file, this project is not distributed in an app store, does not use any of the
+Vital trademarks for marketing, connect to any the mentioned online services,
+or redistribute any of its built-in presets. Projects forked from this one
+should adhere to the same restrictions.
 
 ### NAM Models
 
@@ -132,4 +72,16 @@ These models are included in this repo since they have been selected
 specifically as an integral part of the sound design. If you are the author of
 a model that is included here, and you would rather not have your work
 redistributed, please contact me or open an issue and I will remove it.
+
+### Samples
+
+This project contains audio samples from various sources under various permissive
+licenses. Some samples have been modified from their original forms.
+
+| File | Source | License |
+|---|---|---|
+| kick_dry.wav     | https://pixabay.com/sound-effects/musical-kick-greg-232043/           | [Pixabay Content License](https://pixabay.com/service/license-summary/) |
+| kick_deep.wav    | https://pixabay.com/sound-effects/musical-awesome-house-kick-98685/   | [Pixabay Content License](https://pixabay.com/service/license-summary/) |
+| kick_pitched.wav | https://pixabay.com/sound-effects/musical-kick-183936/                | [Pixabay Content License](https://pixabay.com/service/license-summary/) |
+| pluck.wav        | https://pixabay.com/sound-effects/musical-clean-fingered-bass-101922/ | [Pixabay Content License](https://pixabay.com/service/license-summary/) |
 
