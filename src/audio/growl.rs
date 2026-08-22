@@ -8,7 +8,7 @@ use num_complex::Complex32;
 use zgicabra_voice_macro::Voice;
 
 use crate::tools::linexp;
-use crate::zgicabra::SignalState;
+use super::signal::SharedSignal;
 use super::voice::{Voice, VoiceDsp, ThumpMod};
 use super::nam_graph::nam_high_band;
 use super::nam_node::NAM_WINDOW;
@@ -373,7 +373,7 @@ impl TriEnv {
 // values the DSP is using -- for visualisation only. Note WavetableGen's
 // Clone impl resets to a fresh, un-warmed-up instance (see above).
 #[derive(Clone, Voice)]
-#[voice(index = 1, id = 0x7A_40, label = "Growl", new = manual)]
+#[voice(index = 1, label = "Growl", new = manual)]
 pub struct GrowlVoice {
     #[node] inner: WavetableGen,
     // Crossover -> model -> blend -> band sum, as one graph. Replaces the
@@ -404,7 +404,7 @@ pub struct GrowlVoice {
     // inside the NAM graph.
     #[live(range = 0.0..1.0)] pub nam_live:       Shared,
 
-    sig:   SignalState,
+    sig:   SharedSignal,
 }
 
 // GrowlView + view()/fields()/apply()/UI_RANGES + the AudioNode/Voice impls
@@ -412,7 +412,7 @@ pub struct GrowlVoice {
 // because it loads the NAM model and builds the NAM graph before the struct
 // literal.
 impl GrowlVoice {
-    pub fn new (thump_trigger: Shared, _thump_peak: Shared, _thump_decay: Shared) -> GrowlVoice {
+    pub fn new (thump_trigger: Shared, _thump_peak: Shared, _thump_decay: Shared, signal: SharedSignal) -> GrowlVoice {
         let model = super::nam::load_named_model(NAM_MODEL).unwrap();
         let nam_blend           = shared(0.0);
         let nam_crossover_input = shared(DEFAULT_NAM_CROSSOVER);
@@ -444,7 +444,7 @@ impl GrowlVoice {
             freq_mult_live: shared(0.0),
             nam_live,
 
-            sig:   SignalState::new(),
+            sig:   signal,
         }
     }
 }
@@ -453,8 +453,8 @@ impl VoiceDsp for GrowlVoice {
     fn render (&mut self, freq: f32, thump_mult: f32) -> Frame<f32, U2> {
         self.freq_mult_live.set_value(thump_mult);
 
-        self.filter_live.set_value((self.filter_input.value() * self.sig.filter).clamp(0.0, 1.0));
-        self.warp_live.set_value((self.warp_input.value() * (1.0 - self.sig.width)).clamp(0.0, 1.0));
+        self.filter_live.set_value((self.filter_input.value() * self.sig.filter.value()).clamp(0.0, 1.0));
+        self.warp_live.set_value((self.warp_input.value() * (1.0 - self.sig.width.value())).clamp(0.0, 1.0));
 
         let drive = self.bass_drive_input.value();
         let space = self.space_input.value();
@@ -467,10 +467,10 @@ impl VoiceDsp for GrowlVoice {
         raw += self.tri_base.filter_mono(freq) * TRI_BASE_LEVEL * tri_env;
         raw += self.tri_fifth.filter_mono(freq * TRI_FIFTH_RATIO) * TRI_FIFTH_LEVEL * tri_env;
 
-        raw += self.pluck.tick(freq) * self.pluck_level_input.value() * self.sig.thump;
+        raw += self.pluck.tick(freq) * self.pluck_level_input.value() * self.sig.thump.value();
 
         // The graph reads blend and crossover cutoff from Shared cells.
-        self.nam_blend.set_value(self.sig.fuzz.clamp(0.0, 1.0));
+        self.nam_blend.set_value(self.sig.fuzz.value().clamp(0.0, 1.0));
 
         let mut wet = [0.0f32];
         self.nam.tick(&[raw], &mut wet);

@@ -12,11 +12,11 @@
 use fundsp::prelude64::*;
 use zgicabra_voice_macro::Voice;
 
-use crate::zgicabra::SignalState;
+use super::signal::SharedSignal;
 use super::voice::{Voice, VoiceDsp, ThumpMod};
 
 #[derive(Clone, Voice)]
-#[voice(index = 2, id = 0x7A_41, label = "Basic")]
+#[voice(index = 2, label = "Basic")]
 pub struct BasicVoice {
     #[node(init = sine())]     sin:    An<Sine<f64>>,
     #[node(init = triangle())] tri:    An<WaveSynth<U1>>,
@@ -30,7 +30,7 @@ pub struct BasicVoice {
     #[input(cc = "5", range = 1.0..10.0, set = |v| 1.0 + v*9.0, default = 1.0)]  pub saturation:   Shared,
 
     thump: ThumpMod,
-    sig:   SignalState,
+    sig:   SharedSignal,
 }
 
 impl VoiceDsp for BasicVoice {

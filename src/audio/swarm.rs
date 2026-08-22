@@ -30,7 +30,7 @@ use num_complex::Complex32;
 use zgicabra_voice_macro::Voice;
 
 use crate::tools::linexp;
-use crate::zgicabra::SignalState;
+use super::signal::SharedSignal;
 use super::voice::{Voice, VoiceDsp, ThumpMod};
 use super::nam::{NamModelCycler, NamModelSlot};
 use super::nam_graph::nam_mid_side;
@@ -164,7 +164,7 @@ impl ChannelChain {
 }
 
 #[derive(Clone, Voice)]
-#[voice(index = 3, id = 0x7A_50, label = "Swarm", new = manual, thump = manual)]
+#[voice(index = 3, label = "Swarm", new = manual, thump = manual)]
 pub struct SwarmVoice {
     #[node(each)] oscs:    [An<WaveSynth<U1>>; NUM_OSCS],
     #[node(each)] phasers: [Phaser; NUM_OSCS],
@@ -211,7 +211,7 @@ pub struct SwarmVoice {
     sample_rate: f32,
 
     thump: ThumpMod,
-    sig:   SignalState,
+    sig:   SharedSignal,
 }
 
 // SwarmView + view()/fields()/apply()/UI_RANGES + the AudioNode/Voice impls
@@ -223,6 +223,7 @@ impl SwarmVoice {
         nam_models: Vec<Option<NamModelSlot>>,
         nam_names: Arc<Vec<String>>,
         thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared,
+        signal: SharedSignal,
     ) -> SwarmVoice {
         let oscs: [An<WaveSynth<U1>>; NUM_OSCS] = std::array::from_fn(|i| match OSC_SHAPES[i] {
             OscShape::Tri    => triangle(),
@@ -291,7 +292,7 @@ impl SwarmVoice {
 
             sample_rate: DEFAULT_SR as f32,
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
-            sig:   SignalState::new(),
+            sig:   signal,
         }
     }
 }
@@ -303,12 +304,12 @@ impl VoiceDsp for SwarmVoice {
     fn render (&mut self, freq: f32, _thump_mult: f32) -> Frame<f32, U2> {
         let chase_factor = self.chase_factor_input.value().clamp(0.0, 0.999_999);
         self.origin_freq = lerp(self.origin_freq, freq, chase_factor);
-        let origin_freq = self.origin_freq * self.thump.tick(self.sig.thump);
+        let origin_freq = self.origin_freq * self.thump.tick(self.sig.thump.value());
 
-        let width_signal = self.sig.width.clamp(0.0, 1.0);
+        let width_signal = self.sig.width.value().clamp(0.0, 1.0);
         let radius_cents = self.radius_input.value().max(0.0) * (1.0 + width_signal);
         let orbit_speed  = self.orbit_speed_input.value()     * (1.0 + width_signal);
-        let phaser_depth = (self.phaser_depth_input.value() + width_signal + self.sig.fuzz).clamp(0.0, 1.0);
+        let phaser_depth = (self.phaser_depth_input.value() + width_signal + self.sig.fuzz.value()).clamp(0.0, 1.0);
         self.radius_live.set_value(radius_cents);
         self.orbit_speed_live.set_value(orbit_speed);
         self.phaser_depth_live.set_value(phaser_depth);
@@ -347,13 +348,13 @@ impl VoiceDsp for SwarmVoice {
         mix_l *= norm;
         mix_r *= norm;
 
-        let filter_cutoff = self.sig.filter.clamp(0.0, 1.0);
+        let filter_cutoff = self.sig.filter.value().clamp(0.0, 1.0);
 
         // The graph reads blend and crossover cutoff from Shared cells, so
         // the only thing to hand it is audio. Crossover cutoff is already a
         // Shared (xover_freq_input); blend has to be published from the
-        // per-block performance signal.
-        self.nam_blend.set_value(self.sig.fuzz.clamp(0.0, 1.0));
+        // live performance signal.
+        self.nam_blend.set_value(self.sig.fuzz.value().clamp(0.0, 1.0));
 
         let mut namd = [0.0f32; 2];
         self.nam.tick(&[self.chain_l.pre(mix_l), self.chain_r.pre(mix_r)], &mut namd);

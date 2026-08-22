@@ -6,7 +6,7 @@ use drawille::{Canvas,PixelColor};
 use drawille::PixelColor::TrueColor;
 
 use crate::hydra::HydraState;
-use crate::zgicabra::{DeltaEvent,Zgicabra,Wand,Hand,Direction,Joystick,NoteState,SignalState,Voice};
+use crate::zgicabra::{DeltaEvent,Zgicabra,Wand,Hand,Direction,Joystick,NoteState,SignalState};
 use crate::audio::{AudioHandles,AudioErrors,SwarmView};
 use crate::tools::*;
 
@@ -40,11 +40,11 @@ pub fn draw_all (
     delta_history: &Vec<DeltaEvent>,
     audio: &AudioHandles) {
 
-    draw_main_panel(1, TEXT_WIDTH, zgicabra);
+    draw_main_panel(1, TEXT_WIDTH, zgicabra, audio);
 
     print!("{}{}", goto(1, AUDIO_PANEL_Y), barcode_string((TEXT_WIDTH - 3).into(), zgicabra.trigger_total == 0.0));
 
-    draw_voice_panel(AUDIO_PANEL_Y, zgicabra, audio);
+    draw_voice_panel(AUDIO_PANEL_Y, audio);
 
     print!("{}{}", goto(1, DEBUG_PANEL_Y), barcode_string((TEXT_WIDTH - 0).into(), zgicabra.trigger_total == 0.0));
 

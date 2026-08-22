@@ -1,6 +1,5 @@
 use drawille::{Canvas,PixelColor};
 
-use crate::zgicabra::Voice;
 use crate::audio::{AudioHandles,AudioErrors,SwarmView,GrowlView,ReeseView};
 use crate::audio::crusher::{CRUSH_THRESHOLD};
 
@@ -31,7 +30,7 @@ fn draw_range_label (x: u16, y: u16, in_out: bool, label: &str, value: f32, min:
         value);
 }
 
-pub fn draw_voice_panel (y: u16, zgicabra: &crate::zgicabra::Zgicabra, audio: &AudioHandles) {
+pub fn draw_voice_panel (y: u16, audio: &AudioHandles) {
 
     // Blank
     for iy in y+1..y+21 {
@@ -55,11 +54,11 @@ pub fn draw_voice_panel (y: u16, zgicabra: &crate::zgicabra::Zgicabra, audio: &A
     draw_range_label(2, y + 15, "lim_thresh",  audio.limiter_thresh.value(), 0.0, 1.0);
     */
 
-    match zgicabra.voice {
-        Voice::VoiceA => draw_reese_panel(y, &audio.voice_a),
-        Voice::VoiceB => draw_growl_panel(y, &audio.voice_b),
-        //Voice::VoiceC => draw_basic_panel(y, &audio.voice_c),
-        Voice::VoiceD => draw_swarm_panel(y, &audio.voice_d),
+    match audio.voice_selected.value() as usize {
+        0 => draw_reese_panel(y, &audio.voice_a),
+        1 => draw_growl_panel(y, &audio.voice_b),
+        //2 => draw_basic_panel(y, &audio.voice_c),
+        3 => draw_swarm_panel(y, &audio.voice_d),
         _ => {},
     }
 

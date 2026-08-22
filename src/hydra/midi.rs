@@ -26,8 +26,6 @@ mod real {
 
     use midir::{MidiInput, MidiInputConnection, Ignore};
 
-    use crate::zgicabra::Voice;
-
     pub struct Connection(Option<MidiInputConnection<()>>);
 
     fn is_virtual_port (name: &str) -> bool {
@@ -81,11 +79,10 @@ mod real {
                         notes.lock().unwrap().push_back(DeltaEvent::NoteEnd(*note));
                     }
                 },
-                // Program Change: absolute voice select (PC 0-3, one per
-                // voice slot) instead of the rocking button/keyboard's
-                // relative cycle().
-                [status, program] if status & 0xF0 == 0xC0 => {
-                    notes.lock().unwrap().push_back(DeltaEvent::VoiceChange(Voice::from_index(*program)));
+                // Program Change: cycles to the next voice, same as the
+                // rocking button/keyboard (VoiceChange is relative-only).
+                [status, _program] if status & 0xF0 == 0xC0 => {
+                    notes.lock().unwrap().push_back(DeltaEvent::VoiceChange(1));
                 },
                 _ => {},
             }

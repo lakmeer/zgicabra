@@ -6,6 +6,7 @@ use drawille::PixelColor::TrueColor;
 
 use crate::hydra::HydraState;
 use crate::zgicabra::{Zgicabra,DeltaEvent,Hand,Wand,Direction};
+use crate::audio::AudioHandles;
 use crate::tools::*;
 
 use super::utils::*;
@@ -217,7 +218,7 @@ fn delta_char (delta: f32) -> &'static str {
 // Main Panel
 //
 
-pub fn draw_main_panel (y: u16, width: u16, zgicabra: &Zgicabra) {
+pub fn draw_main_panel (y: u16, width: u16, zgicabra: &Zgicabra, audio: &AudioHandles) {
 
     let text_height   : u16 = width / 4;
     let canvas_width  : u16 = width * 2;
@@ -289,7 +290,7 @@ pub fn draw_main_panel (y: u16, width: u16, zgicabra: &Zgicabra) {
         "━".repeat((zgicabra.signal.width.abs() * 28.0).round() as usize * 2),
         termion::color::Fg(termion::color::Reset));
 
-    print!("{}{:^76}", goto(0, y + 20), format!("{:?}", zgicabra.voice));
+    print!("{}{:^76}", goto(0, y + 20), audio.voice_name());
 
 
     // Most-recent-wand, trigger_deltas
@@ -301,8 +302,8 @@ pub fn draw_main_panel (y: u16, width: u16, zgicabra: &Zgicabra) {
         print!("{}{}▪{}", goto(41, y + 18), fg(BLUE_0), FG_RESET);
     }
 
-    print!("{}{}{}", goto(20, y + 17), fg(tw::SLATE_500), delta_char(zgicabra.left.trigger_delta));
-    print!("{}{}{}", goto(57, y + 17), fg(tw::SLATE_500), delta_char(zgicabra.right.trigger_delta));
+    // print!("{}{}{}", goto(20, y + 17), fg(tw::SLATE_500), delta_char(zgicabra.left.trigger_delta));
+    // print!("{}{}{}", goto(57, y + 17), fg(tw::SLATE_500), delta_char(zgicabra.right.trigger_delta));
 
 
     // Thump / Fuzz

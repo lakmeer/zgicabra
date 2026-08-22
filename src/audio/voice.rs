@@ -1,9 +1,13 @@
 
 //
-// Voice: the currently-selected sound generator. Every Voice is wired in
-// parallel into Engine and ticked every sample; each one silences itself
-// when the live selector doesn't match its own INDEX, so only the selected
-// voice burns CPU despite the whole graph staying wired.
+// Voice: one sound generator. Every Voice is wired in parallel into Engine,
+// held as `Box<dyn Voice>` in a plain homogeneous array (see engine.rs) --
+// Voice is deliberately its own small object-safe trait (no fundsp
+// AudioNode/AudioUnit supertrait: those carry associated consts/types that
+// rule out trait objects) so the array needs no per-concrete-type dispatch.
+// Engine is what decides whether a given voice is the selected one on each
+// tick, calling tick() for real if so and on_silence() otherwise -- a
+// Voice's own tick() always renders, it has no idea whether it's selected.
 //
 // Each concrete Voice owns its tunable params directly, as `Shared` cells
 // (for anything outside the audio thread needs to read) or plain fields (for
@@ -22,21 +26,35 @@
 
 use fundsp::prelude64::*;
 
-use crate::zgicabra::SignalState;
+// Implemented for every generated *View (see #[derive(Voice)]'s
+// gen_view_impl) -- lets code that only needs get/set-by-name access to a
+// voice's live params (persisting them to disk) work the same regardless of
+// which concrete voice's View it's holding, without knowing that View's own
+// field names.
+pub trait ViewFields {
+    fn fields (&self) -> Vec<(&'static str, f32)>;
+    fn apply (&self, fields: &[(String, f32)]);
+}
 
-pub trait Voice: AudioNode<Inputs = U2, Outputs = U2> {
-    const INDEX: usize;
+pub trait Voice: Send {
+    // Slot this voice occupies in Engine::voices / Handles::voice_selected --
+    // fixed per concrete type (see #[voice(index = ..)]).
+    fn index (&self) -> usize;
     fn name (&self) -> &'static str;
-    // The whole performance-signal snapshot (see zgicabra::SignalState),
-    // copied in as a unit -- a voice reads only the fields it cares about off
-    // its own stored copy (self.sig.filter, etc). Copied once per block by the
-    // engine (SignalState is Copy, 8xf32), not per sample.
-    fn set_signal (&mut self, signal: &SignalState);
+    // One sample, mono freq in, (left, right) out. Always renders -- the
+    // caller (Engine) is the one that knows whether this voice is selected.
+    fn tick (&mut self, freq: f32) -> (f32, f32);
+    fn set_sample_rate (&mut self, sample_rate: f64);
     // Called once per cpal callback chunk, before that block's tick()
     // calls -- extension point for a voice that needs block-driven
     // inference (a NamStage internally, say): fill a scratch buffer across
     // tick() calls, run it here.
     fn on_block_start (&mut self, _block_len: usize) {}
+    // Called by Engine instead of tick() when this voice is NOT selected --
+    // default no-op. Override only if a voice must keep book-keeping
+    // running while gated out (GrowlVoice advances its NAM scratch cursor
+    // here so a mid-block voice switch stays aligned).
+    fn on_silence (&mut self) {}
     // Applies one MIDI CC message (value pre-normalized 0..1) to whichever
     // of this voice's params that cc number maps to; unmapped cc numbers
     // are ignored. See the CC registry above.
@@ -44,23 +62,23 @@ pub trait Voice: AudioNode<Inputs = U2, Outputs = U2> {
 }
 
 // The DSP half of a voice, hand-written by the author. #[derive(Voice)]
-// generates the AudioNode::tick wrapper (INDEX gate + thump) and calls
-// render() with a freq that's already gated and thump-applied -- render() is
-// the old per-sample tick body, minus the boilerplate prologue.
+// generates the Voice::tick wrapper (thump application) and calls render()
+// with a freq that's already thump-applied -- render() is the old per-sample
+// tick body, minus the boilerplate prologue.
 pub trait VoiceDsp {
-    // `freq` is INDEX-gated and already thump-applied; `thump_mult` is the raw
-    // pitch multiplier thump contributed this sample (1.0 at rest), handed over
+    // `freq` is already thump-applied; `thump_mult` is the raw pitch
+    // multiplier thump contributed this sample (1.0 at rest), handed over
     // for voices that surface it as telemetry (GrowlVoice's freq_mult_live).
     fn render (&mut self, freq: f32, thump_mult: f32) -> Frame<f32, U2>;
     // Block-driven inference hook (a NamStage internally, say) -- default
     // no-op; the generated Voice::on_block_start delegates here.
     fn on_block_start (&mut self, _block_len: usize) {}
-    // Called by the generated tick when this voice is NOT selected, just
-    // before it returns silence -- default no-op. Override only if a voice
-    // must keep book-keeping running while gated out (GrowlVoice advances its
-    // NAM scratch cursor here so a mid-block voice switch stays aligned).
+    // Called by the generated Voice::on_silence -- default no-op. Override
+    // only if a voice must keep book-keeping running while gated out
+    // (GrowlVoice advances its NAM scratch cursor here so a mid-block voice
+    // switch stays aligned).
     fn on_silence (&mut self) {}
-    // Called at the end of the generated AudioNode::set_sample_rate (after it
+    // Called at the end of the generated Voice::set_sample_rate (after it
     // forwards to every #[node] field + thump) -- default no-op. Override for
     // a voice that caches the sample rate in a plain field (SwarmVoice).
     fn on_set_sample_rate (&mut self, _sample_rate: f64) {}

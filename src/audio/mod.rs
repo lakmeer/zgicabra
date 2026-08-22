@@ -11,6 +11,7 @@ use fundsp::prelude64::*;
 
 use crate::zgicabra::{DeltaEvent, SignalState};
 
+mod engine;
 mod nam;
 mod nam_node;
 mod nam_graph;
@@ -22,25 +23,25 @@ mod reese;
 mod fm;
 mod filter;
 mod reverb;
-pub mod crusher;
 mod compressor;
 mod voice;
 mod cc_input;
+mod signal;
+
+use signal::SharedSignal;
+
+use voice::{Voice, ViewFields};
+pub mod crusher;
 pub mod snapshot;
 
+use engine::Engine;
+pub use engine::{ReeseView, GrowlView, BasicView, SwarmView};
 use nam::NAM_BLOCK_CAP;
-use reverb::ReverbFx;
-use compressor::Compressor;
-use voice::Voice;
-use growl::GrowlVoice;
-use swarm::SwarmVoice;
-use reese::ReeseVoice;
-use basic::BasicVoice;
-use cc_input::CcInput;
-pub use growl::GrowlView;
-pub use reese::ReeseView;
-pub use basic::BasicView;
-pub use swarm::SwarmView;
+
+
+// Debug: captures snippet of cpal output stream to check non-zero output
+const CAPTURE_SECONDS: f32 = 0.1;
+const AUDIO_ERROR_LOG_CAP: usize = 50;
 
 const GATE_ON:  f32 = 1.0;
 const GATE_OFF: f32 = -1.0;
@@ -52,12 +53,6 @@ const ENVELOPE_ATTACK:  f32 = 0.003;
 const ENVELOPE_RELEASE: f32 = 0.1;
 
 const AMP_MODEL: &str = "lowgain";
-
-const VOICE_NAMES: [&str; 4] = ["Reese", "Growl", "Basic", "Swarm"];
-
-// Debug: captures snippet of cpal output stream to check non-zero output
-const CAPTURE_SECONDS: f32 = 0.1;
-const AUDIO_ERROR_LOG_CAP: usize = 50;
 
 pub type AudioErrors = Arc<Mutex<Vec<String>>>;
 
@@ -100,9 +95,6 @@ impl AudioCapture {
     }
 }
 
-// Direct handle onto the note gate for main.rs's --test self-test, bypassing
-// DeltaEvent/hydra entirely. Fights the real controller's freq/gate cells if
-// used at the same time as a live note.
 #[derive(Clone)]
 pub struct TestTone {
     freq: Shared,
@@ -120,11 +112,6 @@ impl TestTone {
     }
 }
 
-// Every Shared cell external code (ui.rs) needs to read, bundled once
-// so AudioOutput and AudioHandles don't each declare their own copy of the
-// same ~20-field list (see mod.rs's old handles()/AudioOutput duplication).
-// Per-voice fields are read-only *View types (see growl.rs's GrowlView doc)
-// -- writes are audio-thread/MIDI-CC-only now, see voice.rs's module doc.
 #[derive(Clone)]
 pub struct Handles {
     pub voice_selected: Shared,
@@ -132,10 +119,8 @@ pub struct Handles {
     pub voice_b: GrowlView,
     pub voice_c: BasicView,
     pub voice_d: SwarmView,
+    pub voice_names: [&'static str; 4],
 
-    // Set (audio thread, build_stream) whenever a live CC edits that voice's
-    // params; polled and cleared (main thread, persist_dirty_voices) once
-    // per engine-loop tick -- see snapshot.rs's module doc.
     pub voice_dirty: [Arc<AtomicBool>; 4],
 
     pub main_sub_lvl:  Shared,
@@ -158,6 +143,15 @@ pub struct Handles {
     pub limiter_thresh: Shared,
 
     pub master_vol: Shared,
+}
+
+impl Handles {
+    // The currently-selected voice's own name (see Voice::name, sourced via
+    // Engine::voice_names) -- the UI reads this instead of Zgicabra tracking
+    // a separate copy of "which voice is this".
+    pub fn voice_name (&self) -> &'static str {
+        self.voice_names[self.voice_selected.value() as usize]
+    }
 }
 
 // Every external-facing handle onto a running AudioOutput, bundled so
@@ -183,42 +177,29 @@ impl AudioHandles {
     // voice a live CC actually touched since the last call hits disk.
     pub fn persist_dirty_voices (&self) {
         let dirty = &self.handles.voice_dirty;
+        let views: [(&str, &dyn ViewFields); 4] = [
+            (self.handles.voice_names[0], &self.handles.voice_a),
+            (self.handles.voice_names[1], &self.handles.voice_b),
+            (self.handles.voice_names[2], &self.handles.voice_c),
+            (self.handles.voice_names[3], &self.handles.voice_d),
+        ];
 
-        if dirty[0].swap(false, Ordering::Relaxed) {
-            if let Err(e) = snapshot::save_state(VOICE_NAMES[0], &self.handles.voice_a.fields()) {
-                eprintln!("║ Failed to persist {} state: {e}", VOICE_NAMES[0]);
-            }
-        }
-        if dirty[1].swap(false, Ordering::Relaxed) {
-            if let Err(e) = snapshot::save_state(VOICE_NAMES[1], &self.handles.voice_b.fields()) {
-                eprintln!("║ Failed to persist {} state: {e}", VOICE_NAMES[1]);
-            }
-        }
-        if dirty[2].swap(false, Ordering::Relaxed) {
-            if let Err(e) = snapshot::save_state(VOICE_NAMES[2], &self.handles.voice_c.fields()) {
-                eprintln!("║ Failed to persist {} state: {e}", VOICE_NAMES[2]);
-            }
-        }
-        if dirty[3].swap(false, Ordering::Relaxed) {
-            if let Err(e) = snapshot::save_state(VOICE_NAMES[3], &self.handles.voice_d.fields()) {
-                eprintln!("║ Failed to persist {} state: {e}", VOICE_NAMES[3]);
+        for (i, (name, view)) in views.iter().enumerate() {
+            if dirty[i].swap(false, Ordering::Relaxed) {
+                if let Err(e) = snapshot::save_state(name, &view.fields()) {
+                    eprintln!("║ Failed to persist {name} state: {e}");
+                }
             }
         }
     }
 }
 
 pub struct AudioOutput {
-    level:             Shared,
     freq:              Shared,
     gate:              Shared,
-    bend:              Shared,
-    width:             Shared,
-    filter:            Shared,
-    fuzz:              Shared,
-    thump_amt:         Shared,
     thump_trigger:     Shared,
-    velocity:          Shared,
-    acceleration:      Shared,
+
+    signal: SharedSignal,
 
     handles: Handles,
 
@@ -240,17 +221,12 @@ impl AudioOutput {
     pub fn new () -> io::Result<AudioOutput> {
         println!("║ Starting native audio backend... ");
 
-        let level         = shared(1.0);
         let freq          = shared(110.0);
         let gate          = shared(GATE_OFF);
-        let bend          = shared(0.0);
-        let width         = shared(0.0);
-        let filter        = shared(0.0);
-        let fuzz          = shared(0.0);
-        let thump_amt     = shared(0.0);
         let thump_trigger = shared(0.0);
-        let velocity      = shared(0.0);
-        let acceleration  = shared(0.0);
+
+        let signal = SharedSignal::new();
+        signal.level.set_value(1.0);
 
         println!("║ Loading NAM models ... ");
         let (nam_models, nam_names) = nam::load_nam_models()?;
@@ -288,17 +264,10 @@ impl AudioOutput {
         let amp_model_r = nam::load_named_model(AMP_MODEL)?;
 
         let mut engine = Engine::new(
-            level.clone(),
+            signal.clone(),
             freq.clone(),
             gate.clone(),
-            bend.clone(),
-            width.clone(),
-            filter.clone(),
-            fuzz.clone(),
-            velocity.clone(),
-            acceleration.clone(),
 
-            thump_amt.clone(),
             thump_trigger.clone(),
             thump_peak.clone(),
             thump_decay.clone(),
@@ -331,17 +300,18 @@ impl AudioOutput {
 
         );
 
-        // Voice *View types are built here, right after the real Voices
-        // exist (inside `engine`, same module so private fields are
-        // visible) but before `engine` moves into build_stream's closure.
+        // Cloned out here, before `engine` moves into build_stream's closure.
         let voice_dirty = engine.voice_dirty.clone();
+        let (voice_a, voice_b, voice_c, voice_d) = engine.voice_views.clone();
+        let voice_names = engine.voice_names();
 
         let handles = Handles {
             voice_selected: voice_selected.clone(),
-            voice_a: engine.voice_a.view(),
-            voice_b: engine.voice_b.view(),
-            voice_c: engine.voice_c.view(),
-            voice_d: engine.voice_d.view(),
+            voice_a,
+            voice_b,
+            voice_c,
+            voice_d,
+            voice_names,
             voice_dirty,
 
             main_sub_lvl:  main_sub_lvl.clone(),
@@ -371,14 +341,19 @@ impl AudioOutput {
         // files (fresh checkout) are silent no-ops, keeping each voice's
         // compiled-in defaults.
         if let Some(name) = snapshot::load_selected() {
-            if let Some(idx) = VOICE_NAMES.iter().position(|n| *n == name) {
+            if let Some(idx) = voice_names.iter().position(|n| *n == name) {
                 voice_selected.set_value(idx as f32);
             }
         }
-        load_voice_state(VOICE_NAMES[0], |f| handles.voice_a.apply(f));
-        load_voice_state(VOICE_NAMES[1], |f| handles.voice_b.apply(f));
-        load_voice_state(VOICE_NAMES[2], |f| handles.voice_c.apply(f));
-        load_voice_state(VOICE_NAMES[3], |f| handles.voice_d.apply(f));
+        let views: [(&str, &dyn ViewFields); 4] = [
+            (voice_names[0], &handles.voice_a),
+            (voice_names[1], &handles.voice_b),
+            (voice_names[2], &handles.voice_c),
+            (voice_names[3], &handles.voice_d),
+        ];
+        for (name, view) in views {
+            load_voice_state(name, |f| view.apply(f));
+        }
 
         let host   = cpal::default_host();
         let device = host.default_output_device()
@@ -424,16 +399,14 @@ impl AudioOutput {
         println!("║ Native audio backend OK.");
 
         Ok(AudioOutput {
-            level, freq, gate, bend, width, filter, fuzz, thump_amt, thump_trigger, velocity, acceleration,
+            freq, gate, thump_trigger,
+            signal,
             handles,
             capture, errors, stream,
         })
     }
 }
 
-// Loads `config/{voice_name}.state` and hands the fields to `apply` --
-// factored out of AudioOutput::new purely to avoid repeating the "NotFound
-// is fine, anything else is worth a warning" branch four times.
 fn load_voice_state (voice_name: &str, apply: impl FnOnce(&[(String, f32)])) {
     match snapshot::load_state(voice_name) {
         Ok(fields) => apply(&fields),
@@ -442,7 +415,6 @@ fn load_voice_state (voice_name: &str, apply: impl FnOnce(&[(String, f32)])) {
     }
 }
 
-// Picks an output config at exactly `target_rate` to match NAM A2 models
 fn pick_output_config (device: &cpal::Device, target_rate: u32) -> io::Result<cpal::SupportedStreamConfig> {
     let ranges = device.supported_output_configs()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("no output configs available: {e}")))?;
@@ -471,242 +443,6 @@ fn pick_output_config (device: &cpal::Device, target_rate: u32) -> io::Result<cp
 
     device.default_output_config()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("no usable output config: {e}")))
-}
-
-// Owns the full per-note graph: all voices wired in parallel (each silences
-// itself when not selected -- see voice.rs) summed with main_sub, through
-// the fixed amp/reverb/limiter stages, combined with dry_sub at the very end
-// (dry_sub bypasses amp/reverb/limiter entirely).
-struct Engine {
-    level: Shared,
-    freq: Shared,
-    gate: Shared,
-    bend: Shared,
-    width: Shared,
-    filter: Shared,
-    fuzz: Shared,
-    thump_amt: Shared,
-    velocity: Shared,
-    acceleration: Shared,
-
-    main_sub_tri: An<WaveSynth<U1>>,
-    dry_sub:      An<Sine<f64>>,
-    envelope:     Box<dyn AudioUnit>,
-
-    voice_a: ReeseVoice,
-    voice_b: GrowlVoice,
-    voice_c: BasicVoice,
-    voice_d: SwarmVoice,
-    voice_selected: Shared,
-
-    voice_dirty: [Arc<AtomicBool>; 4],
-
-    main_sub_lvl:  Shared,
-    dry_sub_lvl:   Shared,
-
-    amp_l: nam::NamStage,
-    amp_r: nam::NamStage,
-    amp_bypass:    Shared,
-    amp_boost:     Shared,
-    amp_blend:     Shared,
-    amp_crossover: Shared,
-
-    reverb: ReverbFx,
-    reverb_bypass: Shared,
-    reverb_dry:    Shared,
-
-    limiter: Compressor,
-    limiter_bypass: Shared,
-    limiter_thresh: Shared,
-
-    master_vol: Shared,
-
-    cc_input: CcInput,
-}
-
-impl Engine {
-    fn new (
-        level: Shared,
-        freq: Shared,
-        gate: Shared,
-        bend: Shared,
-        width: Shared,
-        filter: Shared,
-        fuzz: Shared,
-        velocity: Shared,
-        acceleration: Shared,
-
-        thump_amt: Shared,
-        thump_trigger: Shared,
-        thump_peak: Shared,
-        thump_decay: Shared,
-
-        voice_selected: Shared,
-
-        main_sub_lvl: Shared,
-        dry_sub_lvl: Shared,
-
-        nam_models: Vec<Option<nam::NamModelSlot>>,
-        nam_names: Arc<Vec<String>>,
-        amp_model_l: nam::NamModelSlot,
-        amp_model_r: nam::NamModelSlot,
-
-        amp_bypass: Shared,
-        amp_boost: Shared,
-        amp_blend: Shared,
-        amp_crossover: Shared,
-
-        reverb_bypass: Shared,
-        reverb_dry: Shared,
-        reverb_decay: f32,
-        reverb_damp: f32,
-        reverb_size: f32,
-
-        limiter_bypass: Shared,
-        limiter_thresh: Shared,
-
-        master_vol: Shared,
-
-    ) -> Engine {
-        // Each NamStage holds exactly one fixed model -- no Bypass slot, no cycling.
-        let amp_l = nam::NamStage::new(vec![Some(amp_model_l)], shared(0.0));
-        let amp_r = nam::NamStage::new(vec![Some(amp_model_r)], shared(0.0));
-
-        Engine {
-            freq, gate,
-            level, bend, width, filter, fuzz, thump_amt, velocity, acceleration,
-            main_sub_tri: triangle(),
-            dry_sub:      sine(),
-            envelope: Box::new(adsr_live(ENVELOPE_ATTACK, 0.0, 1.0, ENVELOPE_RELEASE)),
-            voice_selected,
-
-            voice_a: ReeseVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-            voice_b: GrowlVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-            voice_c: BasicVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-            voice_d: SwarmVoice::new(nam_models, nam_names, thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-            voice_dirty: std::array::from_fn(|_| Arc::new(AtomicBool::new(false))),
-
-            main_sub_lvl,
-            dry_sub_lvl,
-
-            amp_l,
-            amp_r,
-            amp_bypass,
-            amp_boost,
-            amp_blend,
-            amp_crossover,
-
-            reverb: ReverbFx::new(reverb_size, reverb_decay, reverb_damp), reverb_bypass, reverb_dry,
-
-            limiter: Compressor::new(), limiter_bypass, limiter_thresh,
-
-            master_vol,
-
-            cc_input: CcInput::connect(),
-        }
-    }
-
-    fn set_sample_rate (&mut self, sr: f64) {
-        self.main_sub_tri.set_sample_rate(sr);
-        self.dry_sub.set_sample_rate(sr);
-        self.envelope.set_sample_rate(sr);
-        self.voice_a.set_sample_rate(sr);
-        self.voice_b.set_sample_rate(sr);
-        self.voice_c.set_sample_rate(sr);
-        self.voice_d.set_sample_rate(sr);
-        self.amp_l.set_sample_rate(sr);
-        self.amp_r.set_sample_rate(sr);
-        self.reverb.set_sample_rate(sr);
-        self.limiter.set_sample_rate(sr);
-    }
-
-    // Everything before the amp stage, gated by the envelope. Returns
-    // (dry_l, dry_r, dry_sub) -- split out of a single tick() so build_stream
-    // can batch dry_l/dry_r across a block and run the amp stage once per
-    // block instead of once per sample (see run_nam / NamStage::process_block).
-    // Snapshot the live performance signals and push a read-only copy into
-    // every voice. Called once per block from build_stream (knob-rate: the
-    // main thread only rewrites these cells per frame, so within a block they
-    // never change) -- each voice keeps its own SignalState copy and reads the
-    // fields it cares about in render().
-    fn update_voice_signals (&mut self) {
-        let signal = SignalState {
-            bend: self.bend.value(), width: self.width.value(), thump: self.thump_amt.value(),
-            filter: self.filter.value(), fuzz: self.fuzz.value(),
-            velocity: self.velocity.value(), acceleration: self.acceleration.value(),
-            ..SignalState::new()
-        };
-        self.voice_a.set_signal(&signal);
-        self.voice_b.set_signal(&signal);
-        self.voice_c.set_signal(&signal);
-        self.voice_d.set_signal(&signal);
-    }
-
-    fn tick_pre_nam (&mut self) -> (f32, f32, f32) {
-        let bend_mult = 2f32.powf(self.bend.value());
-        let base_freq = self.freq.value() * bend_mult;
-
-        let sel = self.voice_selected.value();
-        let voice_a_out = self.voice_a.tick(&Frame::from([base_freq, sel]));
-        let voice_b_out = self.voice_b.tick(&Frame::from([base_freq, sel]));
-        let voice_c_out = self.voice_c.tick(&Frame::from([base_freq, sel]));
-        let voice_d_out = self.voice_d.tick(&Frame::from([base_freq, sel]));
-        let voice_l = voice_a_out[0] + voice_b_out[0] + voice_c_out[0] + voice_d_out[0];
-        let voice_r = voice_a_out[1] + voice_b_out[1] + voice_c_out[1] + voice_d_out[1];
-
-        let main_sub = self.main_sub_tri.filter_mono(base_freq) * self.main_sub_lvl.value();
-
-        let env = self.envelope.filter_mono(self.gate.value());
-
-        // dry_sub: one octave below base_freq, bypasses amp/reverb/limiter entirely.
-        let dry_sub = self.dry_sub.filter_mono(base_freq * 0.5) * self.dry_sub_lvl.value() * env;
-
-        let dry_l = (voice_l + main_sub) * env;
-        let dry_r = (voice_r + main_sub) * env;
-
-        (dry_l, dry_r, dry_sub)
-    }
-
-    // Knob-rate values, read once per block rather than per sample.
-    fn nam_block_params (&self) -> (f32, f32, f32, f32) {
-        let level = if self.amp_bypass.value() >= 1.0 { 0.0 } else { 1.0 };
-        (level, self.amp_blend.value(), self.amp_boost.value(), self.amp_crossover.value())
-    }
-
-    fn run_nam (&mut self, block_l: &mut [f32], block_r: &mut [f32]) {
-        let (level, blend, boost, crossover_hz) = self.nam_block_params();
-        self.amp_l.process_block(block_l, level, blend, boost, crossover_hz);
-        self.amp_r.process_block(block_r, level, blend, boost, crossover_hz);
-    }
-
-    // Reverb, limiter, then final mix with dry_sub (which bypassed amp entirely).
-    fn tick_post_nam (&mut self, dry_l: f32, dry_r: f32, dry_sub: f32) -> (f32, f32) {
-        // Soft-clip rather than a hard wall so transient peaks saturate instead of clipping.
-        let mut l = dry_l.tanh();
-        let mut r = dry_r.tanh();
-
-        // Skip the call entirely rather than driving level=0 -- ReverbFx mono-sums
-        // its input, so this is the only way to preserve stereo width while bypassed.
-        if self.reverb_bypass.value() < 1.0 {
-            let (rl, rr) = self.reverb.tick(l, r, self.reverb_dry.value());
-            l = rl;
-            r = rr;
-        }
-
-        if self.limiter_bypass.value() < 1.0 {
-            let (ll, rr) = self.limiter.tick(l, r, self.limiter_thresh.value());
-            l = ll;
-            r = rr;
-        }
-
-        // Master volume is modulated by zgicabra level
-        let vol = self.master_vol.value() * self.level.value();
-
-        (
-            ((l + dry_sub) * vol).clamp(-1.0, 1.0),
-            ((r + dry_sub) * vol).clamp(-1.0, 1.0),
-        )
-    }
 }
 
 fn build_stream<T> (
@@ -746,12 +482,9 @@ where
                 // model (see NamStage::process_block's warm-state comment);
                 // switching between notes/songs is silent.
                 let selected = engine.voice_selected.value() as usize;
-                if selected == ReeseVoice::INDEX { engine.voice_a.on_block_start(n); }
-                if selected == GrowlVoice::INDEX { engine.voice_b.on_block_start(n); }
-                if selected == BasicVoice::INDEX { engine.voice_c.on_block_start(n); }
-                if selected == SwarmVoice::INDEX { engine.voice_d.on_block_start(n); }
-
-                engine.update_voice_signals();
+                for voice in engine.voices.iter_mut() {
+                    if voice.index() == selected { voice.on_block_start(n); }
+                }
 
                 // Drain the CC ring buffer and retarget each message to
                 // whichever voice is currently selected -- switching voices
@@ -759,10 +492,9 @@ where
                 // doesn't replay queued ones onto the old voice.
                 while let Some((cc, value)) = engine.cc_input.pop() {
                     crate::dbg!("audio::build_stream - applying CC {cc}={value} to voice index {selected}");
-                    if selected == ReeseVoice::INDEX { engine.voice_a.apply_cc(cc, value); }
-                    if selected == GrowlVoice::INDEX { engine.voice_b.apply_cc(cc, value); }
-                    if selected == BasicVoice::INDEX { engine.voice_c.apply_cc(cc, value); }
-                    if selected == SwarmVoice::INDEX { engine.voice_d.apply_cc(cc, value); }
+                    for voice in engine.voices.iter_mut() {
+                        if voice.index() == selected { voice.apply_cc(cc, value); }
+                    }
                     if let Some(flag) = engine.voice_dirty.get(selected) { flag.store(true, Ordering::Relaxed); }
                 }
 
@@ -798,14 +530,7 @@ impl AudioOutput {
     }
 
     pub fn handle_signal (&mut self, signal: &SignalState) {
-        self.level.set_value(signal.level);
-        self.bend.set_value(signal.bend);
-        self.width.set_value(signal.width);
-        self.filter.set_value(signal.filter);
-        self.fuzz.set_value(signal.fuzz);
-        self.thump_amt.set_value(signal.thump);
-        self.velocity.set_value(signal.velocity);
-        self.acceleration.set_value(signal.acceleration);
+        self.signal.set(signal);
     }
 
     pub fn handle_event (&mut self, delta: &DeltaEvent) {
@@ -820,11 +545,14 @@ impl AudioOutput {
                 self.gate.set_value(GATE_ON);
             },
             DeltaEvent::NoteEnd(_) => self.gate.set_value(GATE_OFF),
-            // Index must match zgicabra::Voice's enum order.
-            DeltaEvent::VoiceChange(voice) => {
-                let idx = *voice as u8 as usize;
+            // delta is -1 or 1 -- Zgicabra doesn't track which voice is
+            // selected any more, only the engine does (voice_selected).
+            DeltaEvent::VoiceChange(delta) => {
+                let count = self.handles.voice_names.len() as i8;
+                let current = self.handles.voice_selected.value() as i8;
+                let idx = (current + delta).rem_euclid(count) as usize;
                 self.handles.voice_selected.set_value(idx as f32);
-                if let Some(name) = VOICE_NAMES.get(idx) {
+                if let Some(name) = self.handles.voice_names.get(idx) {
                     if let Err(e) = snapshot::save_selected(name) {
                         eprintln!("║ Failed to persist selected voice: {e}");
                     }

@@ -15,7 +15,7 @@ use fundsp::prelude64::*;
 use zgicabra_voice_macro::Voice;
 
 use crate::tools::linexp;
-use crate::zgicabra::SignalState;
+use super::signal::SharedSignal;
 use super::voice::{Voice, VoiceDsp, ThumpMod};
 use super::crusher::crusher;
 
@@ -66,7 +66,7 @@ const IMPACT_DRIVE_POP:   f32 = 1.5;    // extra drive multiplier at full impact
 const DEFAULT_CRUSH_DEPTH:  f32 = 1.0; // CC8 = 1.0 -> heaviest crush, 0.0 -> bypassed
 
 #[derive(Clone, Voice)]
-#[voice(index = 0, id = 0x7A_11, label = "Reese", new = manual)]
+#[voice(index = 0, label = "Reese", new = manual)]
 pub struct ReeseVoice {
     #[node(each)] unison: [An<WaveSynth<U1>>; VOICES],
     unison_pan: [An<Panner<U2>>; VOICES],
@@ -106,7 +106,7 @@ pub struct ReeseVoice {
     #[live(range = -60.0..0.0)] pub crush_gr_live:  Shared,
 
     thump: ThumpMod,
-    sig:   SignalState,
+    sig:   SharedSignal,
 }
 
 // ReeseView + view()/fields()/apply()/UI_RANGES + the AudioNode/Voice impls
@@ -114,7 +114,7 @@ pub struct ReeseVoice {
 // because the per-voice detune/pan `spread` weights are computed before the
 // struct literal.
 impl ReeseVoice {
-    pub fn new (thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared) -> ReeseVoice {
+    pub fn new (thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared, signal: SharedSignal) -> ReeseVoice {
         let spread: [f32; VOICES] = std::array::from_fn(|i| {
             if VOICES == 1 { 0.0 } else { (2.0 * i as f32 / (VOICES - 1) as f32) - 1.0 }
         });
@@ -161,18 +161,18 @@ impl ReeseVoice {
             crush_env_live, crush_out_live, crush_gr_live,
 
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
-            sig:   SignalState::new(),
+            sig:   signal,
         }
     }
 }
 
 impl VoiceDsp for ReeseVoice {
     fn render (&mut self, freq: f32, _thump_mult: f32) -> Frame<f32, U2> {
-        self.lfo_rate_live.set_value(self.lfo_rate_input.value() + (1.0 + WIDTH_TO_LFO_RATE * self.sig.width).clamp(0.0, 1.0));
+        self.lfo_rate_live.set_value(self.lfo_rate_input.value() + (1.0 + WIDTH_TO_LFO_RATE * self.sig.width.value()).clamp(0.0, 1.0));
         let lfo_val   = self.lfo.filter_mono(self.lfo_rate_live.value());
         let lfo_depth = self.lfo_depth_input.value();
 
-        let width_signal = self.sig.width.clamp(0.0, 1.0);
+        let width_signal = self.sig.width.value().clamp(0.0, 1.0);
         let detune = self.detune_input.value()
             * (1.0 + lfo_val * lfo_depth * DETUNE_LFO_DEPTH)
             * (1.0 + WIDTH_TO_DETUNE * width_signal);
@@ -188,7 +188,7 @@ impl VoiceDsp for ReeseVoice {
         // the cutoff/drive pops below, the raw sample gets folded into the
         // pre-drive mix so it shares the synth's saturation and filter sweep
         // rather than sitting on top as a separate dry layer.
-        let impact_raw = self.impact_player.get_mono() * self.impact_level_input.value() * self.sig.thump;
+        let impact_raw = self.impact_player.get_mono() * self.impact_level_input.value() * self.sig.thump.value();
         let impact_env = self.impact_env.filter_mono(impact_raw.abs());
 
         let mut mix_l = 0.0f32;
@@ -219,7 +219,7 @@ impl VoiceDsp for ReeseVoice {
         // Live `fuzz` signal and the impact envelope both boost drive on top
         // of the macro knob -- the kick's transient briefly adds extra grit.
         let drive = (self.drive_input.value()
-            * (1.0 + 2.0 * self.sig.fuzz.clamp(0.0, 1.0))
+            * (1.0 + 2.0 * self.sig.fuzz.value().clamp(0.0, 1.0))
             * (1.0 + IMPACT_DRIVE_POP * impact_env)).max(1.0);
         self.drive_live.set_value(drive);
         let shaped_l = (mix_l * self.drive_live.value()).tanh();
@@ -228,7 +228,7 @@ impl VoiceDsp for ReeseVoice {
         // Cutoff driven by the macro knob (scaled by live `filter` signal), the
         // LFO, and a pop from the impact envelope that opens the filter on hit.
         let cutoff_base  = self.cutoff_input.value() * 2f32.powf(lfo_val * lfo_depth * LFO_DEPTH);
-        let cutoff_hz  = (linexp(0.0, 1.0, CUTOFF_LO, CUTOFF_HI, cutoff_base * (1.0 + FILTER_TO_CUTOFF * self.sig.filter)) + IMPACT_CUTOFF_POP * impact_env).clamp(20.0, 18_000.0);
+        let cutoff_hz  = (linexp(0.0, 1.0, CUTOFF_LO, CUTOFF_HI, cutoff_base * (1.0 + FILTER_TO_CUTOFF * self.sig.filter.value())) + IMPACT_CUTOFF_POP * impact_env).clamp(20.0, 18_000.0);
         self.cutoff_live.set_value(cutoff_hz);
         let q = self.resonance_input.value();
 

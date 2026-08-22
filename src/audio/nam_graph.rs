@@ -255,7 +255,7 @@ mod tests {
 mod voices {
     use fundsp::prelude64::*;
 
-    use crate::zgicabra::SignalState;
+    use super::super::signal::SharedSignal;
     use super::super::voice::Voice;
     use super::super::growl::GrowlVoice;
     use super::super::swarm::SwarmVoice;
@@ -266,10 +266,10 @@ mod voices {
     // state rather than the pre-roll of zeros the window costs.
     const TICKS: usize = NAM_WINDOW * 4;
 
-    fn signal () -> SignalState {
-        let mut sig = SignalState::new();
-        sig.fuzz = 0.5;   // drive the dry/wet blend so the model output matters
-        sig.filter = 0.7;
+    fn signal () -> SharedSignal {
+        let sig = SharedSignal::new();
+        sig.fuzz.set_value(0.5);   // drive the dry/wet blend so the model output matters
+        sig.filter.set_value(0.7);
         sig
     }
 
@@ -282,13 +282,11 @@ mod voices {
 
     #[test]
     fn growl_nam_graph_produces_audio () {
-        let mut v = GrowlVoice::new(shared(1.0), shared(1.5), shared(0.3));
+        let mut v = GrowlVoice::new(shared(1.0), shared(1.5), shared(0.3), signal());
         v.set_sample_rate(48_000.0);
-        v.set_signal(&signal());
 
-        let sel = GrowlVoice::INDEX as f32;
         let out: Vec<f32> = (0..TICKS)
-            .map(|_| v.tick(&Frame::from([110.0, sel]))[0])
+            .map(|_| v.tick(110.0).0)
             .collect();
 
         assert_audible("growl", &out[NAM_WINDOW * 2..]);
@@ -300,17 +298,16 @@ mod voices {
         let mut v = SwarmVoice::new(
             slots, std::sync::Arc::new(names),
             shared(1.0), shared(1.5), shared(0.3),
+            signal(),
         );
         v.set_sample_rate(48_000.0);
-        v.set_signal(&signal());
 
-        let sel = SwarmVoice::INDEX as f32;
         let mut left  = Vec::with_capacity(TICKS);
         let mut right = Vec::with_capacity(TICKS);
         for _ in 0..TICKS {
-            let f = v.tick(&Frame::from([110.0, sel]));
-            left.push(f[0]);
-            right.push(f[1]);
+            let (l, r) = v.tick(110.0);
+            left.push(l);
+            right.push(r);
         }
 
         assert_audible("swarm L", &left[NAM_WINDOW * 2..]);

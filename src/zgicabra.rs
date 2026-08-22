@@ -33,35 +33,6 @@ struct RepeatMode {
 }
 
 
-// Which sound engine patch to use
-#[derive(Debug, Clone, Copy)]
-pub enum Voice {
-    VoiceA = 0,
-    VoiceB = 1,
-    VoiceC = 2,
-    VoiceD = 3 
-}
-
-impl Voice {
-    const COUNT: u8 = 4;
-
-    pub fn cycle(self, delta: i8) -> Self {
-        let current = self as i8;
-        let next = (current + delta).rem_euclid(Self::COUNT as i8) as u8;
-        Self::from_index(next)
-    }
-
-    pub fn from_index(index: u8) -> Self {
-        match index % Self::COUNT {
-            0 => Voice::VoiceA,
-            1 => Voice::VoiceB,
-            2 => Voice::VoiceC,
-            3 => Voice::VoiceD,
-            _ => unreachable!(),
-        }
-    }
-}
-
 // Which hand is engaged
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Hand {
@@ -238,7 +209,10 @@ pub enum DeltaEvent {
     NoteChange(Note, Note),
     NoteEnd(Note),
     WidthLevel(f32),
-    VoiceChange(Voice),
+    // -1 or 1: cycle the audio engine's selected voice back/forward. The
+    // engine (not Zgicabra) owns which voice is actually selected -- see
+    // audio::Handles::voice_selected.
+    VoiceChange(i8),
     RootChange(Note),
     Panic(),
     BumperDown(Hand),
@@ -264,7 +238,6 @@ pub struct Zgicabra {
     pub most_recent_wand: Hand,
     pub note: NoteState,
     pub signal: SignalState,
-    pub voice: Voice,
 }
 
 impl Zgicabra {
@@ -279,7 +252,6 @@ impl Zgicabra {
             most_recent_wand: Hand::Neither,
             note: NoteState::new(),
             signal: SignalState::new(),
-            voice: Voice::VoiceA,
         }
     }
 }
@@ -486,8 +458,7 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
 
                 // Voice
                 2 => {
-                    curr_state.voice = curr_state.voice.cycle(rock_direction);
-                    deltas.push(DeltaEvent::VoiceChange(curr_state.voice));
+                    deltas.push(DeltaEvent::VoiceChange(rock_direction));
                 },
 
                 _ => {},

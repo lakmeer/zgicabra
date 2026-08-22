@@ -2,13 +2,15 @@
 // #[derive(Voice)] -- generates the mechanical skeleton every concrete voice
 // in src/audio/*.rs used to hand-write: the read-only *View struct + view(),
 // the fields()/apply() snapshot tables, apply_cc(), a UI_RANGES table, an
-// optional new(), and the AudioNode/Voice trait impls (ID, INDEX, name,
-// set_signal, set_sample_rate, and the tick wrapper that gates on INDEX +
-// applies thump before calling the author's hand-written VoiceDsp::render).
+// optional new(), and the `impl Voice for` block (index, name,
+// set_sample_rate, and the tick wrapper that applies thump before calling
+// the author's hand-written VoiceDsp::render). Whether this voice is the
+// selected one is the caller's call (see audio::engine::Engine) -- the
+// generated tick always renders, it doesn't gate on index itself.
 // See the proposal in the plan file.
 //
 // The author writes: the annotated struct (which MUST include a `thump:
-// ThumpMod` field and a `sig: SignalState` field) + `impl VoiceDsp` (render,
+// ThumpMod` field and a `sig: SharedSignal` field) + `impl VoiceDsp` (render,
 // optional on_block_start/on_silence) + a manual new() when construction needs
 // pre-init logic (#[voice(new = manual)]).
 //
@@ -90,7 +92,7 @@ struct Voice {
 fn expand (input: DeriveInput) -> syn::Result<TokenStream2> {
     let name = input.ident.clone();
 
-    let (index, id, label, manual_new, manual_thump) = parse_voice_attr(&input)?;
+    let (index, label, manual_new, manual_thump) = parse_voice_attr(&input)?;
 
     let fields = match &input.data {
         Data::Struct(s) => match &s.fields {
@@ -127,20 +129,19 @@ fn expand (input: DeriveInput) -> syn::Result<TokenStream2> {
     // same generated behaviour as `thump = manual` on a voice that does have
     // the field but applies it itself.
     let thump = v.thump.clone();
-    let sig = v.sig.clone().ok_or_else(|| syn::Error::new_spanned(
-        &input, "Voice derive needs a `sig: SignalState` field"))?;
+    if v.sig.is_none() {
+        return Err(syn::Error::new_spanned(&input, "Voice derive needs a `sig: SharedSignal` field"));
+    }
 
     let view_struct = gen_view_struct(&name, &v);
     let view_impl   = gen_view_impl(&name, &v);
     let voice_inh   = gen_inherent(&name, &v, !manual_new, thump.as_ref())?;
-    let audionode   = gen_audionode(&name, &id, &index, &v, thump.as_ref(), manual_thump);
-    let voice_trait = gen_voice_trait(&name, &index, &label, &v, &sig);
+    let voice_trait = gen_voice_trait(&name, &index, &label, &v, thump.as_ref(), manual_thump);
 
     Ok(quote! {
         #view_struct
         #view_impl
         #voice_inh
-        #audionode
         #voice_trait
     })
 }
@@ -151,12 +152,11 @@ fn find_attr<'a> (attrs: &'a [Attribute], name: &str) -> Option<&'a Attribute> {
     attrs.iter().find(|a| a.path().is_ident(name))
 }
 
-fn parse_voice_attr (input: &DeriveInput) -> syn::Result<(Expr, Expr, LitStr, bool, bool)> {
+fn parse_voice_attr (input: &DeriveInput) -> syn::Result<(Expr, LitStr, bool, bool)> {
     let attr = find_attr(&input.attrs, "voice")
-        .ok_or_else(|| syn::Error::new_spanned(input, "missing #[voice(index=.., id=.., label=..)]"))?;
+        .ok_or_else(|| syn::Error::new_spanned(input, "missing #[voice(index=.., label=..)]"))?;
 
     let mut index = None;
-    let mut id = None;
     let mut label = None;
     let mut manual_new = false;
     let mut manual_thump = false;
@@ -164,8 +164,6 @@ fn parse_voice_attr (input: &DeriveInput) -> syn::Result<(Expr, Expr, LitStr, bo
     attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("index") {
             index = Some(meta.value()?.parse::<Expr>()?);
-        } else if meta.path.is_ident("id") {
-            id = Some(meta.value()?.parse::<Expr>()?);
         } else if meta.path.is_ident("label") {
             label = Some(meta.value()?.parse::<LitStr>()?);
         } else if meta.path.is_ident("new") {
@@ -182,7 +180,6 @@ fn parse_voice_attr (input: &DeriveInput) -> syn::Result<(Expr, Expr, LitStr, bo
 
     Ok((
         index.ok_or_else(|| syn::Error::new_spanned(attr, "#[voice] missing index"))?,
-        id.ok_or_else(|| syn::Error::new_spanned(attr, "#[voice] missing id"))?,
         label.ok_or_else(|| syn::Error::new_spanned(attr, "#[voice] missing label"))?,
         manual_new,
         manual_thump,
@@ -292,14 +289,14 @@ fn gen_view_impl (name: &Ident, v: &Voice) -> TokenStream2 {
     let input_names: Vec<_> = v.inputs.iter().map(|f| &f.ident).collect();
 
     quote! {
-        impl #view_name {
-            pub fn fields (&self) -> Vec<(&'static str, f32)> {
+        impl crate::audio::voice::ViewFields for #view_name {
+            fn fields (&self) -> Vec<(&'static str, f32)> {
                 vec![
                     #( (stringify!(#input_names), self.#input_names.value()), )*
                 ]
             }
 
-            pub fn apply (&self, fields: &[(String, f32)]) {
+            fn apply (&self, fields: &[(String, f32)]) {
                 for (name, value) in fields {
                     match name.as_str() {
                         #( stringify!(#input_names) => self.#input_names.set_value(*value), )*
@@ -399,19 +396,23 @@ fn gen_new (v: &Voice, thump: Option<&Ident>) -> syn::Result<TokenStream2> {
     });
 
     Ok(quote! {
-        pub fn new (thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared) -> Self {
+        pub fn new (thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared, signal: SharedSignal) -> Self {
             Self {
                 #( #node_inits, )*
                 #( #input_inits, )*
                 #( #live_inits, )*
                 #thump: ThumpMod::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
-                sig: SignalState::new(),
+                sig: signal,
             }
         }
     })
 }
 
-fn gen_audionode (name: &Ident, id: &Expr, index: &Expr, v: &Voice, thump: Option<&Ident>, manual_thump: bool) -> TokenStream2 {
+// The whole `impl Voice for #name` block: index/name, tick (thump + render),
+// set_sample_rate (forwards to every #[node] + thump), on_block_start,
+// on_silence and apply_cc (all delegating to the author's VoiceDsp impl,
+// except apply_cc which is fully generated from each #[input]'s cc=..).
+fn gen_voice_trait (name: &Ident, index: &Expr, label: &LitStr, v: &Voice, thump: Option<&Ident>, manual_thump: bool) -> TokenStream2 {
     let scalar_nodes = v.nodes.iter().filter(|f| !f.each).map(|f| &f.ident);
     let each_nodes   = v.nodes.iter().filter(|f| f.each).map(|f| &f.ident);
 
@@ -420,46 +421,23 @@ fn gen_audionode (name: &Ident, id: &Expr, index: &Expr, v: &Voice, thump: Optio
     // the raw freq + apply thump themselves inside render(). Voices with no
     // thump field at all (no pitch-thump modulation) get the same pass-
     // through body.
-    let body = match thump {
+    let tick_body = match thump {
         Some(thump) if !manual_thump => quote! {
-            let thump_mult = self.#thump.tick(self.sig.thump);
+            let thump_mult = self.#thump.tick(self.sig.thump.value());
             let freq = freq * thump_mult;
-            crate::audio::voice::VoiceDsp::render(self, freq, thump_mult)
+            let out = crate::audio::voice::VoiceDsp::render(self, freq, thump_mult);
+            (out[0], out[1])
         },
-        _ => quote! { crate::audio::voice::VoiceDsp::render(self, freq, 1.0) },
+        _ => quote! {
+            let out = crate::audio::voice::VoiceDsp::render(self, freq, 1.0);
+            (out[0], out[1])
+        },
     };
 
     let thump_set_sample_rate = thump.map(|thump| quote! {
         self.#thump.set_sample_rate(sample_rate);
     });
 
-    quote! {
-        impl AudioNode for #name {
-            const ID: u64 = #id;
-            type Inputs = U2;
-            type Outputs = U2;
-
-            fn tick (&mut self, input: &Frame<f32, U2>) -> Frame<f32, U2> {
-                let freq     = input[0];
-                let selected = input[1] as usize;
-                if selected != #index {
-                    crate::audio::voice::VoiceDsp::on_silence(self);
-                    return Frame::from([0.0, 0.0]);
-                }
-                #body
-            }
-
-            fn set_sample_rate (&mut self, sample_rate: f64) {
-                #( self.#scalar_nodes.set_sample_rate(sample_rate); )*
-                #( for n in self.#each_nodes.iter_mut() { n.set_sample_rate(sample_rate); } )*
-                #thump_set_sample_rate
-                crate::audio::voice::VoiceDsp::on_set_sample_rate(self, sample_rate);
-            }
-        }
-    }
-}
-
-fn gen_voice_trait (name: &Ident, index: &Expr, label: &LitStr, v: &Voice, sig: &Ident) -> TokenStream2 {
     let cc_arms = v.inputs.iter().filter(|f| !f.ccs.is_empty()).map(|f| {
         let id = &f.ident;
         let set = f.set.as_ref().unwrap();
@@ -469,16 +447,29 @@ fn gen_voice_trait (name: &Ident, index: &Expr, label: &LitStr, v: &Voice, sig: 
 
     quote! {
         impl Voice for #name {
-            const INDEX: usize = #index;
+            fn index (&self) -> usize { #index }
 
             fn name (&self) -> &'static str { #label }
 
-            fn set_signal (&mut self, signal: &SignalState) {
-                self.#sig = *signal;
+            // Whether this voice is the selected one is the caller's call
+            // (see audio::engine::Engine) -- tick always renders.
+            fn tick (&mut self, freq: f32) -> (f32, f32) {
+                #tick_body
+            }
+
+            fn set_sample_rate (&mut self, sample_rate: f64) {
+                #( self.#scalar_nodes.set_sample_rate(sample_rate); )*
+                #( for n in self.#each_nodes.iter_mut() { n.set_sample_rate(sample_rate); } )*
+                #thump_set_sample_rate
+                crate::audio::voice::VoiceDsp::on_set_sample_rate(self, sample_rate);
             }
 
             fn on_block_start (&mut self, block_len: usize) {
                 crate::audio::voice::VoiceDsp::on_block_start(self, block_len);
+            }
+
+            fn on_silence (&mut self) {
+                crate::audio::voice::VoiceDsp::on_silence(self);
             }
 
             fn apply_cc (&mut self, cc: u8, value: f32) {
