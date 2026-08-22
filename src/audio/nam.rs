@@ -225,7 +225,7 @@ impl NamStage {
     // reduces to 100% dry at blend=0.
     //
     // level/blend/boost/crossover_hz are read once per block by the caller
-    // (Engine::run_nam) since these are knob-rate, not audio-rate.
+    // since these are knob-rate, not audio-rate.
     //
     // crossover_hz splits the block into a low band that stays dry (never
     // touches the model, summed back in full) and a high band that goes

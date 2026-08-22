@@ -34,7 +34,6 @@ pub mod snapshot;
 
 use engine::Engine;
 pub use engine::{ReeseView, GrowlView, BasicView, SwarmView};
-use nam::NAM_BLOCK_CAP;
 
 
 // Debug: captures snippet of cpal output stream to check non-zero output
@@ -49,8 +48,6 @@ const AUDIO_BUFFER_FRAMES: cpal::FrameCount = 1024;
 
 const ENVELOPE_ATTACK:  f32 = 0.003;
 const ENVELOPE_RELEASE: f32 = 0.1;
-
-const AMP_MODEL: &str = "lowgain";
 
 pub type AudioErrors = Arc<Mutex<Vec<String>>>;
 
@@ -125,11 +122,6 @@ pub struct Handles {
     pub dry_sub_lvl:   Shared,
     pub thump_peak:    Shared,
     pub thump_decay:   Shared,
-
-    pub amp_bypass:    Shared,
-    pub amp_boost:     Shared,
-    pub amp_blend:     Shared,
-    pub amp_crossover: Shared,
 
     pub reverb_bypass: Shared,
     pub reverb_dry:    Shared,
@@ -239,12 +231,6 @@ impl AudioOutput {
         let thump_peak    = shared(1.5);
         let thump_decay   = shared(0.10);
 
-        let amp_bypass    = shared(0.0);
-        let amp_boost     = shared(1.0);
-        let amp_blend     = shared(0.0);
-        // 0Hz = crossover no-op, full signal to the model (see NamStage::xover_alpha).
-        let amp_crossover = shared(0.0);
-
         let reverb_bypass = shared(0.0);
         let reverb_dry    = shared(0.12);
         let reverb_decay  = shared(0.6);
@@ -257,9 +243,6 @@ impl AudioOutput {
         let master_vol = shared(1.0);
 
         let capture = AudioCapture::new((NAM_SAMPLE_RATE as f32 * CAPTURE_SECONDS) as usize);
-
-        let amp_model_l = nam::load_named_model(AMP_MODEL)?;
-        let amp_model_r = nam::load_named_model(AMP_MODEL)?;
 
         let mut engine = Engine::new(
             signal.clone(),
@@ -277,13 +260,6 @@ impl AudioOutput {
 
             nam_models,
             nam_names,
-            amp_model_l,
-            amp_model_r,
-
-            amp_bypass.clone(),
-            amp_boost.clone(),
-            amp_blend.clone(),
-            amp_crossover.clone(),
 
             reverb_bypass.clone(),
             reverb_dry.clone(),
@@ -316,11 +292,6 @@ impl AudioOutput {
             dry_sub_lvl:   dry_sub_lvl.clone(),
             thump_peak:    thump_peak.clone(),
             thump_decay:   thump_decay.clone(),
-
-            amp_bypass:    amp_bypass.clone(),
-            amp_boost:     amp_boost.clone(),
-            amp_blend:     amp_blend.clone(),
-            amp_crossover: amp_crossover.clone(),
 
             reverb_bypass: reverb_bypass.clone(),
             reverb_dry:    reverb_dry.clone(),
@@ -455,66 +426,41 @@ where
 {
     let channels = config.channels as usize;
 
-    // Pre-amp dry signal scratch (L, R, dry_sub) -- sized once, never
-    // reallocated on the audio thread.
-    let mut dryl_scratch:   Vec<f32> = vec![0.0; NAM_BLOCK_CAP];
-    let mut dryr_scratch:   Vec<f32> = vec![0.0; NAM_BLOCK_CAP];
-    let mut drysub_scratch: Vec<f32> = vec![0.0; NAM_BLOCK_CAP];
-
     device.build_output_stream(
         config,
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
             let frames = data.len() / channels;
-            let mut done = 0;
 
-            while done < frames {
-                let n = std::cmp::min(frames - done, NAM_BLOCK_CAP);
-                let dryl_block   = &mut dryl_scratch[..n];
-                let dryr_block   = &mut dryr_scratch[..n];
-                let drysub_block = &mut drysub_scratch[..n];
+            // Only the selected voice's on_block_start runs -- GrowlVoice's
+            // is a full NAM WaveNet block inference, wasted CPU when Growl
+            // isn't even the active voice. Switching voices while a note is
+            // audible can produce a brief startup transient on Growl's
+            // model (see NamStage::process_block's warm-state comment);
+            // switching between notes/songs is silent.
+            let selected = engine.voice_selected.value() as usize;
+            for voice in engine.voices.iter_mut() {
+                if voice.index() == selected { voice.on_block_start(frames); }
+            }
 
-                // Only the selected voice's on_block_start runs -- GrowlVoice's
-                // is a full NAM WaveNet block inference, wasted CPU when Growl
-                // isn't even the active voice. Switching voices while a note is
-                // audible can produce a brief startup transient on Growl's
-                // model (see NamStage::process_block's warm-state comment);
-                // switching between notes/songs is silent.
-                let selected = engine.voice_selected.value() as usize;
+            // Drain the CC ring buffer and retarget each message to
+            // whichever voice is currently selected -- switching voices
+            // mid-performance retargets subsequent CC messages, it
+            // doesn't replay queued ones onto the old voice.
+            while let Some((cc, value)) = engine.cc_input.pop() {
+                crate::dbg!("audio::build_stream - applying CC {cc}={value} to voice index {selected}");
                 for voice in engine.voices.iter_mut() {
-                    if voice.index() == selected { voice.on_block_start(n); }
+                    if voice.index() == selected { voice.apply_cc(cc, value); }
                 }
+                if let Some(flag) = engine.voice_dirty.get(selected) { flag.store(true, Ordering::Relaxed); }
+            }
 
-                // Drain the CC ring buffer and retarget each message to
-                // whichever voice is currently selected -- switching voices
-                // mid-performance retargets subsequent CC messages, it
-                // doesn't replay queued ones onto the old voice.
-                while let Some((cc, value)) = engine.cc_input.pop() {
-                    crate::dbg!("audio::build_stream - applying CC {cc}={value} to voice index {selected}");
-                    for voice in engine.voices.iter_mut() {
-                        if voice.index() == selected { voice.apply_cc(cc, value); }
-                    }
-                    if let Some(flag) = engine.voice_dirty.get(selected) { flag.store(true, Ordering::Relaxed); }
+            for i in 0..frames {
+                let (left, right) = engine.tick();
+                capture.push(left);
+                let frame_start = i * channels;
+                for ch in 0..channels {
+                    data[frame_start + ch] = T::from_sample(if ch % 2 == 0 { left } else { right });
                 }
-
-                for i in 0..n {
-                    let (dry_l, dry_r, dry_sub) = engine.tick_pre_nam();
-                    dryl_block[i]   = dry_l;
-                    dryr_block[i]   = dry_r;
-                    drysub_block[i] = dry_sub;
-                }
-
-                engine.run_nam(dryl_block, dryr_block);
-
-                for i in 0..n {
-                    let (left, right) = engine.tick_post_nam(dryl_block[i], dryr_block[i], drysub_block[i]);
-                    capture.push(left);
-                    let frame_start = (done + i) * channels;
-                    for ch in 0..channels {
-                        data[frame_start + ch] = T::from_sample(if ch % 2 == 0 { left } else { right });
-                    }
-                }
-
-                done += n;
             }
         },
         err_fn,

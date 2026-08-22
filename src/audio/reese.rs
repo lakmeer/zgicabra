@@ -63,7 +63,8 @@ const IMPACT_ENV_RELEASE: f32 = 0.01;   // trails off with the sample's decay
 const IMPACT_CUTOFF_POP:  f32 = 1000.0; // Hz added to cutoff at full impact envelope
 const IMPACT_DRIVE_POP:   f32 = 1.5;    // extra drive multiplier at full impact envelope
 
-const DEFAULT_CRUSH_DEPTH:  f32 = 1.0; // CC8 = 1.0 -> heaviest crush, 0.0 -> bypassed
+const DEFAULT_CRUSH_DEPTH:    f32 = 1.0; // CC8 = 1.0 -> heaviest crush, 0.0 -> bypassed
+const DEFAULT_CRUSH_PREGAIN:  f32 = 4.0; // pushes level over the crusher's fixed -12dB threshold
 
 #[derive(Clone, Voice)]
 #[voice(index = 0, label = "Reese", new = manual)]
@@ -80,12 +81,13 @@ pub struct ReeseVoice {
 
     #[input(cc = "1", range = 0.0..50.0,  set = |v| v * 50.0)]        pub detune_input:    Shared,
     #[input(cc = "2", range = 0.0..1.0,   set = |v| v)]               pub sub_level_input: Shared,
-    #[input(cc = "3", range = 1.0..8.0,   set = |v| 1.0 + v * 7.0)]   pub drive_input:     Shared,
+    drive_input:                                                      Shared, // fixed, no longer CC-settable -- CC3 drives crush_pregain_input instead
     #[input(cc = "4", range = 0.0..1.0,   set = |v| v)]               pub cutoff_input:    Shared,
     #[input(cc = "5", range = 0.3..3.0,   set = |v| 0.3 + v * 2.7)]   pub resonance_input: Shared,
     #[input(cc = "6", range = 0.05..3.0,  set = |v| 0.05 + v * 2.95)] pub lfo_rate_input:  Shared,
     #[input(cc = "7", range = 0.0..1.0,   set = |v| v)]               pub lfo_depth_input: Shared,
     #[input(cc = "8", range = 0.0..1.0,   set = |v| v)]               pub crush_input:     Shared,
+    #[input(cc = "3", range = 1.0..8.0,   set = |v| 1.0 + v * 7.0)]   pub crush_pregain_input: Shared,
 
     #[live(range = 0.0..5.0)]    pub drive_live:      Shared,
     #[live(range = 0.0..5.0)]    pub lfo_rate_live:   Shared,
@@ -142,6 +144,7 @@ impl ReeseVoice {
             lfo_rate_input:  shared(DEFAULT_LFO_RATE),
             lfo_depth_input: shared(DEFAULT_LFO_DEPTH),
             crush_input:     crush_input.clone(),
+            crush_pregain_input: shared(DEFAULT_CRUSH_PREGAIN),
 
             drive_live:      shared(0.0),
             lfo_rate_live:   shared(0.0),
@@ -154,9 +157,8 @@ impl ReeseVoice {
             impact_trigger_seen: thump_trigger.value(),
             impact_level_input:  shared(1.0),
 
-            crusher_l: Box::new(crusher(&crush_input, crush_env_live.clone(), crush_out_live.clone(), crush_gr_live.clone(),)),
-            // Right channel's meters not wired
-            crusher_r: Box::new(crusher(&crush_input, shared(0.0), shared(0.0), shared(0.0),)),
+            crusher_l: Box::new(crusher(&shared(1.0)/*crush_input*/, crush_env_live.clone(), crush_out_live.clone(), crush_gr_live.clone(),)),
+            crusher_r: Box::new(crusher(&shared(1.0)/*crush_input*/, shared(0.0), shared(0.0), shared(0.0),)),
 
             crush_env_live, crush_out_live, crush_gr_live,
 
@@ -235,11 +237,26 @@ impl VoiceDsp for ReeseVoice {
         let out_l = self.filter_l.tick(&Frame::from([shaped_l, cutoff_hz, q]))[0];
         let out_r = self.filter_r.tick(&Frame::from([shaped_r, cutoff_hz, q]))[0];
 
+        // Note envelope gates the crusher's input pre-emptively -- Engine's
+        // own dry_l/dry_r gating happens after this voice returns, too late
+        // to give the crusher any attack/release transient to react to. This
+        // doubles up with that outer gate (env^2 during attack/release, no
+        // change at sustain/silence), which is what actually produces a
+        // pump synced to note-on/off or note-repeat instead of a fixed,
+        // unmoving gain reduction on a held tone.
+        let note_env = self.sig.env.value();
+
+        // Linear gain, not tanh -- waveshaping here just clips new harmonics
+        // into the crusher's high band instead of driving its detector.
+        // Makeup after brings output level back down to match.
+        let pregain = self.crush_pregain_input.value();
+        let makeup  = 1.0 / pregain;
+
         let mut wet_l = [0.0f32];
         let mut wet_r = [0.0f32];
-        self.crusher_l.tick(&[out_l], &mut wet_l);
-        self.crusher_r.tick(&[out_r], &mut wet_r);
+        self.crusher_l.tick(&[out_l * note_env * pregain], &mut wet_l);
+        self.crusher_r.tick(&[out_r * note_env * pregain], &mut wet_r);
 
-        Frame::from([wet_l[0], wet_r[0]])
+        Frame::from([wet_l[0] * makeup, wet_r[0] * makeup])
     }
 }

@@ -73,7 +73,7 @@ pub fn draw_voice_panel (y: u16, audio: &AudioHandles) {
 fn draw_reese_panel (y: u16, reese: &ReeseView) {
     draw_range_label(2, y +  2, true, "detune",    reese.detune_input.value(),  0.0, 100.0);
     draw_range_label(2, y +  3, true, "sub_level", reese.sub_level_input.value(), 0.0, 1.0);
-    draw_range_label(2, y +  4, true, "drive",     reese.drive_input.value(),     0.0, 5.0);
+    draw_range_label(2, y +  4, true, "crush_pregain", reese.crush_pregain_input.value(), 1.0, 8.0);
     draw_range_label(2, y +  5, true, "cutoff",    reese.cutoff_input.value(),    0.0, 1.0);
     draw_range_label(2, y +  6, true, "resonance", reese.resonance_input.value(), 0.0, 5.0);
     draw_range_label(2, y +  7, true, "lfo_rate",  reese.lfo_rate_input.value(),  0.0, 1.0);

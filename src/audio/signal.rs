@@ -23,6 +23,12 @@ pub struct SharedSignal {
     pub thump:        Shared,
     pub velocity:     Shared,
     pub acceleration: Shared,
+
+    // Current-sample ADSR value, written by Engine::tick each sample (before
+    // voices render) -- lets a voice's own DSP (e.g. ReeseVoice's crusher)
+    // see the note's attack/release transient, which Engine's own post-voice
+    // env multiply happens too late for.
+    pub env: Shared,
 }
 
 impl SharedSignal {
@@ -36,6 +42,7 @@ impl SharedSignal {
             thump:        shared(0.0),
             velocity:     shared(0.0),
             acceleration: shared(0.0),
+            env:          shared(0.0),
         }
     }
 

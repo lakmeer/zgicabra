@@ -11,6 +11,7 @@ use super::swarm::SwarmVoice;
 use super::reese::ReeseVoice;
 use super::basic::BasicVoice;
 use super::cc_input::CcInput;
+use super::crusher::crusher;
 use super::nam;
 
 pub use super::growl::GrowlView;
@@ -18,13 +19,14 @@ pub use super::reese::ReeseView;
 pub use super::basic::BasicView;
 pub use super::swarm::SwarmView;
 
-use super::nam::NAM_BLOCK_CAP;
 use super::{ENVELOPE_ATTACK, ENVELOPE_RELEASE};
 
 pub const VOICE_COUNT: usize = 4;
 
 const LIMITER_ATTACK:  f32 = 0.003;
 const LIMITER_RELEASE: f32 = 0.1;
+
+const MASTER_CRUSH_DEPTH: f32 = 1.0;
 
 
 //
@@ -43,7 +45,7 @@ pub struct Engine {
     // Homogeneous -- every concrete voice is boxed behind the same
     // object-safe Voice trait (see voice.rs), so this array needs no
     // per-concrete-type dispatch. Whether a given voice is selected is
-    // decided here in Engine (tick_pre_nam), not inside the voice itself.
+    // decided here in Engine (tick), not inside the voice itself.
     pub voices: [Box<dyn Voice>; VOICE_COUNT],
     // Built once at construction, before the concrete voices above get
     // boxed -- Voice::view() isn't part of the trait (each voice has its
@@ -57,12 +59,8 @@ pub struct Engine {
     pub main_sub_lvl:  Shared,
     pub dry_sub_lvl:   Shared,
 
-    pub amp_l: nam::NamStage,
-    pub amp_r: nam::NamStage,
-    pub amp_bypass:    Shared,
-    pub amp_boost:     Shared,
-    pub amp_blend:     Shared,
-    pub amp_crossover: Shared,
+    crusher_l: Box<dyn AudioUnit>,
+    crusher_r: Box<dyn AudioUnit>,
 
     pub reverb: Box<dyn AudioUnit>, // 2 in (L, R) / 2 out, built from reverb_stereo
     pub reverb_bypass: Shared,
@@ -94,13 +92,6 @@ impl Engine {
 
         nam_models: Vec<Option<nam::NamModelSlot>>,
         nam_names: Arc<Vec<String>>,
-        amp_model_l: nam::NamModelSlot,
-        amp_model_r: nam::NamModelSlot,
-
-        amp_bypass: Shared,
-        amp_boost: Shared,
-        amp_blend: Shared,
-        amp_crossover: Shared,
 
         reverb_bypass: Shared,
         reverb_dry: Shared,
@@ -114,10 +105,6 @@ impl Engine {
         master_vol: Shared,
 
     ) -> Engine {
-        // Each NamStage holds exactly one fixed model -- no Bypass slot, no cycling.
-        let amp_l = nam::NamStage::new(vec![Some(amp_model_l)], shared(0.0));
-        let amp_r = nam::NamStage::new(vec![Some(amp_model_r)], shared(0.0));
-
         let reese = ReeseVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone(), signal.clone());
         let growl = GrowlVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone(), signal.clone());
         let basic = BasicVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone(), signal.clone());
@@ -142,12 +129,8 @@ impl Engine {
             main_sub_lvl,
             dry_sub_lvl,
 
-            amp_l,
-            amp_r,
-            amp_bypass,
-            amp_boost,
-            amp_blend,
-            amp_crossover,
+            crusher_l: Box::new(crusher(&shared(MASTER_CRUSH_DEPTH), shared(0.0), shared(0.0), shared(0.0))),
+            crusher_r: Box::new(crusher(&shared(MASTER_CRUSH_DEPTH), shared(0.0), shared(0.0), shared(0.0))),
 
             reverb: Box::new(reverb_stereo(reverb_size, reverb_decay, reverb_damp)), reverb_bypass, reverb_dry,
 
@@ -164,8 +147,8 @@ impl Engine {
         self.dry_sub.set_sample_rate(sr);
         self.envelope.set_sample_rate(sr);
         for voice in self.voices.iter_mut() { voice.set_sample_rate(sr); }
-        self.amp_l.set_sample_rate(sr);
-        self.amp_r.set_sample_rate(sr);
+        self.crusher_l.set_sample_rate(sr);
+        self.crusher_r.set_sample_rate(sr);
         self.reverb.set_sample_rate(sr);
         self.limiter.set_sample_rate(sr);
     }
@@ -177,20 +160,19 @@ impl Engine {
         std::array::from_fn(|i| self.voices[i].name())
     }
 
-    // Everything before the amp stage, gated by the envelope. Returns
-    // (dry_l, dry_r, dry_sub) -- split out of a single tick() so build_stream
-    // can batch dry_l/dry_r across a block and run the amp stage once per
-    // block instead of once per sample (see run_nam / NamStage::process_block).
     // Every voice holds its own clone of the same SharedSignal (see
     // signal.rs) and reads the fields it cares about straight off it in
     // render() -- nothing here needs to snapshot or broadcast it.
-    pub fn tick_pre_nam (&mut self) -> (f32, f32, f32) {
+    pub fn tick (&mut self) -> (f32, f32) {
         let bend_mult = 2f32.powf(self.signal.bend.value());
         let base_freq = self.freq.value() * bend_mult;
 
-        // Only the selected voice actually renders -- every Voice::tick()
-        // always renders unconditionally, so gating who gets ticked (vs.
-        // just told on_silence()) is this loop's job, not the voice's.
+        // Published before voices render, so a voice's own DSP (e.g.
+        // ReeseVoice's crusher) can see this sample's envelope value --
+        // Engine's own dry_l/dry_r multiply below happens too late for that.
+        let env = self.envelope.filter_mono(self.gate.value());
+        self.signal.env.set_value(env);
+
         let sel = self.voice_selected.value() as usize;
         let mut voice_l = 0.0;
         let mut voice_r = 0.0;
@@ -202,34 +184,21 @@ impl Engine {
 
         let main_sub = self.main_sub_tri.filter_mono(base_freq) * self.main_sub_lvl.value();
 
-        let env = self.envelope.filter_mono(self.gate.value());
-
-        // dry_sub: one octave below base_freq, bypasses amp/reverb/limiter entirely.
         let dry_sub = self.dry_sub.filter_mono(base_freq * 0.5) * self.dry_sub_lvl.value() * env;
 
         let dry_l = (voice_l + main_sub) * env;
         let dry_r = (voice_r + main_sub) * env;
 
-        (dry_l, dry_r, dry_sub)
-    }
-
-    // Knob-rate values, read once per block rather than per sample.
-    fn nam_block_params (&self) -> (f32, f32, f32, f32) {
-        let level = if self.amp_bypass.value() >= 1.0 { 0.0 } else { 1.0 };
-        (level, self.amp_blend.value(), self.amp_boost.value(), self.amp_crossover.value())
-    }
-
-    pub fn run_nam (&mut self, block_l: &mut [f32], block_r: &mut [f32]) {
-        let (level, blend, boost, crossover_hz) = self.nam_block_params();
-        self.amp_l.process_block(block_l, level, blend, boost, crossover_hz);
-        self.amp_r.process_block(block_r, level, blend, boost, crossover_hz);
-    }
-
-    // Pull frames from the NAM wet blocks
-    pub fn tick_post_nam (&mut self, dry_l: f32, dry_r: f32, dry_sub: f32) -> (f32, f32) {
-
         let mut l = dry_l.tanh();
         let mut r = dry_r.tanh();
+
+        // Master crush, identical fixed params on both channels
+        //let mut crushed_l = [0.0f32];
+        //let mut crushed_r = [0.0f32];
+        //self.crusher_l.tick(&[l], &mut crushed_l);
+        //self.crusher_r.tick(&[r], &mut crushed_r);
+        //l = crushed_l[0];
+        //r = crushed_r[0];
 
         // Global reverb
         if self.reverb_bypass.value() < 1.0 {
@@ -255,4 +224,3 @@ impl Engine {
         )
     }
 }
-
