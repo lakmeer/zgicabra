@@ -5,8 +5,6 @@ use std::sync::atomic::AtomicBool;
 use fundsp::prelude64::*;
 
 use super::signal::SharedSignal;
-use super::reverb::ReverbFx;
-use super::compressor::Compressor;
 use super::voice::Voice;
 use super::growl::GrowlVoice;
 use super::swarm::SwarmVoice;
@@ -24,6 +22,9 @@ use super::nam::NAM_BLOCK_CAP;
 use super::{ENVELOPE_ATTACK, ENVELOPE_RELEASE};
 
 pub const VOICE_COUNT: usize = 4;
+
+const LIMITER_ATTACK:  f32 = 0.003;
+const LIMITER_RELEASE: f32 = 0.1;
 
 
 //
@@ -63,11 +64,11 @@ pub struct Engine {
     pub amp_blend:     Shared,
     pub amp_crossover: Shared,
 
-    pub reverb: ReverbFx,
+    pub reverb: Box<dyn AudioUnit>, // 2 in (L, R) / 2 out, built from reverb_stereo
     pub reverb_bypass: Shared,
     pub reverb_dry:    Shared,
 
-    pub limiter: Compressor,
+    pub limiter: An<Limiter<U2>>,
     pub limiter_bypass: Shared,
     pub limiter_thresh: Shared,
 
@@ -117,8 +118,6 @@ impl Engine {
         let amp_l = nam::NamStage::new(vec![Some(amp_model_l)], shared(0.0));
         let amp_r = nam::NamStage::new(vec![Some(amp_model_r)], shared(0.0));
 
-        // Constructed concrete (not yet boxed) so their own View types can
-        // still be captured below -- see Engine::voice_views.
         let reese = ReeseVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone(), signal.clone());
         let growl = GrowlVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone(), signal.clone());
         let basic = BasicVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone(), signal.clone());
@@ -150,9 +149,9 @@ impl Engine {
             amp_blend,
             amp_crossover,
 
-            reverb: ReverbFx::new(reverb_size, reverb_decay, reverb_damp), reverb_bypass, reverb_dry,
+            reverb: Box::new(reverb_stereo(reverb_size, reverb_decay, reverb_damp)), reverb_bypass, reverb_dry,
 
-            limiter: Compressor::new(), limiter_bypass, limiter_thresh,
+            limiter: limiter_stereo(LIMITER_ATTACK, LIMITER_RELEASE), limiter_bypass, limiter_thresh,
 
             master_vol,
 
@@ -234,14 +233,16 @@ impl Engine {
 
         // Global reverb
         if self.reverb_bypass.value() < 1.0 {
-            let (rl, rr) = self.reverb.tick(l, r, self.reverb_dry.value());
-            l = rl;
-            r = rr;
+            let wet = self.reverb_dry.value().clamp(0.0, 1.0);
+            let mut tail = [0.0f32; 2];
+            self.reverb.tick(&[l, r], &mut tail);
+            l = l + (tail[0] - l) * wet;
+            r = r + (tail[1] - r) * wet;
         }
 
         // Safety limiter
         if self.limiter_bypass.value() < 1.0 {
-            let (ll, rr) = self.limiter.tick(l, r, self.limiter_thresh.value());
+            let (ll, rr) = self.limiter.filter_stereo(l, r);
             l = ll;
             r = rr;
         }

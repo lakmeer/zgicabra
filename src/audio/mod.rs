@@ -22,8 +22,6 @@ mod basic;
 mod reese;
 mod fm;
 mod filter;
-mod reverb;
-mod compressor;
 mod voice;
 mod cc_input;
 mod signal;

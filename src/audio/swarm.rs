@@ -37,7 +37,6 @@ use super::nam_graph::nam_mid_side;
 use super::nam_node::NAM_WINDOW;
 use super::filter::MoogFilterFx;
 use super::crusher::crusher;
-use super::compressor::Compressor;
 
 const NUM_OSCS: usize = 5;
 
@@ -92,7 +91,8 @@ impl Phaser {
 
 fn lerp (a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
 
-const LIMITER_THRESH_DB: f32 = -24.0; // "low threshold" -- squashes hard to normalize into the crossover
+const LIMITER_ATTACK:  f32 = 0.003;
+const LIMITER_RELEASE: f32 = 0.1;
 
 // Fixed Crusher/moog character -- not GUI-exposed, the spec only calls out
 // crossover_freq/filter as live-tunable for this stage.
@@ -127,7 +127,7 @@ fn model_index_by_name (names: &[String], name: &str) -> usize {
 // are all nam_graph::nam_mid_side now.
 #[derive(Clone)]
 struct ChannelChain {
-    limiter: Compressor,
+    limiter: An<Limiter<U1>>,
     moog:    MoogFilterFx,
     crusher: Box<dyn AudioUnit>,
 }
@@ -135,7 +135,7 @@ struct ChannelChain {
 impl ChannelChain {
     fn new () -> ChannelChain {
         ChannelChain {
-            limiter: Compressor::new(),
+            limiter: limiter(LIMITER_ATTACK, LIMITER_RELEASE),
             moog:    MoogFilterFx::new(),
             crusher: Box::new(crusher(
                 &shared(CRUSH_DEPTH),
@@ -150,9 +150,8 @@ impl ChannelChain {
         self.crusher.set_sample_rate(sample_rate);
     }
 
-    // Squash hard into the crossover -- see LIMITER_THRESH_DB.
     fn pre (&mut self, x: f32) -> f32 {
-        self.limiter.tick(x, x, LIMITER_THRESH_DB).0
+        self.limiter.filter_mono(x)
     }
 
     fn post (&mut self, x: f32, filter_cutoff: f32) -> f32 {
