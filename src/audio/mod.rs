@@ -3,6 +3,7 @@
 //
 
 use std::io;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -43,7 +44,7 @@ const AUDIO_ERROR_LOG_CAP: usize = 50;
 const GATE_ON:  f32 = 1.0;
 const GATE_OFF: f32 = -1.0;
 
-const NAM_SAMPLE_RATE: u32 = 48_000;
+pub const NAM_SAMPLE_RATE: u32 = 48_000;
 const AUDIO_BUFFER_FRAMES: cpal::FrameCount = 1024;
 
 const ENVELOPE_ATTACK:  f32 = 0.003;
@@ -52,23 +53,26 @@ const ENVELOPE_RELEASE: f32 = 0.1;
 pub type AudioErrors = Arc<Mutex<Vec<String>>>;
 
 
-// Taps the raw cpal output stream (mono, left channel) so main.rs's --test
-// self-test can confirm audio is actually producing signal.
+// Taps the raw cpal output stream (mono, left channel) into a fixed-size
+// ring buffer, continuously. Used by main.rs's --test self-test to confirm
+// audio is actually producing signal, and by the debug panel's live
+// spectrum readout (see ui/panel_debug.rs).
 #[derive(Clone)]
 pub struct AudioCapture {
-    enabled: Arc<AtomicBool>,
-    buffer:  Arc<Mutex<Vec<f32>>>,
-    cap:     usize,
+    buffer: Arc<Mutex<VecDeque<f32>>>,
+    cap:    usize,
 }
 
 impl AudioCapture {
     fn new (cap: usize) -> AudioCapture {
-        AudioCapture { enabled: Arc::new(AtomicBool::new(false)), buffer: Arc::new(Mutex::new(Vec::with_capacity(cap))), cap }
+        AudioCapture { buffer: Arc::new(Mutex::new(VecDeque::with_capacity(cap))), cap }
     }
 
+    // Clears the buffer so the next `cap` samples pushed are a fresh
+    // window -- the self-test uses this to capture strictly after the test
+    // tone starts.
     pub fn start (&self) {
         self.buffer.lock().unwrap().clear();
-        self.enabled.store(true, Ordering::Relaxed);
     }
 
     pub fn is_full (&self) -> bool {
@@ -76,16 +80,14 @@ impl AudioCapture {
     }
 
     pub fn samples (&self) -> Vec<f32> {
-        self.buffer.lock().unwrap().clone()
+        self.buffer.lock().unwrap().iter().copied().collect()
     }
 
     fn push (&self, sample: f32) {
-        if !self.enabled.load(Ordering::Relaxed) { return; }
         let mut buf = self.buffer.lock().unwrap();
-        if buf.len() < self.cap {
-            buf.push(sample);
-        } else {
-            self.enabled.store(false, Ordering::Relaxed);
+        buf.push_back(sample);
+        if buf.len() > self.cap {
+            buf.pop_front();
         }
     }
 }

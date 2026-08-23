@@ -209,10 +209,7 @@ pub enum DeltaEvent {
     NoteChange(Note, Note),
     NoteEnd(Note),
     WidthLevel(f32),
-    // -1 or 1: cycle the audio engine's selected voice back/forward. The
-    // engine (not Zgicabra) owns which voice is actually selected -- see
-    // audio::Handles::voice_selected.
-    VoiceChange(i8),
+    VoiceChange(i8), // -1 or 1
     RootChange(Note),
     Panic(),
     BumperDown(Hand),
