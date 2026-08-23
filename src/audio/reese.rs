@@ -18,6 +18,7 @@ use crate::tools::linexp;
 use super::signal::SharedSignal;
 use super::voice::{Voice, VoiceDsp, ThumpMod};
 use super::crusher::crusher;
+use super::sample::{Sample, SamplePlayer, play_sample};
 
 const VOICES: usize = 8; // odd -- center voice lands at zero detune/pan
 
@@ -27,12 +28,11 @@ const VOICES: usize = 8; // odd -- center voice lands at zero detune/pan
 // folder alongside it.
 static IMPACT_SAMPLE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/wav/kick_dry.wav"));
 
-// Decodes the embedded kick sample into a one-shot mono WavePlayer via
-// fundsp's own playwave() builtin (no loop_point -- it plays through once,
-// then sits silent until reset()).
-fn load_impact_player () -> An<WavePlayer> {
-    let wave = Wave::load_slice(IMPACT_SAMPLE).expect("failed to decode embedded wav/kick_dry.wav");
-    playwave(&Arc::new(wave), 0, None)
+// Decodes the embedded kick sample into a one-shot mono SamplePlayer --
+// plays through once, then sits silent until reset().
+fn load_impact_player () -> An<SamplePlayer> {
+    let sample = Sample::parse(IMPACT_SAMPLE);
+    play_sample(&Arc::new(sample))
 }
 
 const SUB_RATIO: f32 = 0.5;         // one octave down
@@ -94,7 +94,7 @@ pub struct ReeseVoice {
     #[live(range = 0.0..200.0)]  pub detune_live:     Shared,
     #[live(range = 0.0..6000.0)] pub cutoff_live:     Shared,
 
-    impact_player:           An<WavePlayer>,
+    impact_player:           An<SamplePlayer>,
     #[node] impact_env:      An<AFollow<f64>>, // tracks impact sample's amplitude, drives cutoff/drive pop
     impact_trigger:          Shared, // clone of thump_trigger -- bumped once per NoteStart
     impact_trigger_seen:     f32,

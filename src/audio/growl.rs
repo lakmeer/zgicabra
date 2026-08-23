@@ -12,6 +12,7 @@ use super::signal::SharedSignal;
 use super::voice::{Voice, VoiceDsp, ThumpMod};
 use super::nam_graph::nam_high_band;
 use super::nam_node::NAM_WINDOW;
+use super::sample::Sample;
 
 const FRAME_LEN: usize = 256;    // power of two, required by fundsp::fft
 const NUM_HARMONICS: usize = 32; // harmonics 1..=32 tracked per oscillator
@@ -266,27 +267,26 @@ static PLUCK_SAMPLE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), 
 // rate is scaled from this to track the voice's incoming freq.
 const PLUCK_BASE_FREQ: f32 = 61.7354; // B1
 
-fn load_pluck_wave () -> Arc<Wave> {
-    Arc::new(Wave::load_slice(PLUCK_SAMPLE).expect("failed to decode embedded wav/pluck.wav"))
+fn load_pluck_wave () -> Arc<Sample> {
+    Arc::new(Sample::parse(PLUCK_SAMPLE))
 }
 
 #[derive(Clone)]
 struct PluckPlayer {
-    wave:         Arc<Wave>,
+    sample:       Arc<Sample>,
     pos:          f64,
-    sample_rate:  f64,
     trigger:      Shared,
     last_trigger: f32,
 }
 
 impl PluckPlayer {
-    fn new (wave: Arc<Wave>, trigger: Shared) -> PluckPlayer {
+    fn new (sample: Arc<Sample>, trigger: Shared) -> PluckPlayer {
         let last_trigger = trigger.value();
-        PluckPlayer { wave, pos: 0.0, sample_rate: DEFAULT_SR, trigger, last_trigger }
+        PluckPlayer { sample, pos: 0.0, trigger, last_trigger }
     }
 
-    fn set_sample_rate (&mut self, sample_rate: f64) {
-        self.sample_rate = sample_rate;
+    fn set_sample_rate (&mut self, _sample_rate: f64) {
+        // Sample is fixed at 48kHz, same as the engine -- nothing to do.
     }
 
     fn tick (&mut self, freq: f32) -> f32 {
@@ -296,18 +296,18 @@ impl PluckPlayer {
             self.pos = 0.0;
         }
 
-        let len = self.wave.length();
+        let len = self.sample.length();
         let i0 = self.pos as usize;
         if i0 + 1 >= len {
             return 0.0;
         }
 
         let frac = (self.pos - i0 as f64) as f32;
-        let s0 = self.wave.at(0, i0);
-        let s1 = self.wave.at(0, i0 + 1);
+        let s0 = self.sample.at(i0);
+        let s1 = self.sample.at(i0 + 1);
         let sample = s0 + (s1 - s0) * frac;
 
-        let rate = (freq / PLUCK_BASE_FREQ) as f64 * (self.wave.sample_rate() / self.sample_rate);
+        let rate = (freq / PLUCK_BASE_FREQ) as f64;
         self.pos += rate;
 
         sample

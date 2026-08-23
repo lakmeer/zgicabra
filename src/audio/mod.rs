@@ -26,6 +26,7 @@ mod filter;
 mod voice;
 mod cc_input;
 mod signal;
+mod sample;
 
 use signal::SharedSignal;
 
