@@ -183,11 +183,11 @@ pub struct SwarmVoice {
     // Dry/wet, written from sig.fuzz each sample -- the graph reads it.
     nam_blend: Shared,
 
-    #[input(cc = "1", range = 0.5..1.0,    set = |v| 0.5 + v * 0.5)] pub chase_factor_input: Shared,
-    #[input(cc = "2", range = 0.0..200.0,  set = |v| v * 200.0)]     pub radius_input:       Shared,
-    #[input(cc = "3", range = 0.0..2.0,    set = |v| v * 2.0)]       pub orbit_speed_input:  Shared,
-    #[input(cc = "4", range = 0.0..1.0,    set = |v| v)]             pub phaser_depth_input: Shared,
-    #[input(cc = "5", range = 0.0..2000.0, set = |v| v * 2000.0)]    pub xover_freq_input:   Shared,
+    #[knob(cc = "1", range = 0.5..1.0,    set = |v| 0.5 + v * 0.5)] pub chase_factor_input: Shared,
+    #[knob(cc = "2", range = 0.0..200.0,  set = |v| v * 200.0)]     pub radius_input:       Shared,
+    #[knob(cc = "3", range = 0.0..2.0,    set = |v| v * 2.0)]       pub orbit_speed_input:  Shared,
+    #[knob(cc = "4", range = 0.0..1.0)]             pub phaser_depth_input: Shared,
+    #[knob(cc = "5", range = 0.0..2000.0, set = |v| v * 2000.0)]    pub xover_freq_input:   Shared,
     #[view] pub nam_lo: NamModelCycler,
     #[view] pub nam_hi: NamModelCycler,
 

@@ -15,7 +15,7 @@
 // pre-init logic (#[voice(new = manual)]).
 //
 // Field attributes:
-//   #[input(cc="6|44", range=1.0..10.0, set=|v| 1.0+v*9.0, default=1.0)]
+//   #[knob(cc="6|44", range=1.0..10.0, set=|v| 1.0+v*9.0, default=1.0)]
 //       a CC-settable, persisted Shared. cc/set optional (a persisted-but-not-
 //       CC param omits both). default only needed for a generated new().
 //   #[live(range=0.0..5.0)]   Shared written by render(), View-visible + in
@@ -36,7 +36,7 @@ use syn::{
     Fields, Ident, LitStr, Type,
 };
 
-#[proc_macro_derive(Voice, attributes(voice, input, live, node, view))]
+#[proc_macro_derive(Voice, attributes(voice, knob, live, node, view))]
 pub fn derive_voice (input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     expand(input)
@@ -46,7 +46,7 @@ pub fn derive_voice (input: TokenStream) -> TokenStream {
 
 // ---- parsed field kinds ---------------------------------------------------
 
-struct InputField {
+struct KnobField {
     ident:   Ident,
     ccs:     Vec<u8>,
     set:     Option<ExprClosure>,
@@ -78,7 +78,7 @@ struct PlainField {
 
 #[derive(Default)]
 struct Voice {
-    inputs: Vec<InputField>,
+    knobs:  Vec<KnobField>,
     lives:  Vec<LiveField>,
     nodes:  Vec<NodeField>,
     views:  Vec<ViewField>,
@@ -107,8 +107,8 @@ fn expand (input: DeriveInput) -> syn::Result<TokenStream2> {
         let ident = field.ident.clone().unwrap();
         let ty = field.ty.clone();
 
-        if let Some(attr) = find_attr(&field.attrs, "input") {
-            v.inputs.push(parse_input(&ident, attr)?);
+        if let Some(attr) = find_attr(&field.attrs, "knob") {
+            v.knobs.push(parse_knob(&ident, attr)?);
         } else if let Some(attr) = find_attr(&field.attrs, "live") {
             v.lives.push(parse_live(&ident, attr)?);
         } else if let Some(attr) = find_attr(&field.attrs, "node") {
@@ -192,7 +192,7 @@ fn range_bounds (r: &ExprRange) -> syn::Result<(Expr, Expr)> {
     Ok(((**start).clone(), (**end).clone()))
 }
 
-fn parse_input (ident: &Ident, attr: &Attribute) -> syn::Result<InputField> {
+fn parse_knob (ident: &Ident, attr: &Attribute) -> syn::Result<KnobField> {
     let mut cc: Option<LitStr> = None;
     let mut range: Option<ExprRange> = None;
     let mut set: Option<ExprClosure> = None;
@@ -208,12 +208,12 @@ fn parse_input (ident: &Ident, attr: &Attribute) -> syn::Result<InputField> {
         } else if meta.path.is_ident("default") {
             default = Some(meta.value()?.parse()?);
         } else {
-            return Err(meta.error("unknown #[input] key"));
+            return Err(meta.error("unknown #[knob] key"));
         }
         Ok(())
     })?;
 
-    let range = range.ok_or_else(|| syn::Error::new_spanned(attr, "#[input] missing range"))?;
+    let range = range.ok_or_else(|| syn::Error::new_spanned(attr, "#[knob] missing range"))?;
     let (min, max) = range_bounds(&range)?;
 
     let ccs = match &cc {
@@ -224,10 +224,10 @@ fn parse_input (ident: &Ident, attr: &Attribute) -> syn::Result<InputField> {
         None => Vec::new(),
     };
     if !ccs.is_empty() && set.is_none() {
-        return Err(syn::Error::new_spanned(attr, "#[input] with cc needs a set=|v| .. closure"));
+        set = Some(syn::parse_quote! { |v| v });
     }
 
-    Ok(InputField { ident: ident.clone(), ccs, set, min, max, default })
+    Ok(KnobField { ident: ident.clone(), ccs, set, min, max, default })
 }
 
 fn parse_live (ident: &Ident, attr: &Attribute) -> syn::Result<LiveField> {
@@ -266,18 +266,18 @@ fn parse_node (ident: &Ident, attr: &Attribute) -> syn::Result<NodeField> {
 
 // ---- codegen --------------------------------------------------------------
 
-// Every field that appears in the read-only view: inputs, lives (both Shared),
+// Every field that appears in the read-only view: knobs, lives (both Shared),
 // and view-passthrough fields.
 fn gen_view_struct (name: &Ident, v: &Voice) -> TokenStream2 {
     let view_name = view_name(name);
-    let input_f = v.inputs.iter().map(|f| &f.ident);
+    let knob_f = v.knobs.iter().map(|f| &f.ident);
     let live_f  = v.lives.iter().map(|f| &f.ident);
     let view_f  = v.views.iter().map(|f| &f.ident);
     let view_t  = v.views.iter().map(|f| &f.ty);
     quote! {
         #[derive(Clone)]
         pub struct #view_name {
-            #( pub #input_f: Shared, )*
+            #( pub #knob_f: Shared, )*
             #( pub #live_f: Shared, )*
             #( pub #view_f: #view_t, )*
         }
@@ -286,20 +286,20 @@ fn gen_view_struct (name: &Ident, v: &Voice) -> TokenStream2 {
 
 fn gen_view_impl (name: &Ident, v: &Voice) -> TokenStream2 {
     let view_name = view_name(name);
-    let input_names: Vec<_> = v.inputs.iter().map(|f| &f.ident).collect();
+    let knob_names: Vec<_> = v.knobs.iter().map(|f| &f.ident).collect();
 
     quote! {
         impl crate::audio::voice::ViewFields for #view_name {
             fn fields (&self) -> Vec<(&'static str, f32)> {
                 vec![
-                    #( (stringify!(#input_names), self.#input_names.value()), )*
+                    #( (stringify!(#knob_names), self.#knob_names.value()), )*
                 ]
             }
 
             fn apply (&self, fields: &[(String, f32)]) {
                 for (name, value) in fields {
                     match name.as_str() {
-                        #( stringify!(#input_names) => self.#input_names.set_value(*value), )*
+                        #( stringify!(#knob_names) => self.#knob_names.set_value(*value), )*
                         _ => {},
                     }
                 }
@@ -312,21 +312,21 @@ fn gen_inherent (name: &Ident, v: &Voice, generate_new: bool, thump: Option<&Ide
     let view_name = view_name(name);
 
     // view() clones every view-visible cell.
-    let clone_inputs = v.inputs.iter().map(|f| &f.ident);
+    let clone_knobs = v.knobs.iter().map(|f| &f.ident);
     let clone_lives  = v.lives.iter().map(|f| &f.ident);
     let clone_views  = v.views.iter().map(|f| &f.ident);
     let view_fn = quote! {
         pub fn view (&self) -> #view_name {
             #view_name {
-                #( #clone_inputs: self.#clone_inputs.clone(), )*
+                #( #clone_knobs: self.#clone_knobs.clone(), )*
                 #( #clone_lives: self.#clone_lives.clone(), )*
                 #( #clone_views: self.#clone_views.clone(), )*
             }
         }
     };
 
-    // UI_RANGES: name -> (min, max) for inputs + lives.
-    let range_entries = v.inputs.iter().map(|f| {
+    // UI_RANGES: name -> (min, max) for knobs + lives.
+    let range_entries = v.knobs.iter().map(|f| {
         let id = &f.ident; let (mn, mx) = (&f.min, &f.max);
         quote! { (stringify!(#id), #mn as f32, #mx as f32) }
     }).chain(v.lives.iter().map(|f| {
@@ -381,12 +381,12 @@ fn gen_new (v: &Voice, thump: Option<&Ident>) -> syn::Result<TokenStream2> {
         }
     }).collect::<syn::Result<Vec<_>>>()?;
 
-    let input_inits = v.inputs.iter().map(|f| {
+    let knob_inits = v.knobs.iter().map(|f| {
         let id = &f.ident;
         match &f.default {
             Some(e) => Ok(quote! { #id: shared(#e) }),
             None => Err(syn::Error::new(id.span(),
-                "generated new() needs default=.. on this #[input] (or #[voice(new = manual)])")),
+                "generated new() needs default=.. on this #[knob] (or #[voice(new = manual)])")),
         }
     }).collect::<syn::Result<Vec<_>>>()?;
 
@@ -399,7 +399,7 @@ fn gen_new (v: &Voice, thump: Option<&Ident>) -> syn::Result<TokenStream2> {
         pub fn new (thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared, signal: SharedSignal) -> Self {
             Self {
                 #( #node_inits, )*
-                #( #input_inits, )*
+                #( #knob_inits, )*
                 #( #live_inits, )*
                 #thump: ThumpMod::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
                 sig: signal,
@@ -411,7 +411,7 @@ fn gen_new (v: &Voice, thump: Option<&Ident>) -> syn::Result<TokenStream2> {
 // The whole `impl Voice for #name` block: index/name, tick (thump + render),
 // set_sample_rate (forwards to every #[node] + thump), on_block_start,
 // on_silence and apply_cc (all delegating to the author's VoiceDsp impl,
-// except apply_cc which is fully generated from each #[input]'s cc=..).
+// except apply_cc which is fully generated from each #[knob]'s cc=..).
 fn gen_voice_trait (name: &Ident, index: &Expr, label: &LitStr, v: &Voice, thump: Option<&Ident>, manual_thump: bool) -> TokenStream2 {
     let scalar_nodes = v.nodes.iter().filter(|f| !f.each).map(|f| &f.ident);
     let each_nodes   = v.nodes.iter().filter(|f| f.each).map(|f| &f.ident);
@@ -438,7 +438,7 @@ fn gen_voice_trait (name: &Ident, index: &Expr, label: &LitStr, v: &Voice, thump
         self.#thump.set_sample_rate(sample_rate);
     });
 
-    let cc_arms = v.inputs.iter().filter(|f| !f.ccs.is_empty()).map(|f| {
+    let cc_arms = v.knobs.iter().filter(|f| !f.ccs.is_empty()).map(|f| {
         let id = &f.ident;
         let set = f.set.as_ref().unwrap();
         let ccs = f.ccs.iter().map(|n| Literal::u8_unsuffixed(*n));

@@ -389,13 +389,13 @@ pub struct GrowlVoice {
     #[node] tri_env:   TriEnv,
 
     #[node] pluck: PluckPlayer,
-    #[input(range = 0.0..1.0)] pub pluck_level_input: Shared, // persisted, no CC of its own
+    #[knob(range = 0.0..1.0)] pub pluck_level_input: Shared, // persisted, no CC of its own
 
-    #[input(cc = "1", range = 0.0..1.0,     set = |v| v)]           pub bass_drive_input:    Shared,
-    #[input(cc = "2", range = 0.0..1.0,     set = |v| v)]           pub filter_input:        Shared,
-    #[input(cc = "3", range = 0.0..1.0,     set = |v| v)]           pub space_input:         Shared,
-    #[input(cc = "4", range = 0.0..1.0,     set = |v| v)]           pub warp_input:          Shared,
-    #[input(cc = "5", range = 0.0..10000.0, set = |v| v * 10000.0)] pub nam_crossover_input: Shared,
+    #[knob(cc = "1", range = 0.0..1.0)]           pub bass_drive_input:    Shared,
+    #[knob(cc = "2", range = 0.0..1.0)]           pub filter_input:        Shared,
+    #[knob(cc = "3", range = 0.0..1.0)]           pub space_input:         Shared,
+    #[knob(cc = "4", range = 0.0..1.0)]           pub warp_input:          Shared,
+    #[knob(cc = "5", range = 0.0..10000.0, set = |v| v * 10000.0)] pub nam_crossover_input: Shared,
 
     #[live(range = 0.0..1.0)] pub filter_live:    Shared,
     #[live(range = 0.0..1.0)] pub warp_live:      Shared,

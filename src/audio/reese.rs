@@ -175,14 +175,14 @@ pub struct ReeseVoice {
     #[node] filter_r: An<Svf<f64, LowpassMode<f64>>>,
 
     drive_input:                                                      Shared,
-    #[input(cc = "1", range = 0.0..50.0, set = |v| v * 50.0)]        pub detune_input:    Shared,
-    #[input(cc = "2", range = 0.0..1.0,  set = |v| v)]               pub sub_level_input: Shared,
-    #[input(cc = "3", range = 0.0..1.0,  set = |v| v)]               pub cutoff_input:    Shared,
-    #[input(          range = 0.3..3.0,  set = |v| 0.3 + v * 2.7)]   pub resonance_input: Shared,
-    #[input(cc = "4", range = 0.05..3.0, set = |v| 0.05 + v * 2.95)] pub lfo_rate_input:  Shared,
-    #[input(cc = "5", range = 0.0..1.0,  set = |v| v)]               pub lfo_depth_input: Shared,
-    #[input(cc = "6", range = 0.0..1.0,  set = |v| v, default = 0.0)] pub stutter_level_input: Shared,
-    #[input(cc = "7", range = 0.0..1.0,  set = |v| v, default = 0.0)] pub feedback_attn: Shared, // level of the release squeal osc
+    #[knob(cc = "1", range = 0.0..50.0, set = |v| v * 50.0)]        pub detune_input:    Shared,
+    #[knob(cc = "2", range = 0.0..1.0)]               pub sub_level_input: Shared,
+    #[knob(cc = "3", range = 0.0..1.0)]               pub cutoff_input:    Shared,
+    #[knob(          range = 0.3..3.0,  set = |v| 0.3 + v * 2.7)]   pub resonance_input: Shared,
+    #[knob(cc = "4", range = 0.05..3.0, set = |v| 0.05 + v * 2.95)] pub lfo_rate_input:  Shared,
+    #[knob(cc = "5", range = 0.0..1.0)]               pub lfo_depth_input: Shared,
+    #[knob(cc = "6", range = 0.0..1.0,  default = 0.0)] pub stutter_level_input: Shared,
+    #[knob(cc = "7", range = 0.0..1.0,  default = 0.0)] pub feedback_attn: Shared, // level of the release squeal osc
 
     #[live(range = 0.0..5.0)]    pub drive_live:      Shared,
     #[live(range = 0.0..5.0)]    pub lfo_rate_live:   Shared,
@@ -193,7 +193,7 @@ pub struct ReeseVoice {
     #[node] impact_env:      An<AFollow<f64>>, // tracks impact sample's amplitude, drives cutoff/drive pop
     impact_trigger:          Shared, // clone of thump_trigger -- bumped once per NoteStart
     impact_trigger_seen:     f32,
-    #[input(range = 0.0..1.0)] pub impact_level_input: Shared, // persisted, no CC of its own
+    #[knob(range = 0.0..1.0)] pub impact_level_input: Shared, // persisted, no CC of its own
 
     #[node] crusher_l: Box<dyn AudioUnit>,
     #[node] crusher_r: Box<dyn AudioUnit>,
