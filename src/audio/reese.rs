@@ -236,26 +236,15 @@ impl VoiceDsp for ReeseVoice {
 
         let out_l = self.filter_l.tick(&Frame::from([shaped_l, cutoff_hz, q]))[0];
         let out_r = self.filter_r.tick(&Frame::from([shaped_r, cutoff_hz, q]))[0];
-
-        // Note envelope gates the crusher's input pre-emptively -- Engine's
-        // own dry_l/dry_r gating happens after this voice returns, too late
-        // to give the crusher any attack/release transient to react to. This
-        // doubles up with that outer gate (env^2 during attack/release, no
-        // change at sustain/silence), which is what actually produces a
-        // pump synced to note-on/off or note-repeat instead of a fixed,
-        // unmoving gain reduction on a held tone.
         let note_env = self.sig.env.value();
 
-        // Linear gain, not tanh -- waveshaping here just clips new harmonics
-        // into the crusher's high band instead of driving its detector.
-        // Makeup after brings output level back down to match.
         let pregain = self.crush_pregain_input.value();
         let makeup  = 1.0 / pregain;
 
         let mut wet_l = [0.0f32];
         let mut wet_r = [0.0f32];
-        self.crusher_l.tick(&[out_l * note_env * pregain], &mut wet_l);
-        self.crusher_r.tick(&[out_r * note_env * pregain], &mut wet_r);
+        self.crusher_l.tick(&[(out_l * note_env * pregain)], &mut wet_l);
+        self.crusher_r.tick(&[(out_r * note_env * pregain)], &mut wet_r);
 
         Frame::from([wet_l[0] * makeup, wet_r[0] * makeup])
     }

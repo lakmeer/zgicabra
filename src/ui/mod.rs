@@ -44,7 +44,7 @@ pub fn draw_all (
 
     print!("{}{}", goto(1, AUDIO_PANEL_Y), barcode_string((TEXT_WIDTH - 3).into(), zgicabra.trigger_total == 0.0));
 
-    draw_voice_panel(AUDIO_PANEL_Y, audio);
+    draw_voice_panel(AUDIO_PANEL_Y, zgicabra, audio);
 
     print!("{}{}", goto(1, DEBUG_PANEL_Y), barcode_string((TEXT_WIDTH - 0).into(), zgicabra.trigger_total == 0.0));
 

@@ -10,20 +10,14 @@ const LOW_MID_HZ:  f32 = 88.3;   // Xfer OTT's low/mid crossover default
 const MID_HIGH_HZ: f32 = 2500.0; // Xfer OTT's mid/high crossover default
 
 pub const CRUSH_THRESHOLD:  f32 = -12.0; // dB, fixed
-const CRUSH_RATIO_DOWN:     f32 = 3.0;
-const CRUSH_RATIO_UP:       f32 = 3.0;
 const CRUSH_RELEASE:        f32 = 0.12;
-const CRUSH_ATTACK:         f32 = 0.01;
-const CRUSH_MAKEUP_DB:      f32 = 0.0;
+const CRUSH_ATTACK:         f32 = 0.001;
+const CRUSH_RATIO_DOWN:     f32 = 2.0;
+const CRUSH_RATIO_UP:       f32 = 4.0;
+const CRUSH_MAKEUP_DB:      f32 = 9.0;
 
-// GrMeter's display-only ballistics -- separate from the bands' own
-// followers, which drive the actual gain math and must stay untouched by
-// anything meter-related. disp_env_db/disp_out_db smooth the overall
-// (pre-split) input and (post-sum) output at meter-friendly attack/release
-// rates; gr_peak_db is a held-and-decaying peak of their gap, exactly like a
-// real GR meter's peak readout.
 const METER_ATTACK_MS:        f32 = 3.0;
-const METER_RELEASE_MS:       f32 = 400.0;
+const METER_RELEASE_MS:       f32 = 40.0;
 const GR_PEAK_HOLD_S:         f32 = 1.2;
 const GR_PEAK_DECAY_DB_PER_S: f32 = 20.0;
 const METER_FLOOR_DB:         f32 = -60.0;

@@ -369,35 +369,37 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
             curr_state.note.on = false;
         }
 
-        // If a note is on, but the new note is different
-        // repeat note only if RepeatMode.on_stick
-        if curr_state.note.current != new_note {
-            if REPEAT_MODE.on_stick {
-                deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
-                deltas.push(DeltaEvent::NoteStart(new_note));
-            } else {
-                deltas.push(DeltaEvent::NoteChange(curr_state.note.current, new_note));
+        else {
+            // If a note is on, but the new note is different
+            // repeat note only if RepeatMode.on_stick
+            if curr_state.note.current != new_note {
+                if REPEAT_MODE.on_stick {
+                    deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
+                    deltas.push(DeltaEvent::NoteStart(new_note));
+                } else {
+                    deltas.push(DeltaEvent::NoteChange(curr_state.note.current, new_note));
+                }
             }
-        }
 
-        // If a note is on, and any trigger started this frame, and the active wand
-        // was swapped this frame, repeat note only if RepeatMode.on_trigger
-        if REPEAT_MODE.on_trigger {
-            if left_trigger_start || right_trigger_start
-            && curr_state.most_recent_wand != prev_state.most_recent_wand {
-                deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
-                deltas.push(DeltaEvent::NoteStart(new_note));
+            // If a note is on, and any trigger started this frame, and the active wand
+            // was swapped this frame, repeat note only if RepeatMode.on_trigger
+            if REPEAT_MODE.on_trigger {
+                if left_trigger_start || right_trigger_start
+                && curr_state.most_recent_wand != prev_state.most_recent_wand {
+                    deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
+                    deltas.push(DeltaEvent::NoteStart(new_note));
+                }
             }
-        }
 
-        // If a note is on, and any trigger ended this frame, and the other trigger
-        // is NOT at zero, and we are not swapping wands, repeat note if RepeatMode.on_swap
-        if REPEAT_MODE.on_swap {
-            if (left_trigger_end && curr_state.right.trigger > 0.0)
-            || (right_trigger_end && curr_state.left.trigger > 0.0) 
-            && curr_state.most_recent_wand != prev_state.most_recent_wand {
-                deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
-                deltas.push(DeltaEvent::NoteStart(new_note));
+            // If a note is on, and any trigger ended this frame, and the other trigger
+            // is NOT at zero, and we are not swapping wands, repeat note if RepeatMode.on_swap
+            if REPEAT_MODE.on_swap {
+                if (left_trigger_end && curr_state.right.trigger > 0.0)
+                || (right_trigger_end && curr_state.left.trigger > 0.0) 
+                && curr_state.most_recent_wand != prev_state.most_recent_wand {
+                    deltas.push(DeltaEvent::NoteEnd(curr_state.note.current));
+                    deltas.push(DeltaEvent::NoteStart(new_note));
+                }
             }
         }
     }

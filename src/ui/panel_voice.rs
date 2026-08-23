@@ -1,10 +1,25 @@
+use std::f32::consts::PI;
+
 use drawille::{Canvas,PixelColor};
 
 use crate::audio::{AudioHandles,AudioErrors,SwarmView,GrowlView,ReeseView};
 use crate::audio::crusher::{CRUSH_THRESHOLD};
+use crate::zgicabra::Zgicabra;
 
+use super::tw;
 use super::utils::*;
 use super::comp_meter::render_compressor_meter;
+
+use rgb::RGB8;
+use super::utils::{fg, GREEN_0, RED_0, FG_RESET};
+
+const VU_CELLS:   usize = 32;
+const VU_MIN_DB:  f32 = -46.0;
+const VU_MAX_DB:  f32 = 0.0;
+const VU_STEP_DB: f32 = (VU_MAX_DB - VU_MIN_DB) / (VU_CELLS as f32 - 1.0);
+
+const YELLOW: RGB8 = tw::YELLOW_500;
+const GRAY:   RGB8 = tw::SLATE_500;
 
 
 //
@@ -30,39 +45,65 @@ fn draw_range_label (x: u16, y: u16, in_out: bool, label: &str, value: f32, min:
         value);
 }
 
-pub fn draw_voice_panel (y: u16, audio: &AudioHandles) {
+pub fn draw_voice_panel (y: u16, zgicabra: &Zgicabra, audio: &AudioHandles) {
 
     // Blank
     for iy in y+1..y+21 {
         print!("{}{}", goto(1, iy), " ".repeat(75));
     }
 
-    /*
-    draw_range_label(2, y +  2, "master_vol",  audio.master_vol.value(), 0.0, 1.0);
-
-    draw_range_label(2, y +  4, "main_sub",    audio.main_sub_lvl.value(),   0.0, 1.0);
-    draw_range_label(2, y +  5, "dry_subl",    audio.dry_sub_lvl.value(),    0.0, 1.0);
-    draw_range_label(2, y +  6, "thump_peak",  audio.thump_peak.value(),     1.0, 2.0);
-    draw_range_label(2, y +  7, "thump_decay", audio.thump_decay.value(),    0.0, 1.0);
-    draw_range_label(2, y +  8, "amp_boost",   audio.amp_boost.value(),      0.0, 1.0);
-    draw_range_label(2, y +  9, "amp_blend",   audio.amp_blend.value(),      0.0, 1.0);
-    draw_range_label(2, y + 10, "amp_xover",   audio.amp_crossover.value(),  0.0, 2000.0);
-    draw_range_label(2, y + 11, "rev_dry",     audio.reverb_dry.value(),     0.0, 1.0);
-    draw_range_label(2, y + 12, "rev_decay",   audio.reverb_decay.value(),   0.0, 1.0);
-    draw_range_label(2, y + 13, "rev_damp",    audio.reverb_damp.value(),    0.0, 1.0);
-    draw_range_label(2, y + 14, "rev_size",    audio.reverb_size.value(),    0.0, 100.0);
-    draw_range_label(2, y + 15, "lim_thresh",  audio.limiter_thresh.value(), 0.0, 1.0);
-    */
-
     match audio.voice_selected.value() as usize {
-        0 => draw_reese_panel(y, &audio.voice_a),
-        1 => draw_growl_panel(y, &audio.voice_b),
-        //2 => draw_basic_panel(y, &audio.voice_c),
-        3 => draw_swarm_panel(y, &audio.voice_d),
+        0 => draw_reese_panel(y + 2, &audio.voice_a),
+        1 => draw_growl_panel(y + 2, &audio.voice_b),
+      //2 => draw_basic_panel(y + 2, &audio.voice_c),
+        3 => draw_swarm_panel(y + 2, &audio.voice_d),
         _ => {},
     }
 
+    let out_meter = render_output_meter(
+        audio.out_level_peak_l.value(), audio.out_level_rms_l.value(),
+        audio.out_level_peak_r.value(), audio.out_level_rms_r.value());
+
+    print!("{}{}", goto(5, y + 2), out_meter);
+
     draw_audio_errors(y, &audio.errors);
+}
+
+fn render_output_meter (peak_l: f32, rms_l: f32, peak_r: f32, rms_r: f32) -> String {
+    let (peak_l_db, rms_l_db) = (amp_db(peak_l), amp_db(rms_l));
+    let (peak_r_db, rms_r_db) = (amp_db(peak_r), amp_db(rms_r));
+
+    format!("{} ¤ {}",
+        render_channel(peak_l_db, rms_l_db, true),
+        render_channel(peak_r_db, rms_r_db, false))
+}
+
+fn db_color (db: f32) -> RGB8 {
+    if db > -3.0 { RED_0 }
+    else if db > -12.0 { YELLOW }
+    else { GREEN_0 }
+}
+
+fn amp_db (amp: f32) -> f32 {
+    (20.0 * amp.max(1e-5).log10()).max(VU_MIN_DB)
+}
+
+fn render_channel (peak_db: f32, rms_db: f32, backwards: bool) -> String {
+    let cells: Vec<(char, RGB8)> = (0..VU_CELLS).map(|i| {
+        let cell_db = VU_MIN_DB + i as f32 * VU_STEP_DB;
+        if cell_db <= rms_db {
+            ('━', db_color(cell_db)) // RMS level
+        } else if cell_db <= peak_db {
+            ('─', db_color(peak_db)) // RMS level
+        } else {
+            ('─', tw::SLATE_500) // headroom
+        }
+    }).collect();
+
+    let iter: Box<dyn Iterator<Item = &(char, RGB8)>> =
+        if backwards { Box::new(cells.iter().rev()) } else { Box::new(cells.iter()) };
+
+    iter.map(|(ch, color)| format!("{}{}{}", fg(*color), ch, FG_RESET)).collect()
 }
 
 
@@ -73,13 +114,12 @@ pub fn draw_voice_panel (y: u16, audio: &AudioHandles) {
 fn draw_reese_panel (y: u16, reese: &ReeseView) {
     draw_range_label(2, y +  2, true, "detune",    reese.detune_input.value(),  0.0, 100.0);
     draw_range_label(2, y +  3, true, "sub_level", reese.sub_level_input.value(), 0.0, 1.0);
-    draw_range_label(2, y +  4, true, "crush_pregain", reese.crush_pregain_input.value(), 1.0, 8.0);
+    draw_range_label(2, y +  4, true, "pregain",   reese.crush_pregain_input.value(), 1.0, 8.0);
     draw_range_label(2, y +  5, true, "cutoff",    reese.cutoff_input.value(),    0.0, 1.0);
     draw_range_label(2, y +  6, true, "resonance", reese.resonance_input.value(), 0.0, 5.0);
     draw_range_label(2, y +  7, true, "lfo_rate",  reese.lfo_rate_input.value(),  0.0, 1.0);
     draw_range_label(2, y +  8, true, "lfo_depth", reese.lfo_depth_input.value(), 0.0, 1.0);
     draw_range_label(2, y +  9, true, "impact_level", reese.impact_level_input.value(), 0.0, 1.0);
-    draw_range_label(2, y + 10, true, "crush",        reese.crush_input.value(), 0.0, 1.0);
 
     draw_range_label(2, y + 12, false, "drive",    reese.drive_live.value(),      0.0, 5.0);
     draw_range_label(2, y + 13, false, "lfo_rate", reese.lfo_rate_live.value(),   0.0, 5.0);
@@ -120,11 +160,11 @@ const SWARM_SCOPE_COLS: u32 = 34; // char cols -- 2 px per drawille char
 const SWARM_SCOPE_ROWS: u32 = 14; // char rows -- 4 px per drawille char
 
 fn draw_swarm_panel (y: u16, swarm: &SwarmView) {
-    draw_range_label(2, y +  2, true, "chase",  swarm.chase_factor_input.value(), 0.5,  1.0);
-    draw_range_label(2, y +  3, true, "radius", swarm.radius_input.value(),       0.0,  200.0);
-    draw_range_label(2, y +  4, true, "orbit",  swarm.orbit_speed_input.value(),  0.0,  2.0);
-    draw_range_label(2, y +  5, true, "phaser", swarm.phaser_depth_input.value(), 0.0,  1.0);
-    draw_range_label(2, y +  6, true, "xover",  swarm.xover_freq_input.value(),   0.0,  2000.0);
+    draw_range_label(2, y +  2, true, "chase",  swarm.chase_factor_input.value(), 0.5, 1.0);
+    draw_range_label(2, y +  3, true, "radius", swarm.radius_input.value(),       0.0, 200.0);
+    draw_range_label(2, y +  4, true, "orbit",  swarm.orbit_speed_input.value(),  0.0, 2.0);
+    draw_range_label(2, y +  5, true, "phaser", swarm.phaser_depth_input.value(), 0.0, 1.0);
+    draw_range_label(2, y +  6, true, "xover",  swarm.xover_freq_input.value(),   0.0, 2000.0);
 
     draw_range_label(2, y +  8, false, "radius", swarm.radius_live.value(),       0.0, 200.0);
     draw_range_label(2, y +  9, false, "orbit",  swarm.orbit_speed_live.value(),  0.0, 2.0);
@@ -168,3 +208,4 @@ pub fn draw_audio_errors (y: u16, errors: &AudioErrors) {
     let color = if log.is_empty() { fg(GREEN_0) } else { fg(RED_0) };
     print!("{}▌{}▪{}▐", goto(74, y), color, FG_RESET);
 }
+

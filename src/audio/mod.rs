@@ -133,6 +133,11 @@ pub struct Handles {
     pub limiter_thresh: Shared,
 
     pub master_vol: Shared,
+
+    pub out_level_peak_l: Shared,
+    pub out_level_peak_r: Shared,
+    pub out_level_rms_l:  Shared,
+    pub out_level_rms_r:  Shared,
 }
 
 impl Handles {
@@ -242,6 +247,11 @@ impl AudioOutput {
 
         let master_vol = shared(1.0);
 
+        let out_level_peak_l = shared(0.0);
+        let out_level_peak_r = shared(0.0);
+        let out_level_rms_l  = shared(0.0);
+        let out_level_rms_r  = shared(0.0);
+
         let capture = AudioCapture::new((NAM_SAMPLE_RATE as f32 * CAPTURE_SECONDS) as usize);
 
         let mut engine = Engine::new(
@@ -271,6 +281,11 @@ impl AudioOutput {
             limiter_thresh.clone(),
 
             master_vol.clone(),
+
+            out_level_peak_l.clone(),
+            out_level_peak_r.clone(),
+            out_level_rms_l.clone(),
+            out_level_rms_r.clone(),
 
         );
 
@@ -303,6 +318,11 @@ impl AudioOutput {
             limiter_thresh: limiter_thresh.clone(),
 
             master_vol: master_vol.clone(),
+
+            out_level_peak_l: out_level_peak_l.clone(),
+            out_level_peak_r: out_level_peak_r.clone(),
+            out_level_rms_l:  out_level_rms_l.clone(),
+            out_level_rms_r:  out_level_rms_r.clone(),
         };
 
         // Load persisted voice state (see snapshot.rs's module doc) --

@@ -28,6 +28,13 @@ const LIMITER_RELEASE: f32 = 0.1;
 
 const MASTER_CRUSH_DEPTH: f32 = 1.0;
 
+// Peak, matching nam_graph.rs's per-band monitors -- this feeds a level
+// indicator, not a loudness readout. RMS runs a slower window alongside it
+// for the same tap, giving the UI meter both a fast peak and a perceived
+// loudness reading.
+const OUT_METER_PEAK_SMOOTH_S: f64 = 0.05;
+const OUT_METER_RMS_SMOOTH_S:  f64 = 0.2;
+
 
 //
 // Audio Engine
@@ -72,6 +79,15 @@ pub struct Engine {
 
     pub master_vol: Shared,
 
+    out_meter_peak_l: Box<dyn AudioUnit>,
+    out_meter_peak_r: Box<dyn AudioUnit>,
+    out_meter_rms_l:  Box<dyn AudioUnit>,
+    out_meter_rms_r:  Box<dyn AudioUnit>,
+    pub out_level_peak_l: Shared,
+    pub out_level_peak_r: Shared,
+    pub out_level_rms_l:  Shared,
+    pub out_level_rms_r:  Shared,
+
     pub cc_input: CcInput,
 }
 
@@ -103,6 +119,11 @@ impl Engine {
         limiter_thresh: Shared,
 
         master_vol: Shared,
+
+        out_level_peak_l: Shared,
+        out_level_peak_r: Shared,
+        out_level_rms_l:  Shared,
+        out_level_rms_r:  Shared,
 
     ) -> Engine {
         let reese = ReeseVoice::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone(), signal.clone());
@@ -138,6 +159,15 @@ impl Engine {
 
             master_vol,
 
+            out_meter_peak_l: Box::new(monitor(&out_level_peak_l, Meter::Peak(OUT_METER_PEAK_SMOOTH_S))),
+            out_meter_peak_r: Box::new(monitor(&out_level_peak_r, Meter::Peak(OUT_METER_PEAK_SMOOTH_S))),
+            out_meter_rms_l:  Box::new(monitor(&out_level_rms_l,  Meter::Rms(OUT_METER_RMS_SMOOTH_S))),
+            out_meter_rms_r:  Box::new(monitor(&out_level_rms_r,  Meter::Rms(OUT_METER_RMS_SMOOTH_S))),
+            out_level_peak_l,
+            out_level_peak_r,
+            out_level_rms_l,
+            out_level_rms_r,
+
             cc_input: CcInput::connect(),
         }
     }
@@ -151,6 +181,10 @@ impl Engine {
         self.crusher_r.set_sample_rate(sr);
         self.reverb.set_sample_rate(sr);
         self.limiter.set_sample_rate(sr);
+        self.out_meter_peak_l.set_sample_rate(sr);
+        self.out_meter_peak_r.set_sample_rate(sr);
+        self.out_meter_rms_l.set_sample_rate(sr);
+        self.out_meter_rms_r.set_sample_rate(sr);
     }
 
     // Each voice's own name, indexed by Voice::index() -- the UI reads the
@@ -218,9 +252,18 @@ impl Engine {
 
         // Master volume
         let vol = self.master_vol.value() * self.signal.level.value();
-        (
-            ((l + dry_sub) * vol).clamp(-1.0, 1.0),
-            ((r + dry_sub) * vol).clamp(-1.0, 1.0),
-        )
+        let out_l = ((l + dry_sub) * vol).clamp(-1.0, 1.0);
+        let out_r = ((r + dry_sub) * vol).clamp(-1.0, 1.0);
+
+        // Output meter -- taps the exact signal handed to cpal, post
+        // limiter/volume/clamp, so it reads what's actually audible.
+        let mut buf_l = [0.0f32];
+        let mut buf_r = [0.0f32];
+        self.out_meter_peak_l.tick(&[out_l], &mut buf_l);
+        self.out_meter_peak_r.tick(&[out_r], &mut buf_r);
+        self.out_meter_rms_l.tick(&[out_l], &mut buf_l);
+        self.out_meter_rms_r.tick(&[out_r], &mut buf_r);
+
+        (out_l, out_r)
     }
 }
