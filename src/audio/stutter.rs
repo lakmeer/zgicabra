@@ -1,17 +1,15 @@
 
-//
-// Stutter generator: triangle sub-oscillator ring-modulated by white noise,
-// so the noise is gated on and off with pitch instead of being a
-// fixed-frequency hiss. Currently unused -- kept as a graph expression
-// because that is now what a generator looks like here.
-//
-// 1 in (freq) -> 1 out (mono). Level is the caller's business.
-//
-
 use fundsp::prelude64::*;
 
 const DRIVE: f32 = 4.0;
 
-pub fn stutter () -> An<impl AudioNode<Inputs = U1, Outputs = U1>> {
-    (triangle() * white()) >> shape_fn(|x| (x * DRIVE).tanh())
+pub fn stutter () -> An<Unit<U1, U1>> {
+    unit::<U1, U1>(Box::new(((triangle() >> shape_fn(|x| x.max(0.0))) * white()) >> shape_fn(|x| (x * DRIVE).tanh())))
+}
+
+// Just the clamped triangle half of stutter() on its own -- floor at 0.0 so
+// only the positive half of the cycle passes, for use as an amplitude
+// modulator elsewhere.
+pub fn clamped_triangle () -> An<Unit<U1, U1>> {
+    unit::<U1, U1>(Box::new(triangle() >> shape_fn(|x| x.max(0.0))))
 }

@@ -475,7 +475,8 @@ impl VoiceDsp for GrowlVoice {
         let mut wet = [0.0f32];
         self.nam.tick(&[raw], &mut wet);
 
-        Frame::from([wet[0], wet[0]])
+        let out = wet[0] * self.sig.env.value();
+        Frame::from([out, out])
     }
 }
 

@@ -19,6 +19,7 @@ use super::signal::SharedSignal;
 use super::voice::{Voice, VoiceDsp, ThumpMod};
 use super::crusher::crusher;
 use super::sample::{Sample, SamplePlayer, play_sample};
+use super::stutter::{stutter, clamped_triangle};
 
 const VOICES: usize = 8; // odd -- center voice lands at zero detune/pan
 
@@ -63,8 +64,88 @@ const IMPACT_ENV_RELEASE: f32 = 0.01;   // trails off with the sample's decay
 const IMPACT_CUTOFF_POP:  f32 = 1000.0; // Hz added to cutoff at full impact envelope
 const IMPACT_DRIVE_POP:   f32 = 1.5;    // extra drive multiplier at full impact envelope
 
-const DEFAULT_CRUSH_DEPTH:    f32 = 1.0; // CC8 = 1.0 -> heaviest crush, 0.0 -> bypassed
-const DEFAULT_CRUSH_PREGAIN:  f32 = 4.0; // pushes level over the crusher's fixed -12dB threshold
+const DEFAULT_CRUSH_DEPTH: f32 = 1.0;
+
+const SQUEAL_DECAY_SEC: f32 = 0.15; // squeal envelope decay after note release
+
+// Feedback-emulator harmonics, each an octave offset from the note freq +
+// a level relative to the fundamental at +3oct.
+const SQUEAL_HARMONICS: usize = 4;
+const SQUEAL_OCTAVES: [f32; SQUEAL_HARMONICS] = [3.0,  5.0,  7.0,   9.0];
+const SQUEAL_LEVELS:  [f32; SQUEAL_HARMONICS] = [1.0,  0.5,  0.25,  0.125];
+
+const DELAY_ENV_ATTACK_SEC:    f32 = 0.0005; // near-instant, matches IMPACT_ENV_ATTACK
+const DELAY_ENV_BASE_SEC:      f32 = 1.0;    // delay/decay time at DELAY_ENV_REF_FREQ
+const DELAY_ENV_REF_FREQ:      f32 = 110.0;  // A2 -- octave reference for delay scaling
+const DELAY_ENV_OCTAVE_FACTOR: f32 = 0.5;    // delay time multiplier per octave above reference
+const DELAY_ENV_MIN_SEC:       f32 = 0.02;   // floor so it never hits zero/negative
+
+// Fires a fresh decay the instant `note_env` starts falling after having
+// been flat/rising -- i.e. right when a note releases, not when it starts.
+#[derive(Clone)]
+struct ReleaseEnv {
+    prev_env:        f32,
+    was_falling:     bool,
+    elapsed_samples: f32,
+    sample_rate:     f32,
+}
+
+impl ReleaseEnv {
+    fn new () -> ReleaseEnv {
+        ReleaseEnv { prev_env: 0.0, was_falling: false, elapsed_samples: 0.0, sample_rate: DEFAULT_SR as f32 }
+    }
+
+    fn set_sample_rate (&mut self, sample_rate: f64) {
+        self.sample_rate = sample_rate as f32;
+    }
+
+    fn tick (&mut self, note_env: f32, decay_sec: f32) -> f32 {
+        let falling = note_env < self.prev_env;
+        if falling && !self.was_falling {
+            self.elapsed_samples = 0.0;
+        }
+        self.was_falling = falling;
+        self.prev_env = note_env;
+
+        let t = self.elapsed_samples / self.sample_rate;
+        self.elapsed_samples += 1.0;
+
+        (-5.0 * t / decay_sec.max(0.001)).exp()
+    }
+}
+
+// Instant attack, then decays to 0 over `delay_sec` -- retriggers on every
+// edge of `trigger` (NoteStart, same trigger impact_player resets on).
+#[derive(Clone)]
+struct DelayEnv {
+    trigger_seen:    f32,
+    elapsed_samples: f32,
+    sample_rate:     f32,
+}
+
+impl DelayEnv {
+    fn new (trigger_seen: f32) -> DelayEnv {
+        DelayEnv { trigger_seen, elapsed_samples: 0.0, sample_rate: DEFAULT_SR as f32 }
+    }
+
+    fn set_sample_rate (&mut self, sample_rate: f64) {
+        self.sample_rate = sample_rate as f32;
+    }
+
+    fn tick (&mut self, trigger: f32, delay_sec: f32) -> f32 {
+        if trigger != self.trigger_seen {
+            self.trigger_seen = trigger;
+            self.elapsed_samples = 0.0;
+        }
+
+        let t = self.elapsed_samples / self.sample_rate;
+        self.elapsed_samples += 1.0;
+
+        let attack = (t / DELAY_ENV_ATTACK_SEC).clamp(0.0, 1.0);
+        let decay  = (-5.0 * t / delay_sec.max(0.001)).exp();
+        attack * decay
+    }
+}
 
 #[derive(Clone, Voice)]
 #[voice(index = 0, label = "Reese", new = manual)]
@@ -75,19 +156,33 @@ pub struct ReeseVoice {
 
     #[node] sub: An<WaveSynth<U1>>,
     #[node] lfo: An<Sine<f64>>,
+    #[node] stutter: An<Unit<U1, U1>>,
+
+    // Fake feedback squeal: a stack of high sines (see SQUEAL_OCTAVES/
+    // SQUEAL_LEVELS), gated by an envelope that fires on note release (not
+    // note start) -- see ReleaseEnv. Multiplied by its own clamped triangle
+    // for grit.
+    #[node(each)] squeal_oscs: [An<Sine<f64>>; SQUEAL_HARMONICS],
+    #[node] squeal_clamp_osc: An<Unit<U1, U1>>,
+    release_env: ReleaseEnv,
+
+    // Unrelated second envelope: instant attack, delay/decay time shortens
+    // as the note gets higher -- see DelayEnv. Gates stutter_level_input.
+    delay_env: DelayEnv,
+    #[live(range = 0.0..1.0)] pub delay_env_live: Shared,
 
     #[node] filter_l: An<Svf<f64, LowpassMode<f64>>>,
     #[node] filter_r: An<Svf<f64, LowpassMode<f64>>>,
 
-    #[input(cc = "1", range = 0.0..50.0,  set = |v| v * 50.0)]        pub detune_input:    Shared,
-    #[input(cc = "2", range = 0.0..1.0,   set = |v| v)]               pub sub_level_input: Shared,
-    drive_input:                                                      Shared, // fixed, no longer CC-settable -- CC3 drives crush_pregain_input instead
-    #[input(cc = "4", range = 0.0..1.0,   set = |v| v)]               pub cutoff_input:    Shared,
-    #[input(cc = "5", range = 0.3..3.0,   set = |v| 0.3 + v * 2.7)]   pub resonance_input: Shared,
-    #[input(cc = "6", range = 0.05..3.0,  set = |v| 0.05 + v * 2.95)] pub lfo_rate_input:  Shared,
-    #[input(cc = "7", range = 0.0..1.0,   set = |v| v)]               pub lfo_depth_input: Shared,
-    #[input(cc = "8", range = 0.0..1.0,   set = |v| v)]               pub crush_input:     Shared,
-    #[input(cc = "3", range = 1.0..8.0,   set = |v| 1.0 + v * 7.0)]   pub crush_pregain_input: Shared,
+    drive_input:                                                      Shared,
+    #[input(cc = "1", range = 0.0..50.0, set = |v| v * 50.0)]        pub detune_input:    Shared,
+    #[input(cc = "2", range = 0.0..1.0,  set = |v| v)]               pub sub_level_input: Shared,
+    #[input(cc = "3", range = 0.0..1.0,  set = |v| v)]               pub cutoff_input:    Shared,
+    #[input(          range = 0.3..3.0,  set = |v| 0.3 + v * 2.7)]   pub resonance_input: Shared,
+    #[input(cc = "4", range = 0.05..3.0, set = |v| 0.05 + v * 2.95)] pub lfo_rate_input:  Shared,
+    #[input(cc = "5", range = 0.0..1.0,  set = |v| v)]               pub lfo_depth_input: Shared,
+    #[input(cc = "6", range = 0.0..1.0,  set = |v| v, default = 0.0)] pub stutter_level_input: Shared,
+    #[input(cc = "7", range = 0.0..1.0,  set = |v| v, default = 0.0)] pub feedback_attn: Shared, // level of the release squeal osc
 
     #[live(range = 0.0..5.0)]    pub drive_live:      Shared,
     #[live(range = 0.0..5.0)]    pub lfo_rate_live:   Shared,
@@ -103,7 +198,7 @@ pub struct ReeseVoice {
     #[node] crusher_l: Box<dyn AudioUnit>,
     #[node] crusher_r: Box<dyn AudioUnit>,
 
-    #[live(range = -60.0..0.0)] pub crush_env_live: Shared, // meter telemetry, from crusher_l -- see ui panel
+    #[live(range = -60.0..0.0)] pub crush_env_live: Shared,
     #[live(range = -60.0..0.0)] pub crush_out_live: Shared,
     #[live(range = -60.0..0.0)] pub crush_gr_live:  Shared,
 
@@ -111,10 +206,6 @@ pub struct ReeseVoice {
     sig:   SharedSignal,
 }
 
-// ReeseView + view()/fields()/apply()/UI_RANGES + the AudioNode/Voice impls
-// are generated by #[derive(Voice)]. new() stays hand-written (new = manual)
-// because the per-voice detune/pan `spread` weights are computed before the
-// struct literal.
 impl ReeseVoice {
     pub fn new (thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared, signal: SharedSignal) -> ReeseVoice {
         let spread: [f32; VOICES] = std::array::from_fn(|i| {
@@ -125,7 +216,6 @@ impl ReeseVoice {
         let crush_env_live = shared(0.0);
         let crush_out_live = shared(0.0);
         let crush_gr_live  = shared(0.0);
-        let crush_input    = shared(DEFAULT_CRUSH_DEPTH);
 
         ReeseVoice {
             unison: std::array::from_fn(|_| saw()),
@@ -133,6 +223,15 @@ impl ReeseVoice {
             spread,
             sub: saw(),
             lfo: sine(),
+            stutter: stutter(),
+
+            squeal_oscs: std::array::from_fn(|_| sine()),
+            squeal_clamp_osc: clamped_triangle(),
+            release_env: ReleaseEnv::new(),
+
+            delay_env: DelayEnv::new(thump_trigger.value()),
+            delay_env_live: shared(0.0),
+
             filter_l: lowpass(),
             filter_r: lowpass(),
 
@@ -143,8 +242,8 @@ impl ReeseVoice {
             resonance_input: shared(DEFAULT_RESONANCE),
             lfo_rate_input:  shared(DEFAULT_LFO_RATE),
             lfo_depth_input: shared(DEFAULT_LFO_DEPTH),
-            crush_input:     crush_input.clone(),
-            crush_pregain_input: shared(DEFAULT_CRUSH_PREGAIN),
+            stutter_level_input: shared(0.0),
+            feedback_attn:       shared(0.0),
 
             drive_live:      shared(0.0),
             lfo_rate_live:   shared(0.0),
@@ -157,8 +256,8 @@ impl ReeseVoice {
             impact_trigger_seen: thump_trigger.value(),
             impact_level_input:  shared(1.0),
 
-            crusher_l: Box::new(crusher(&shared(1.0)/*crush_input*/, crush_env_live.clone(), crush_out_live.clone(), crush_gr_live.clone(),)),
-            crusher_r: Box::new(crusher(&shared(1.0)/*crush_input*/, shared(0.0), shared(0.0), shared(0.0),)),
+            crusher_l: Box::new(crusher(&shared(1.0), crush_env_live.clone(), crush_out_live.clone(), crush_gr_live.clone(),)),
+            crusher_r: Box::new(crusher(&shared(1.0), shared(0.0), shared(0.0), shared(0.0),)),
 
             crush_env_live, crush_out_live, crush_gr_live,
 
@@ -185,6 +284,12 @@ impl VoiceDsp for ReeseVoice {
             self.impact_trigger_seen = trigger;
             self.impact_player.reset();
         }
+
+        // Delay/decay time halves per octave above DELAY_ENV_REF_FREQ. Gates
+        // the stutter layer below.
+        let octaves   = (freq / DELAY_ENV_REF_FREQ).log2();
+        let delay_sec = (DELAY_ENV_BASE_SEC * DELAY_ENV_OCTAVE_FACTOR.powf(octaves)).max(DELAY_ENV_MIN_SEC);
+        self.delay_env_live.set_value(self.delay_env.tick(trigger, delay_sec));
 
         // Raw impact sample plus its tracked envelope -- the envelope drives
         // the cutoff/drive pops below, the raw sample gets folded into the
@@ -218,6 +323,36 @@ impl VoiceDsp for ReeseVoice {
         mix_l += impact_raw;
         mix_r += impact_raw;
 
+        let stutter = self.stutter.filter_mono(freq) * self.stutter_level_input.value() * self.delay_env_live.value();
+        mix_l += stutter;
+        mix_r += stutter;
+
+        // Envelope gates the dry voice only -- applied here, not at the final
+        // output -- so the release squeal added below can stay alive and
+        // audible through the compressor even while no note is held.
+        let note_env = self.sig.env.value();
+        mix_l *= note_env;
+        mix_r *= note_env;
+
+        // Fake feedback squeal: a high sine that only fires the instant a
+        // note releases. Inverted (1.0 - env) so it starts silent right at
+        // release and creeps in as the underlying decay falls away, rather
+        // than hitting instantly and fading -- closer to how a real feedback
+        // squeal builds up. Scaled by (1.0 - note_env) so it stays fully
+        // suppressed while a note is actually held and can only be heard
+        // once note_env has decayed toward 0, unlike the dry mix above.
+        let squeal_env  = 1.0 - self.release_env.tick(note_env, SQUEAL_DECAY_SEC);
+        let squeal_gain = squeal_env * self.feedback_attn.value() * (1.0 - note_env);
+        let mut squeal = 0.0f32;
+        for h in 0..SQUEAL_HARMONICS {
+            let ratio = 2f32.powf(SQUEAL_OCTAVES[h]);
+            squeal += self.squeal_oscs[h].filter_mono(freq * ratio) * SQUEAL_LEVELS[h];
+        }
+        let squeal_clamp = self.squeal_clamp_osc.filter_mono(freq);
+        let squeal = squeal * squeal_clamp * squeal_gain;
+        mix_l += squeal;
+        mix_r += squeal;
+
         // Live `fuzz` signal and the impact envelope both boost drive on top
         // of the macro knob -- the kick's transient briefly adds extra grit.
         let drive = (self.drive_input.value()
@@ -236,16 +371,17 @@ impl VoiceDsp for ReeseVoice {
 
         let out_l = self.filter_l.tick(&Frame::from([shaped_l, cutoff_hz, q]))[0];
         let out_r = self.filter_r.tick(&Frame::from([shaped_r, cutoff_hz, q]))[0];
-        let note_env = self.sig.env.value();
-
-        let pregain = self.crush_pregain_input.value();
-        let makeup  = 1.0 / pregain;
 
         let mut wet_l = [0.0f32];
         let mut wet_r = [0.0f32];
-        self.crusher_l.tick(&[(out_l * note_env * pregain)], &mut wet_l);
-        self.crusher_r.tick(&[(out_r * note_env * pregain)], &mut wet_r);
+        self.crusher_l.tick(&[out_l], &mut wet_l);
+        self.crusher_r.tick(&[out_r], &mut wet_r);
 
-        Frame::from([wet_l[0] * makeup, wet_r[0] * makeup])
+        Frame::from([wet_l[0], wet_r[0]])
+    }
+
+    fn on_set_sample_rate (&mut self, sample_rate: f64) {
+        self.release_env.set_sample_rate(sample_rate);
+        self.delay_env.set_sample_rate(sample_rate);
     }
 }

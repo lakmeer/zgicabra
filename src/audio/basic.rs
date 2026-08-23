@@ -12,6 +12,7 @@
 use fundsp::prelude64::*;
 use zgicabra_voice_macro::Voice;
 
+use super::stutter::stutter;
 use super::signal::SharedSignal;
 use super::voice::{Voice, VoiceDsp, ThumpMod};
 
@@ -23,11 +24,14 @@ pub struct BasicVoice {
     #[node(init = square())]   square: An<WaveSynth<U1>>,
     #[node(init = saw())]      saw:    An<WaveSynth<U1>>,
 
-    #[input(cc = "1", range = 0.0..1.0,  set = |v| v,           default = 0.25)] pub sin_level:    Shared,
-    #[input(cc = "2", range = 0.0..1.0,  set = |v| v,           default = 0.25)] pub tri_level:    Shared,
-    #[input(cc = "3", range = 0.0..1.0,  set = |v| v,           default = 0.25)] pub square_level: Shared,
-    #[input(cc = "4", range = 0.0..1.0,  set = |v| v,           default = 0.25)] pub saw_level:    Shared,
-    #[input(cc = "5", range = 1.0..10.0, set = |v| 1.0 + v*9.0, default = 1.0)]  pub saturation:   Shared,
+    #[node(init = stutter())]   stutter: An<Unit<U1, U1>>,
+
+    #[input(cc = "1", range = 0.0..1.0,  set = |v| v,           default = 0.25)] pub sin_level:     Shared,
+    #[input(cc = "2", range = 0.0..1.0,  set = |v| v,           default = 0.25)] pub tri_level:     Shared,
+    #[input(cc = "3", range = 0.0..1.0,  set = |v| v,           default = 0.25)] pub square_level:  Shared,
+    #[input(cc = "4", range = 0.0..1.0,  set = |v| v,           default = 0.25)] pub saw_level:     Shared,
+    #[input(cc = "5", range = 1.0..1.0,  set = |v| v,           default = 0.25)] pub stutter_level: Shared,
+    #[input(cc = "6", range = 1.0..10.0, set = |v| 1.0 + v*9.0, default = 1.0)]  pub saturation:    Shared,
 
     thump: ThumpMod,
     sig:   SharedSignal,
@@ -38,8 +42,11 @@ impl VoiceDsp for BasicVoice {
         let mono = self.sin.filter_mono(freq)    * self.sin_level.value()
                  + self.tri.filter_mono(freq)    * self.tri_level.value()
                  + self.square.filter_mono(freq) * self.square_level.value()
-                 + self.saw.filter_mono(freq)    * self.saw_level.value();
-        let mono = (mono * self.saturation.value()).tanh();
+                 + self.saw.filter_mono(freq)    * self.saw_level.value()
+                 + self.stutter.filter_mono(freq) * self.stutter_level.value();
+
+        let mono = (mono * self.saturation.value()).tanh() * self.sig.env.value();
+
         Frame::from([mono, mono])
     }
 }

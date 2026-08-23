@@ -114,17 +114,17 @@ fn render_channel (peak_db: f32, rms_db: f32, backwards: bool) -> String {
 fn draw_reese_panel (y: u16, reese: &ReeseView) {
     draw_range_label(2, y +  2, true, "detune",    reese.detune_input.value(),  0.0, 100.0);
     draw_range_label(2, y +  3, true, "sub_level", reese.sub_level_input.value(), 0.0, 1.0);
-    draw_range_label(2, y +  4, true, "pregain",   reese.crush_pregain_input.value(), 1.0, 8.0);
-    draw_range_label(2, y +  5, true, "cutoff",    reese.cutoff_input.value(),    0.0, 1.0);
-    draw_range_label(2, y +  6, true, "resonance", reese.resonance_input.value(), 0.0, 5.0);
-    draw_range_label(2, y +  7, true, "lfo_rate",  reese.lfo_rate_input.value(),  0.0, 1.0);
-    draw_range_label(2, y +  8, true, "lfo_depth", reese.lfo_depth_input.value(), 0.0, 1.0);
-    draw_range_label(2, y +  9, true, "impact_level", reese.impact_level_input.value(), 0.0, 1.0);
+    draw_range_label(2, y +  4, true, "cutoff",    reese.cutoff_input.value(),    0.0, 1.0);
+    draw_range_label(2, y +  5, true, "lfo_rate",  reese.lfo_rate_input.value(),  0.0, 1.0);
+    draw_range_label(2, y +  6, true, "lfo_depth", reese.lfo_depth_input.value(), 0.0, 1.0);
+    draw_range_label(2, y +  7, true, "stutter",   reese.stutter_level_input.value(), 0.0, 1.0);
+    draw_range_label(2, y +  8, true, "squeal",   reese.feedback_attn.value(), 0.0, 1.0);
 
-    draw_range_label(2, y + 12, false, "drive",    reese.drive_live.value(),      0.0, 5.0);
-    draw_range_label(2, y + 13, false, "lfo_rate", reese.lfo_rate_live.value(),   0.0, 5.0);
-    draw_range_label(2, y + 14, false, "detune",   reese.detune_live.value(),   0.0, 200.0);
-    draw_range_label(2, y + 15, false, "cutoff",   reese.cutoff_live.value(),  0.0, 6000.0);
+    draw_range_label(2, y + 12, false, "drive",     reese.drive_live.value(),      0.0, 5.0);
+    draw_range_label(2, y + 13, false, "lfo_rate",  reese.lfo_rate_live.value(),   0.0, 5.0);
+    draw_range_label(2, y + 14, false, "detune",    reese.detune_live.value(),   0.0, 200.0);
+    draw_range_label(2, y + 15, false, "cutoff",    reese.cutoff_live.value(),  0.0, 6000.0);
+    draw_range_label(2, y + 16, false, "delay_env", reese.delay_env_live.value(), 0.0, 1.0);
 
     let meter = render_compressor_meter(
         reese.crush_env_live.value(),

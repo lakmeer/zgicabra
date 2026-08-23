@@ -69,6 +69,12 @@ pub trait VoiceDsp {
     // `freq` is already thump-applied; `thump_mult` is the raw pitch
     // multiplier thump contributed this sample (1.0 at rest), handed over
     // for voices that surface it as telemetry (GrowlVoice's freq_mult_live).
+    // Engine does not gate a voice's output by the note envelope -- render()
+    // is responsible for reading self.sig.env itself and shaping its own
+    // output by it (see any voice's render() for the convention). This is
+    // what lets a voice like ReeseVoice deliberately leave part of its
+    // signal (its feedback loop) ungated, while every other voice just
+    // multiplies its whole output by env like Engine used to do for them.
     fn render (&mut self, freq: f32, thump_mult: f32) -> Frame<f32, U2>;
     // Block-driven inference hook (a NamStage internally, say) -- default
     // no-op; the generated Voice::on_block_start delegates here.

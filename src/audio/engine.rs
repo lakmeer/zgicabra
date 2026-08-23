@@ -210,18 +210,22 @@ impl Engine {
         let sel = self.voice_selected.value() as usize;
         let mut voice_l = 0.0;
         let mut voice_r = 0.0;
+        // Each voice reads self.signal.env (published above) and gates its
+        // own output by it in render() -- Engine no longer applies a blanket
+        // env multiply here, so a voice can choose to leave part of its
+        // signal ungated (ReeseVoice's feedback loop).
         for voice in self.voices.iter_mut() {
             let (l, r) = if voice.index() == sel { voice.tick(base_freq) } else { voice.on_silence(); (0.0, 0.0) };
             voice_l += l;
             voice_r += r;
         }
 
-        let main_sub = self.main_sub_tri.filter_mono(base_freq) * self.main_sub_lvl.value();
+        // main_sub isn't a Voice -- still gated here directly, same as dry_sub.
+        let main_sub = self.main_sub_tri.filter_mono(base_freq) * self.main_sub_lvl.value() * env;
+        let dry_sub  = self.dry_sub.filter_mono(base_freq * 0.5) * self.dry_sub_lvl.value() * env;
 
-        let dry_sub = self.dry_sub.filter_mono(base_freq * 0.5) * self.dry_sub_lvl.value() * env;
-
-        let dry_l = (voice_l + main_sub) * env;
-        let dry_r = (voice_r + main_sub) * env;
+        let dry_l = voice_l + main_sub;
+        let dry_r = voice_r + main_sub;
 
         let mut l = dry_l.tanh();
         let mut r = dry_r.tanh();

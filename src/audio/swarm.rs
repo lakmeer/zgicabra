@@ -358,9 +358,10 @@ impl VoiceDsp for SwarmVoice {
         let mut namd = [0.0f32; 2];
         self.nam.tick(&[self.chain_l.pre(mix_l), self.chain_r.pre(mix_r)], &mut namd);
 
+        let note_env = self.sig.env.value();
         Frame::from([
-            self.chain_l.post(namd[0], filter_cutoff),
-            self.chain_r.post(namd[1], filter_cutoff),
+            self.chain_l.post(namd[0], filter_cutoff) * note_env,
+            self.chain_r.post(namd[1], filter_cutoff) * note_env,
         ])
     }
 
