@@ -67,6 +67,7 @@ various community uploaders to the library at [TONE3000](https://tone3000.com/se
 | pickle.nam   | Hartke LH1000 Bass Amp Head Full Rigs Pack 1 | StudioAmpCaptures918 | https://www.tone3000.com/tones/hartke-lh1000-bass-amp-gallien-krueger-4x10-cab-bass-rigs-amp-head-63862 |
 | sansamp.nam  | Sansamp Bass Driver (Driven)                 | everipper            | https://www.tone3000.com/tones/tech21-sansamp-bass-driver-31010 |
 | wetbass.nam  | WETBASS                                      | chechogonzalez2016   | https://www.tone3000.com/tones/metal-punchy-bass-tone-66292 |
+| mesa_ir.wav  | Mesa Boogie ST 4x12A V30 - Vintage 421 Enhanced | tonefactor        | https://www.tone3000.com/tones/mesa-boogie-st-4x12a-v30-vintage-421-enhanced-79857 |
 
 These models are included in this repo since they have been selected
 specifically as an integral part of the sound design. If you are the author of

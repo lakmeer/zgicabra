@@ -5,5 +5,5 @@ resonance_input=1.2354331
 lfo_rate_input=0.9791339
 lfo_depth_input=0.36220473
 stutter_level_input=1
-feedback_attn=0
+feedback_attn=0.062992126
 impact_level_input=0.7480315

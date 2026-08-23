@@ -19,7 +19,10 @@ use super::signal::SharedSignal;
 use super::voice::{Voice, VoiceDsp, ThumpMod};
 use super::crusher::crusher;
 use super::sample::{Sample, SamplePlayer, play_sample};
-use super::stutter::{stutter, clamped_triangle};
+use super::stutter::stutter;
+use super::nam::load_named_model;
+use super::nam_graph::nam_band;
+use super::nam_node::NAM_WINDOW;
 
 const VOICES: usize = 8; // odd -- center voice lands at zero detune/pan
 
@@ -66,53 +69,45 @@ const IMPACT_DRIVE_POP:   f32 = 1.5;    // extra drive multiplier at full impact
 
 const DEFAULT_CRUSH_DEPTH: f32 = 1.0;
 
-const SQUEAL_DECAY_SEC: f32 = 0.15; // squeal envelope decay after note release
+// Feedback emulator, real (well, realer) version: a resonant "string" mode
+// per channel, closed into a loop through its own NAM ("lowgain") amp pass
+// and a truncated slice of the cabinet IR (see load_feedback_ir below).
+// Pitch, swell rate, and plateau level are all emergent from loop gain
+// crossing unity rather than an authored envelope -- see render(). Two
+// independent NAM instances so L/R never share WaveNet dilation state (same
+// reasoning as nam_mid_side's lo/hi split, see nam_graph.rs).
+// Fixed, not picked/jumped -- the same octave above the note every time, so
+// the feedback reliably punctuates a played note at a predictable pitch
+// rather than landing somewhere different each time.
+const FEEDBACK_MODE_OCTAVE: f32 = 3.0;
 
-// Feedback-emulator harmonics, each an octave offset from the note freq +
-// a level relative to the fundamental at +3oct.
-const SQUEAL_HARMONICS: usize = 4;
-const SQUEAL_OCTAVES: [f32; SQUEAL_HARMONICS] = [3.0,  5.0,  7.0,   9.0];
-const SQUEAL_LEVELS:  [f32; SQUEAL_HARMONICS] = [1.0,  0.5,  0.25,  0.125];
+const FEEDBACK_NAM_MODEL: &str = "lowgain";
+
+static FEEDBACK_IR_SAMPLE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/wav/mesa_ir.wav"));
+const FEEDBACK_IR_SAMPLE_RATE: f64 = 48_000.0; // mesa_ir.wav's own rate -- matches NAM_SAMPLE_RATE, no resample needed
+const FEEDBACK_IR_LEN_SAMPLES: usize = 400; // ~8ms: the cab's early resonant character only -- the full ~0.5s IR tail would make the loop's timing a slap-delay instead of a Larsen-style loop
+
+// Truncated so the loop's round-trip is dominated by NAM's own inference
+// latency (NAM_WINDOW, ~10.7ms) plus this short cab-resonance slice --
+// together landing in the same ballpark as a real close-mic'd amp's
+// acoustic path length, rather than the IR's full reverberant tail.
+fn load_feedback_ir () -> Wave {
+    let sample = Sample::parse(FEEDBACK_IR_SAMPLE);
+    let len = std::cmp::min(sample.length(), FEEDBACK_IR_LEN_SAMPLES);
+    let data: Vec<f32> = (0..len).map(|i| sample.at(i)).collect();
+    Wave::from_samples(FEEDBACK_IR_SAMPLE_RATE, &data)
+}
+
+const FEEDBACK_RES_BW_FRACTION: f32 = 0.015; // resonator bandwidth as a fraction of its center freq -- narrow enough to ring rather than pass broadband noise
+const FEEDBACK_EXCITE_LEVEL:    f32 = 0.2;   // how much of the dry (post note_env) voice signal continuously excites the resonator
+const FEEDBACK_LOOP_GAIN_MAX:   f32 = 1.8;   // loop gain at feedback_attn = 1 -- comfortably above unity so the top of the knob range can self-sustain
+const FEEDBACK_OUT_LEVEL:       f32 = 1.5;   // final mix trim for the loop output
 
 const DELAY_ENV_ATTACK_SEC:    f32 = 0.0005; // near-instant, matches IMPACT_ENV_ATTACK
 const DELAY_ENV_BASE_SEC:      f32 = 1.0;    // delay/decay time at DELAY_ENV_REF_FREQ
 const DELAY_ENV_REF_FREQ:      f32 = 110.0;  // A2 -- octave reference for delay scaling
 const DELAY_ENV_OCTAVE_FACTOR: f32 = 0.5;    // delay time multiplier per octave above reference
 const DELAY_ENV_MIN_SEC:       f32 = 0.02;   // floor so it never hits zero/negative
-
-// Fires a fresh decay the instant `note_env` starts falling after having
-// been flat/rising -- i.e. right when a note releases, not when it starts.
-#[derive(Clone)]
-struct ReleaseEnv {
-    prev_env:        f32,
-    was_falling:     bool,
-    elapsed_samples: f32,
-    sample_rate:     f32,
-}
-
-impl ReleaseEnv {
-    fn new () -> ReleaseEnv {
-        ReleaseEnv { prev_env: 0.0, was_falling: false, elapsed_samples: 0.0, sample_rate: DEFAULT_SR as f32 }
-    }
-
-    fn set_sample_rate (&mut self, sample_rate: f64) {
-        self.sample_rate = sample_rate as f32;
-    }
-
-    fn tick (&mut self, note_env: f32, decay_sec: f32) -> f32 {
-        let falling = note_env < self.prev_env;
-        if falling && !self.was_falling {
-            self.elapsed_samples = 0.0;
-        }
-        self.was_falling = falling;
-        self.prev_env = note_env;
-
-        let t = self.elapsed_samples / self.sample_rate;
-        self.elapsed_samples += 1.0;
-
-        (-5.0 * t / decay_sec.max(0.001)).exp()
-    }
-}
 
 // Instant attack, then decays to 0 over `delay_sec` -- retriggers on every
 // edge of `trigger` (NoteStart, same trigger impact_player resets on).
@@ -158,13 +153,19 @@ pub struct ReeseVoice {
     #[node] lfo: An<Sine<f64>>,
     #[node] stutter: An<Unit<U1, U1>>,
 
-    // Fake feedback squeal: a stack of high sines (see SQUEAL_OCTAVES/
-    // SQUEAL_LEVELS), gated by an envelope that fires on note release (not
-    // note start) -- see ReleaseEnv. Multiplied by its own clamped triangle
-    // for grit.
-    #[node(each)] squeal_oscs: [An<Sine<f64>>; SQUEAL_HARMONICS],
-    #[node] squeal_clamp_osc: An<Unit<U1, U1>>,
-    release_env: ReleaseEnv,
+    // Fake feedback, closed-loop version -- see the FEEDBACK_* consts and
+    // render() for the mechanism.
+    #[node] feedback_res_l:  An<Resonator<f64, U3>>,
+    #[node] feedback_res_r:  An<Resonator<f64, U3>>,
+    #[node] feedback_nam_l:  Box<dyn AudioUnit>,
+    #[node] feedback_nam_r:  Box<dyn AudioUnit>,
+    #[node] feedback_conv_l: An<Convolver>,
+    #[node] feedback_conv_r: An<Convolver>,
+    feedback_nam_blend:   Shared, // pinned to 1.0 -- fully wet always, feedback_attn controls loop gain instead
+    feedback_nam_level_l: Shared, // nam_band's post-blend peak monitor -- required by its signature, unused for now
+    feedback_nam_level_r: Shared,
+    feedback_loop_l: f32, // previous sample's gain-staged, clamped loopback -- this sample's resonator excitation
+    feedback_loop_r: f32,
 
     // Unrelated second envelope: instant attack, delay/decay time shortens
     // as the note gets higher -- see DelayEnv. Gates stutter_level_input.
@@ -182,7 +183,7 @@ pub struct ReeseVoice {
     #[knob(cc = "4", range = 0.05..3.0, set = |v| 0.05 + v * 2.95)] pub lfo_rate_input:  Shared,
     #[knob(cc = "5", range = 0.0..1.0)]               pub lfo_depth_input: Shared,
     #[knob(cc = "6", range = 0.0..1.0,  default = 0.0)] pub stutter_level_input: Shared,
-    #[knob(cc = "7", range = 0.0..1.0,  default = 0.0)] pub feedback_attn: Shared, // level of the release squeal osc
+    #[knob(cc = "7", range = 0.0..1.0,  default = 0.0)] pub feedback_attn: Shared, // feedback loop gain -- 0 is always inert; crosses unity (self-sustaining) partway up
 
     #[live(range = 0.0..5.0)]    pub drive_live:      Shared,
     #[live(range = 0.0..5.0)]    pub lfo_rate_live:   Shared,
@@ -217,6 +218,23 @@ impl ReeseVoice {
         let crush_out_live = shared(0.0);
         let crush_gr_live  = shared(0.0);
 
+        // Two independent "lowgain" model instances (own Arc<Mutex<Model>>
+        // each) so the L/R feedback passes never share WaveNet dilation
+        // state -- see the FEEDBACK_* consts doc comment.
+        let feedback_nam_slot_l = load_named_model(FEEDBACK_NAM_MODEL).unwrap();
+        let feedback_nam_slot_r = load_named_model(FEEDBACK_NAM_MODEL).unwrap();
+        let feedback_nam_blend   = shared(1.0);
+        let feedback_nam_level_l = shared(0.0);
+        let feedback_nam_level_r = shared(0.0);
+        let feedback_nam_l: Box<dyn AudioUnit> = Box::new(nam_band(
+            &feedback_nam_slot_l, &feedback_nam_blend, &feedback_nam_level_l, NAM_WINDOW,
+        ));
+        let feedback_nam_r: Box<dyn AudioUnit> = Box::new(nam_band(
+            &feedback_nam_slot_r, &feedback_nam_blend, &feedback_nam_level_r, NAM_WINDOW,
+        ));
+
+        let feedback_ir = load_feedback_ir();
+
         ReeseVoice {
             unison: std::array::from_fn(|_| saw()),
             unison_pan: std::array::from_fn(|_| panner()),
@@ -225,9 +243,17 @@ impl ReeseVoice {
             lfo: sine(),
             stutter: stutter(),
 
-            squeal_oscs: std::array::from_fn(|_| sine()),
-            squeal_clamp_osc: clamped_triangle(),
-            release_env: ReleaseEnv::new(),
+            feedback_res_l:  resonator(),
+            feedback_res_r:  resonator(),
+            feedback_nam_l,
+            feedback_nam_r,
+            feedback_conv_l: convolve(&feedback_ir, 0),
+            feedback_conv_r: convolve(&feedback_ir, 0),
+            feedback_nam_blend,
+            feedback_nam_level_l,
+            feedback_nam_level_r,
+            feedback_loop_l: 0.0,
+            feedback_loop_r: 0.0,
 
             delay_env: DelayEnv::new(thump_trigger.value()),
             delay_env_live: shared(0.0),
@@ -279,10 +305,17 @@ impl VoiceDsp for ReeseVoice {
             * (1.0 + WIDTH_TO_DETUNE * width_signal);
         self.detune_live.set_value(detune);
 
+        // xorshift32, advanced every sample -- cheap source of per-note
+        // randomness for which feedback mode gets picked on the next attack.
         let trigger = self.impact_trigger.value();
         if trigger != self.impact_trigger_seen {
             self.impact_trigger_seen = trigger;
             self.impact_player.reset();
+
+            // Fresh pluck mutes any ringing feedback loop -- hand back on
+            // the strings.
+            self.feedback_loop_l = 0.0;
+            self.feedback_loop_r = 0.0;
         }
 
         // Delay/decay time halves per octave above DELAY_ENV_REF_FREQ. Gates
@@ -328,30 +361,59 @@ impl VoiceDsp for ReeseVoice {
         mix_r += stutter;
 
         // Envelope gates the dry voice only -- applied here, not at the final
-        // output -- so the release squeal added below can stay alive and
+        // output -- so the feedback loop added below can stay alive and
         // audible through the compressor even while no note is held.
         let note_env = self.sig.env.value();
         mix_l *= note_env;
         mix_r *= note_env;
 
-        // Fake feedback squeal: a high sine that only fires the instant a
-        // note releases. Inverted (1.0 - env) so it starts silent right at
-        // release and creeps in as the underlying decay falls away, rather
-        // than hitting instantly and fading -- closer to how a real feedback
-        // squeal builds up. Scaled by (1.0 - note_env) so it stays fully
-        // suppressed while a note is actually held and can only be heard
-        // once note_env has decayed toward 0, unlike the dry mix above.
-        let squeal_env  = 1.0 - self.release_env.tick(note_env, SQUEAL_DECAY_SEC);
-        let squeal_gain = squeal_env * self.feedback_attn.value() * (1.0 - note_env);
-        let mut squeal = 0.0f32;
-        for h in 0..SQUEAL_HARMONICS {
-            let ratio = 2f32.powf(SQUEAL_OCTAVES[h]);
-            squeal += self.squeal_oscs[h].filter_mono(freq * ratio) * SQUEAL_LEVELS[h];
-        }
-        let squeal_clamp = self.squeal_clamp_osc.filter_mono(freq);
-        let squeal = squeal * squeal_clamp * squeal_gain;
-        mix_l += squeal;
-        mix_r += squeal;
+        // Real (well, realer) feedback: one resonant "string" mode per
+        // channel, closed into a loop through its own NAM pass and cab-IR
+        // convolution (feedback_loop_l/r holds last sample's output, fed
+        // back in as this sample's extra excitation -- see the trigger
+        // block above for the note-attack reset). Fixed at FEEDBACK_MODE_
+        // OCTAVE above the note (no jump/pick) so it punctuates a played
+        // note at the same predictable pitch every time. Swell/plateau are
+        // still emergent from loop gain, not authored:
+        //  - below unity gain the loop always decays back to silence
+        //  - above it, the loop self-sustains and grows until the tanh
+        //    safety clamp (plus the NAM's own saturation) caps it
+        // feedback_attn is that loop gain, 0..FEEDBACK_LOOP_GAIN_MAX -- the
+        // "how close to the amp" knob.
+        //
+        // The loop keeps running off the dry (post note_env) signal the
+        // whole time -- excited while the note is held, still ringing as it
+        // decays -- but is only mixed in once the note itself has finished
+        // (the (1.0 - note_env) gate below), so it reads as punctuation
+        // after the note rather than a texture layered under it.
+        let loop_gain = self.feedback_attn.value() * FEEDBACK_LOOP_GAIN_MAX;
+
+        let exciter_l = mix_l * FEEDBACK_EXCITE_LEVEL;
+        let exciter_r = mix_r * FEEDBACK_EXCITE_LEVEL;
+
+        let center_hz    = freq * 2f32.powf(FEEDBACK_MODE_OCTAVE);
+        let bandwidth_hz = (center_hz * FEEDBACK_RES_BW_FRACTION).max(1.0);
+
+        let res_in_l = exciter_l + self.feedback_loop_l;
+        let res_in_r = exciter_r + self.feedback_loop_r;
+        let res_out_l = self.feedback_res_l.tick(&Frame::from([res_in_l, center_hz, bandwidth_hz]))[0];
+        let res_out_r = self.feedback_res_r.tick(&Frame::from([res_in_r, center_hz, bandwidth_hz]))[0];
+
+        let nam_out_l = self.feedback_nam_l.filter_mono(res_out_l);
+        let nam_out_r = self.feedback_nam_r.filter_mono(res_out_r);
+
+        let conv_out_l = self.feedback_conv_l.filter_mono(nam_out_l);
+        let conv_out_r = self.feedback_conv_r.filter_mono(nam_out_r);
+
+        // Safety clamp: this is a real recursive gain loop, so bound it
+        // explicitly rather than trusting the NAM's saturation alone to
+        // keep it finite for every knob combination.
+        self.feedback_loop_l = (conv_out_l * loop_gain).tanh();
+        self.feedback_loop_r = (conv_out_r * loop_gain).tanh();
+
+        let feedback_mix_gain = 1.0 - note_env;
+        mix_l += self.feedback_loop_l * FEEDBACK_OUT_LEVEL * feedback_mix_gain;
+        mix_r += self.feedback_loop_r * FEEDBACK_OUT_LEVEL * feedback_mix_gain;
 
         // Live `fuzz` signal and the impact envelope both boost drive on top
         // of the macro knob -- the kick's transient briefly adds extra grit.
@@ -381,7 +443,6 @@ impl VoiceDsp for ReeseVoice {
     }
 
     fn on_set_sample_rate (&mut self, sample_rate: f64) {
-        self.release_env.set_sample_rate(sample_rate);
         self.delay_env.set_sample_rate(sample_rate);
     }
 }
