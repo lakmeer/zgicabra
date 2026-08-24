@@ -51,7 +51,7 @@ pub fn render_compressor_meter (input_db: f32, output_db: f32, threshold_db: f32
     }
     s.push(']');
 
-    s += &format!(" {}{:>5.1}{}", fg(gr_readout_color(gr_peak_db)), -gr_peak_db, FG_RESET);
+    s += &format!(" {}{}", fg(gr_readout_color(gr_peak_db)), FG_RESET);
     s
 }
 

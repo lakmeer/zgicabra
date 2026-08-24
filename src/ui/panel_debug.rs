@@ -45,15 +45,13 @@ pub fn draw_debug_panel (y: u16, zgicabra: &Zgicabra, history: &Vec<Zgicabra>, d
         draw_graph(RHS as u32 - 4, 23, y, &history);
     }
 
-    println!("{}Root:    {:>17}",   goto(RHS, y +  2), format_note(zgicabra.note.root));
-    println!("{}Current: {:>17}",   goto(RHS, y +  3), format_note(zgicabra.note.current));
-    println!("{}Pitch:   {:>17.4}", goto(RHS, y +  4), zgicabra.note.bend);
-    println!("{}Filter:  {:>17.4}", goto(RHS, y +  5), zgicabra.signal.filter);
-    println!("{}Fuzz:    {:>17.4}", goto(RHS, y +  6), zgicabra.signal.fuzz);
-    println!("{}Width:   {:>17.4}", goto(RHS, y +  7), zgicabra.signal.width);
-    println!("{}Thump:   {:>17.4}", goto(RHS, y +  8), zgicabra.signal.thump);
-    println!("{}Level:   {:>17.4}", goto(RHS, y +  9), zgicabra.signal.level);
-    println!("{}Total:   {:>17.4}", goto(RHS, y + 10), zgicabra.trigger_total);
+    println!("{}Current: {:>17}",   goto(RHS, y + 3), format_note(zgicabra.note.current));
+    println!("{}Pitch:   {:>17.4}", goto(RHS, y + 4), zgicabra.note.bend);
+    println!("{}Filter:  {:>17.4}", goto(RHS, y + 5), zgicabra.signal.filter);
+    println!("{}Width:   {:>17.4}", goto(RHS, y + 6), zgicabra.signal.width);
+    println!("{}Aux:     {:>17.4}", goto(RHS, y + 7), zgicabra.signal.aux);
+    println!("{}Level:   {:>17.4}", goto(RHS, y + 8), zgicabra.signal.level);
+    println!("{}Total:   {:>17.4}", goto(RHS, y + 9), zgicabra.trigger_total);
 
     let default_color = termion::color::Fg(termion::color::White);
 

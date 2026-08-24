@@ -189,6 +189,7 @@ pub struct ReeseVoice {
     #[live(range = 0.0..5.0)]    pub lfo_rate_live:   Shared,
     #[live(range = 0.0..200.0)]  pub detune_live:     Shared,
     #[live(range = 0.0..6000.0)] pub cutoff_live:     Shared,
+    #[live(range = 0.0..1.0)]    pub loop_gain_live: Shared,
 
     impact_player:           An<SamplePlayer>,
     #[node] impact_env:      An<AFollow<f64>>, // tracks impact sample's amplitude, drives cutoff/drive pop
@@ -275,6 +276,7 @@ impl ReeseVoice {
             lfo_rate_live:   shared(0.0),
             detune_live:     shared(0.0),
             cutoff_live:     shared(0.0),
+            loop_gain_live:  shared(0.0),
 
             impact_player:       load_impact_player(),
             impact_env:          afollow(IMPACT_ENV_ATTACK, IMPACT_ENV_RELEASE),
@@ -305,29 +307,18 @@ impl VoiceDsp for ReeseVoice {
             * (1.0 + WIDTH_TO_DETUNE * width_signal);
         self.detune_live.set_value(detune);
 
-        // xorshift32, advanced every sample -- cheap source of per-note
-        // randomness for which feedback mode gets picked on the next attack.
         let trigger = self.impact_trigger.value();
         if trigger != self.impact_trigger_seen {
             self.impact_trigger_seen = trigger;
             self.impact_player.reset();
-
-            // Fresh pluck mutes any ringing feedback loop -- hand back on
-            // the strings.
             self.feedback_loop_l = 0.0;
             self.feedback_loop_r = 0.0;
         }
 
-        // Delay/decay time halves per octave above DELAY_ENV_REF_FREQ. Gates
-        // the stutter layer below.
         let octaves   = (freq / DELAY_ENV_REF_FREQ).log2();
         let delay_sec = (DELAY_ENV_BASE_SEC * DELAY_ENV_OCTAVE_FACTOR.powf(octaves)).max(DELAY_ENV_MIN_SEC);
         self.delay_env_live.set_value(self.delay_env.tick(trigger, delay_sec));
 
-        // Raw impact sample plus its tracked envelope -- the envelope drives
-        // the cutoff/drive pops below, the raw sample gets folded into the
-        // pre-drive mix so it shares the synth's saturation and filter sweep
-        // rather than sitting on top as a separate dry layer.
         let impact_raw = self.impact_player.get_mono() * self.impact_level_input.value() * self.sig.thump.value();
         let impact_env = self.impact_env.filter_mono(impact_raw.abs());
 
@@ -347,7 +338,6 @@ impl VoiceDsp for ReeseVoice {
         mix_l *= norm;
         mix_r *= norm;
 
-        // Sub layer stays unpanned/centered -- keeps the low end mono-compatible.
         let sub_ratio = SUB_RATIO * cents_to_ratio(SUB_DETUNE_CENTS);
         let sub = self.sub.filter_mono(freq * sub_ratio) * self.sub_level_input.value();
         mix_l += sub;
@@ -360,33 +350,12 @@ impl VoiceDsp for ReeseVoice {
         mix_l += stutter;
         mix_r += stutter;
 
-        // Envelope gates the dry voice only -- applied here, not at the final
-        // output -- so the feedback loop added below can stay alive and
-        // audible through the compressor even while no note is held.
         let note_env = self.sig.env.value();
         mix_l *= note_env;
         mix_r *= note_env;
 
-        // Real (well, realer) feedback: one resonant "string" mode per
-        // channel, closed into a loop through its own NAM pass and cab-IR
-        // convolution (feedback_loop_l/r holds last sample's output, fed
-        // back in as this sample's extra excitation -- see the trigger
-        // block above for the note-attack reset). Fixed at FEEDBACK_MODE_
-        // OCTAVE above the note (no jump/pick) so it punctuates a played
-        // note at the same predictable pitch every time. Swell/plateau are
-        // still emergent from loop gain, not authored:
-        //  - below unity gain the loop always decays back to silence
-        //  - above it, the loop self-sustains and grows until the tanh
-        //    safety clamp (plus the NAM's own saturation) caps it
-        // feedback_attn is that loop gain, 0..FEEDBACK_LOOP_GAIN_MAX -- the
-        // "how close to the amp" knob.
-        //
-        // The loop keeps running off the dry (post note_env) signal the
-        // whole time -- excited while the note is held, still ringing as it
-        // decays -- but is only mixed in once the note itself has finished
-        // (the (1.0 - note_env) gate below), so it reads as punctuation
-        // after the note rather than a texture layered under it.
-        let loop_gain = self.feedback_attn.value() * FEEDBACK_LOOP_GAIN_MAX;
+        let loop_gain = self.feedback_attn.value() * self.sig.aux.value() * FEEDBACK_LOOP_GAIN_MAX;
+        self.loop_gain_live.set_value(loop_gain);
 
         let exciter_l = mix_l * FEEDBACK_EXCITE_LEVEL;
         let exciter_r = mix_r * FEEDBACK_EXCITE_LEVEL;
@@ -415,8 +384,6 @@ impl VoiceDsp for ReeseVoice {
         mix_l += self.feedback_loop_l * FEEDBACK_OUT_LEVEL * feedback_mix_gain;
         mix_r += self.feedback_loop_r * FEEDBACK_OUT_LEVEL * feedback_mix_gain;
 
-        // Live `fuzz` signal and the impact envelope both boost drive on top
-        // of the macro knob -- the kick's transient briefly adds extra grit.
         let drive = (self.drive_input.value()
             * (1.0 + 2.0 * self.sig.fuzz.value().clamp(0.0, 1.0))
             * (1.0 + IMPACT_DRIVE_POP * impact_env)).max(1.0);
@@ -424,8 +391,6 @@ impl VoiceDsp for ReeseVoice {
         let shaped_l = (mix_l * self.drive_live.value()).tanh();
         let shaped_r = (mix_r * self.drive_live.value()).tanh();
 
-        // Cutoff driven by the macro knob (scaled by live `filter` signal), the
-        // LFO, and a pop from the impact envelope that opens the filter on hit.
         let cutoff_base  = self.cutoff_input.value() * 2f32.powf(lfo_val * lfo_depth * LFO_DEPTH);
         let cutoff_hz  = (linexp(0.0, 1.0, CUTOFF_LO, CUTOFF_HI, cutoff_base * (1.0 + FILTER_TO_CUTOFF * self.sig.filter.value())) + IMPACT_CUTOFF_POP * impact_env).clamp(20.0, 18_000.0);
         self.cutoff_live.set_value(cutoff_hz);

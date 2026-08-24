@@ -15,34 +15,31 @@ use crate::zgicabra::SignalState;
 
 #[derive(Clone)]
 pub struct SharedSignal {
-    pub level:        Shared,
-    pub bend:         Shared,
-    pub filter:       Shared,
-    pub fuzz:         Shared,
-    pub width:        Shared,
-    pub thump:        Shared,
-    pub velocity:     Shared,
-    pub acceleration: Shared,
-
-    // Current-sample ADSR value, written by Engine::tick each sample (before
-    // voices render) -- lets a voice's own DSP (e.g. ReeseVoice's crusher)
-    // see the note's attack/release transient, which Engine's own post-voice
-    // env multiply happens too late for.
-    pub env: Shared,
+    pub level:  Shared,
+    pub bend:   Shared,
+    pub filter: Shared,
+    pub fuzz:   Shared,
+    pub width:  Shared,
+    pub thump:  Shared,
+    pub vel:    Shared,
+    pub acc:    Shared,
+    pub aux:    Shared,
+    pub env:    Shared, // Unique
 }
 
 impl SharedSignal {
     pub fn new () -> SharedSignal {
         SharedSignal {
-            level:        shared(0.0),
-            bend:         shared(0.0),
-            filter:       shared(0.0),
-            fuzz:         shared(0.0),
-            width:        shared(0.0),
-            thump:        shared(0.0),
-            velocity:     shared(0.0),
-            acceleration: shared(0.0),
-            env:          shared(0.0),
+            level:  shared(0.0),
+            bend:   shared(0.0),
+            filter: shared(0.0),
+            fuzz:   shared(0.0),
+            width:  shared(0.0),
+            thump:  shared(0.0),
+            vel:    shared(0.0),
+            acc:    shared(0.0),
+            aux:    shared(0.0),
+            env:    shared(0.0),
         }
     }
 
@@ -55,7 +52,8 @@ impl SharedSignal {
         self.fuzz.set_value(signal.fuzz);
         self.width.set_value(signal.width);
         self.thump.set_value(signal.thump);
-        self.velocity.set_value(signal.velocity);
-        self.acceleration.set_value(signal.acceleration);
+        self.vel.set_value(signal.vel);
+        self.acc.set_value(signal.acc);
+        self.aux.set_value(signal.aux);
     }
 }

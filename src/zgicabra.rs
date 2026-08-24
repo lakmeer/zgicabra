@@ -170,8 +170,9 @@ pub struct SignalState {
     pub fuzz:         f32,
     pub width:        f32,
     pub thump:        f32,
-    pub velocity:     f32,
-    pub acceleration: f32,
+    pub vel:          f32,
+    pub acc:          f32,
+    pub aux:          f32,
 }
 
 impl SignalState {
@@ -183,8 +184,9 @@ impl SignalState {
             fuzz:         0.0,
             width:        0.0,
             thump:        0.0,
-            velocity:     0.0,
-            acceleration: 0.0,
+            vel:          0.0,
+            acc:          0.0,
+            aux:          0.0,
         }
     }
 }
@@ -338,6 +340,13 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
 
     if curr_state.trigger_total == 0.0 {
         curr_state.most_recent_wand = Hand::Neither;
+    }
+
+    // Bumpers
+
+    curr_state.signal.aux = 0.0;
+    if curr_state.left.bumper || curr_state.right.bumper {
+        curr_state.signal.aux = 1.0;
     }
 
 
@@ -512,8 +521,8 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
         };
 
     // Whichever wand is moving/accelerating harder, not just most-recently-triggered.
-    curr_state.signal.velocity     = curr_state.left.scalar_vel.max(curr_state.right.scalar_vel);
-    curr_state.signal.acceleration = curr_state.left.scalar_acc.max(curr_state.right.scalar_acc);
+    curr_state.signal.vel = curr_state.left.scalar_vel.max(curr_state.right.scalar_vel);
+    curr_state.signal.acc = curr_state.left.scalar_acc.max(curr_state.right.scalar_acc);
 
 }
 
