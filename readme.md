@@ -43,12 +43,12 @@ that adds an alternative grub entry for full desktop development.
 
 ### Vital Synth
 
-Part of the audio chain is derived from the [Vital](https://github.com/mtytel/vital),
+Part of the audio chain is derived from [Vital](https://github.com/mtytel/vital),
 which is GPL3. While this repo doesn't contain any source code from Vital, some
 internal algorithms were directly adapted from the original Vital codebase. In
 accordance with Vital's [readme](https://github.com/mtytel/vital#what-can-you-do-with-the-source)
 file, this project is not distributed in an app store, does not use any of the
-Vital trademarks for marketing, connect to any the mentioned online services,
+Vital trademarks for marketing, connect to any of the mentioned online services,
 or redistribute any of its built-in presets. Projects forked from this one
 should adhere to the same restrictions.
 
