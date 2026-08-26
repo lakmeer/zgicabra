@@ -11,7 +11,7 @@ use super::swarm::SwarmVoice;
 use super::reese::ReeseVoice;
 use super::basic::BasicVoice;
 use super::cc_input::CcInput;
-use super::crusher::crusher;
+use super::crusher::{crusher, LOW_MID_HZ, MID_HIGH_HZ};
 use super::nam;
 
 pub use super::growl::GrowlView;
@@ -150,8 +150,8 @@ impl Engine {
             main_sub_lvl,
             dry_sub_lvl,
 
-            crusher_l: Box::new(crusher(&shared(MASTER_CRUSH_DEPTH), shared(0.0), shared(0.0), shared(0.0))),
-            crusher_r: Box::new(crusher(&shared(MASTER_CRUSH_DEPTH), shared(0.0), shared(0.0), shared(0.0))),
+            crusher_l: Box::new(crusher(&shared(MASTER_CRUSH_DEPTH), shared(LOW_MID_HZ), shared(MID_HIGH_HZ), shared(0.0), shared(0.0), shared(0.0))),
+            crusher_r: Box::new(crusher(&shared(MASTER_CRUSH_DEPTH), shared(LOW_MID_HZ), shared(MID_HIGH_HZ), shared(0.0), shared(0.0), shared(0.0))),
 
             reverb: Box::new(reverb_stereo(reverb_size, reverb_decay, reverb_damp)), reverb_bypass, reverb_dry,
 

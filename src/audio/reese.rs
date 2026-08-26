@@ -17,7 +17,7 @@ use zgicabra_voice_macro::Voice;
 use crate::tools::linexp;
 use super::signal::SharedSignal;
 use super::voice::{Voice, VoiceDsp, ThumpMod};
-use super::crusher::crusher;
+use super::crusher::{crusher, LOW_MID_HZ, MID_HIGH_HZ};
 use super::sample::{Sample, SamplePlayer, play_sample};
 use super::stutter::stutter;
 use super::nam::load_named_model;
@@ -284,8 +284,8 @@ impl ReeseVoice {
             impact_trigger_seen: thump_trigger.value(),
             impact_level_input:  shared(1.0),
 
-            crusher_l: Box::new(crusher(&shared(1.0), crush_env_live.clone(), crush_out_live.clone(), crush_gr_live.clone(),)),
-            crusher_r: Box::new(crusher(&shared(1.0), shared(0.0), shared(0.0), shared(0.0),)),
+            crusher_l: Box::new(crusher(&shared(1.0), shared(LOW_MID_HZ), shared(MID_HIGH_HZ), crush_env_live.clone(), crush_out_live.clone(), crush_gr_live.clone(),)),
+            crusher_r: Box::new(crusher(&shared(1.0), shared(LOW_MID_HZ), shared(MID_HIGH_HZ), shared(0.0), shared(0.0), shared(0.0),)),
 
             crush_env_live, crush_out_live, crush_gr_live,
 

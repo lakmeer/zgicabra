@@ -36,7 +36,7 @@ use super::nam::{NamModelCycler, NamModelSlot};
 use super::nam_graph::nam_mid_side;
 use super::nam_node::NAM_WINDOW;
 use super::filter::MoogFilterFx;
-use super::crusher::crusher;
+use super::crusher::{crusher, LOW_MID_HZ, MID_HIGH_HZ};
 
 const NUM_OSCS: usize = 5;
 
@@ -139,6 +139,7 @@ impl ChannelChain {
             moog:    MoogFilterFx::new(),
             crusher: Box::new(crusher(
                 &shared(CRUSH_DEPTH),
+                shared(LOW_MID_HZ), shared(MID_HIGH_HZ),
                 shared(0.0), shared(0.0), shared(0.0),
             )),
         }

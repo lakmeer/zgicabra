@@ -6,8 +6,8 @@
 
 use fundsp::prelude64::*;
 
-const LOW_MID_HZ:  f32 = 88.3;   // Xfer OTT's low/mid crossover default
-const MID_HIGH_HZ: f32 = 2500.0; // Xfer OTT's mid/high crossover default
+pub const LOW_MID_HZ:  f32 = 88.3;   // Xfer OTT's low/mid crossover default
+pub const MID_HIGH_HZ: f32 = 2500.0; // Xfer OTT's mid/high crossover default
 
 pub const CRUSH_THRESHOLD:  f32 = -12.0; // dB, fixed
 const CRUSH_RELEASE:        f32 = 0.12;
@@ -141,7 +141,7 @@ pub fn crusher (
     let low_freq      = low_freq.value();
     let high_freq     = high_freq.value();
     let mid_freq: f32 = (low_freq * high_freq).sqrt();
-    let filter_q: f32 = mod_freq / (high_freq - low_freq);
+    let filter_q: f32 = mid_freq / (high_freq - low_freq);
     (
       (   (lowpass_hz(low_freq,   filter_q) >> crush_band(depth))
         & (bandpass_hz(mid_freq,  filter_q) >> crush_band(depth))
