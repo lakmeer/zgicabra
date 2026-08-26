@@ -113,52 +113,39 @@ fn crush_band (
     // Branch the signal: pass() carries x through untouched, the other arm
     // rectifies and follows it into an envelope. Recombined as [x, env].
     (pass() ^ (map(|f: &Frame<f32, U1>| f[0].abs().max(1e-6)) >> afollow(CRUSH_ATTACK, CRUSH_RELEASE)))
+        // [ Raw sample, Envelope ] -> [ Corrected sample ]
         >> map(move |f: &Frame<f32, U2>| {
             let (x, env) = (f[0], f[1]);
             let env_db = amp_db(env);
 
-            // depth interpolates each ratio from 1.0 (bypassed) to its
-            // configured maximum, scaling both stages by the same amount.
             let d  = depth.value().clamp(0.0, 1.0);
-            let rd = (1.0 + (CRUSH_RATIO_DOWN - 1.0) * d).max(1.0);
-            let ru = (1.0 + (CRUSH_RATIO_UP   - 1.0) * d).max(1.0);
+            let rat_dn = (1.0 + (CRUSH_RATIO_DOWN - 1.0) * d).max(1.0);
+            let rat_up = (1.0 + (CRUSH_RATIO_UP   - 1.0) * d).max(1.0);
 
-            // Downward: pull loud signal toward threshold_down.
-            let gain_down_db = if env_db > CRUSH_THRESHOLD {
-                (CRUSH_THRESHOLD - env_db) * (1.0 - 1.0 / rd)
-            } else { 0.0 };
+            let gain_dn_db = if env_db > CRUSH_THRESHOLD { (CRUSH_THRESHOLD - env_db) * (1.0 - 1.0 / rat_dn) } else { 0.0 };
+            let gain_up_db = if env_db < CRUSH_THRESHOLD { (CRUSH_THRESHOLD - env_db) * (1.0 - 1.0 / rat_up) } else { 0.0 };
 
-            // Upward: push quiet signal toward threshold.
-            let gain_up_db = if env_db < CRUSH_THRESHOLD {
-                (CRUSH_THRESHOLD - env_db) * (1.0 - 1.0 / ru)
-            } else { 0.0 };
-
-            x * db_amp(gain_down_db + gain_up_db + CRUSH_MAKEUP_DB)
+            x * db_amp(gain_dn_db + gain_up_db + CRUSH_MAKEUP_DB)
         })
 }
 
-// The full graph: 1 in, 1 out. meter_env/meter_out/meter_gr are written
-// every tick for ui/comp_meter.rs. depth is read live every tick from a
-// Shared -- pass one driven by a CC/live macro, or `&shared(1.0)` for a
-// fixed-depth caller.
-//
-// Drop this straight into a `>>`/`|`/`^` expression, or box it into a
-// `Box<dyn AudioUnit>` field to store long-term -- same pattern as
-// nam_graph's nodes (see growl.rs's `nam` field).
 #[allow(clippy::too_many_arguments)]
 pub fn crusher (
-    depth: &Shared,
+    depth:    &Shared,
+    low_freq:  Shared,
+    high_freq: Shared,
     meter_env: Shared,
     meter_out: Shared,
-    meter_gr: Shared,
+    meter_gr:  Shared,
 ) -> An<impl AudioNode<Inputs = U1, Outputs = U1>> {
-    let center_hz: f32 = (LOW_MID_HZ * MID_HIGH_HZ).sqrt();
-    let filter_q:  f32 = center_hz / (MID_HIGH_HZ - LOW_MID_HZ);
-
+    let low_freq      = low_freq.value();
+    let high_freq     = high_freq.value();
+    let mid_freq: f32 = (low_freq * high_freq).sqrt();
+    let filter_q: f32 = mod_freq / (high_freq - low_freq);
     (
-      (   (lowpass_hz(LOW_MID_HZ,   filter_q) >> crush_band(depth))
-        & (bandpass_hz(center_hz,   filter_q) >> crush_band(depth))
-        & (highpass_hz(MID_HIGH_HZ, filter_q) >> crush_band(depth))
+      (   (lowpass_hz(low_freq,   filter_q) >> crush_band(depth))
+        & (bandpass_hz(mid_freq,  filter_q) >> crush_band(depth))
+        & (highpass_hz(high_freq, filter_q) >> crush_band(depth))
       ) ^ pass()
     )
     >> An(GrMeter::new(meter_env, meter_out, meter_gr))
