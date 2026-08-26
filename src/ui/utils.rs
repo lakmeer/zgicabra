@@ -116,10 +116,10 @@ fn rand_barcode_char_as_str (solid: bool) -> char {
     }
 }
 
-pub fn barcode_string (len: usize, solid: bool) -> String {
+pub fn barcode_string (len: u16, buzz: bool) -> String {
     let mut s = String::new();
     for _ in 0..len {
-        s.push(rand_barcode_char_as_str(solid));
+        s.push(rand_barcode_char_as_str(buzz));
     }
     s
 }

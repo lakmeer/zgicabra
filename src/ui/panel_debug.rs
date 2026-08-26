@@ -40,34 +40,35 @@ pub fn draw_debug_panel (y: u16, zgicabra: &Zgicabra, history: &Vec<Zgicabra>, d
     DELTAS_CONSUMED.set(delta_history.len());
 
     if SHOW_SPECTRUM.get() {
-        draw_spectrum(RHS as u32 - 4, 23, y, audio);
+        draw_spectrum(RHS as u32 - 5, 15, y, audio);
     } else {
-        draw_graph(RHS as u32 - 4, 23, y, &history);
+        draw_graph(RHS as u32 - 5, 15, y, &history);
     }
 
-    println!("{}Current: {:>17}",   goto(RHS, y + 3), format_note(zgicabra.note.current));
-    println!("{}Pitch:   {:>17.4}", goto(RHS, y + 4), zgicabra.note.bend);
-    println!("{}Filter:  {:>17.4}", goto(RHS, y + 5), zgicabra.signal.filter);
-    println!("{}Width:   {:>17.4}", goto(RHS, y + 6), zgicabra.signal.width);
-    println!("{}Aux:     {:>17.4}", goto(RHS, y + 7), zgicabra.signal.aux);
-    println!("{}Level:   {:>17.4}", goto(RHS, y + 8), zgicabra.signal.level);
-    println!("{}Total:   {:>17.4}", goto(RHS, y + 9), zgicabra.trigger_total);
+    println!("{}Current: {:>17}",   goto(RHS, y + 2), format_note(zgicabra.note.current));
+    println!("{}Pitch:   {:>17.4}", goto(RHS, y + 3), zgicabra.note.bend);
+    println!("{}Filter:  {:>17.4}", goto(RHS, y + 4), zgicabra.signal.filter);
+    println!("{}Width:   {:>17.4}", goto(RHS, y + 5), zgicabra.signal.width);
+    println!("{}Aux:     {:>17.4}", goto(RHS, y + 6), zgicabra.signal.aux);
+    println!("{}Level:   {:>17.4}", goto(RHS, y + 7), zgicabra.signal.level);
+    println!("{}Total:   {:>17.4}", goto(RHS, y + 8), zgicabra.trigger_total);
 
     let default_color = termion::color::Fg(termion::color::White);
 
     print!("{}{}", goto(RHS, y), default_color);
 
-    print!("{}[{:>5.2} {:>5.2} {:>5.2} {:>5.2} ]", goto(RHS, y + 12), 
+    print!("{}[{:>5.2} {:>5.2} {:>5.2} {:>5.2} ]", goto(RHS, y + 10),
         zgicabra.left.rot[0],
         zgicabra.left.rot[1],
         zgicabra.left.rot[2],
         zgicabra.left.rot[3]);
-    print!("{}[{:>5.2} {:>5.2} {:>5.2} {:>5.2} ]", goto(RHS, y + 13), 
+    print!("{}[{:>5.2} {:>5.2} {:>5.2} {:>5.2} ]", goto(RHS, y + 11),
         zgicabra.right.rot[0],
         zgicabra.right.rot[1],
         zgicabra.right.rot[2],
         zgicabra.right.rot[3]);
 
+    /*
     for row in 0..10 {
         println!("{}{}", goto(RHS, y + 15 + row as u16), " ".repeat(25));
         let color = if row == 0 { fg(tw::WHITE) } else { fg(tw::SLATE_500) };
@@ -76,20 +77,18 @@ pub fn draw_debug_panel (y: u16, zgicabra: &Zgicabra, history: &Vec<Zgicabra>, d
             None    => println!("{}{}- ",     goto(RHS, y + 15 + row as u16), color),
         }
     }
+    */
 
     print!("{}{}", goto(RHS, y), default_color);
 }
 
-// FFT window. Must be a power of two (microfft requirement). At 48kHz this
-// is ~21ms of audio -- short enough to feel live, long enough for ~47Hz
-// bin resolution down at the low end of the band range below.
 const SPECTRUM_FFT_LEN: usize = 1024;
 const SPECTRUM_MIN_HZ:  f32   = 20.0;
 const SPECTRUM_MAX_HZ:  f32   = 16_000.0;
 
 fn draw_spectrum (w: u32, h: u32, y: u16, audio: &AudioHandles) {
     let px_w = w * 2;
-    let px_h = h * 4;
+    let px_h = h * 3;
 
     let mut canvas = Canvas::new(px_w, px_h);
     let raw = audio.capture.samples();
@@ -104,14 +103,9 @@ fn draw_spectrum (w: u32, h: u32, y: u16, audio: &AudioHandles) {
             *s *= w;
         }
 
-        // bins[0] packs DC (re) and Nyquist (im), not a normal magnitude --
-        // skipped below since band 0 already starts above bin index 0.
         let bins   = real_fft(&mut frame);
         let bin_hz = NAM_SAMPLE_RATE as f32 / SPECTRUM_FFT_LEN as f32;
 
-        // Unnormalized FFT magnitude for a full-scale input concentrated in
-        // one bin tops out around SPECTRUM_FFT_LEN; use that as the dB
-        // ceiling and give it 60dB of range down to the floor.
         let ceiling_db = 20.0 * (SPECTRUM_FFT_LEN as f32).log10();
         let floor_db   = ceiling_db - 60.0;
 

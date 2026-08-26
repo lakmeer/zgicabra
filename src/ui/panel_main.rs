@@ -220,9 +220,8 @@ fn delta_char (delta: f32) -> &'static str {
 
 pub fn draw_main_panel (y: u16, width: u16, zgicabra: &Zgicabra, audio: &AudioHandles) {
 
-    let text_height   : u16 = width / 4;
-    let canvas_width  : u16 = width * 2;
-    let canvas_height : u16 = text_height * 4;
+    let canvas_width  : u16 = width * 2 - 1;
+    let canvas_height : u16 = width - 6;
 
     let width_f  : f32 = canvas_width  as f32;
     let height_f : f32 = canvas_height as f32;
@@ -247,18 +246,10 @@ pub fn draw_main_panel (y: u16, width: u16, zgicabra: &Zgicabra, audio: &AudioHa
         draw_wand_fixed(&mut canvas, zgicabra.right, width_f*3.0/4.0, height_f/2.0, width_f/6.0);
     }
 
-    print!("{}{}", goto(1, y), &mut canvas.frame());
+    print!("{}{}", goto(1, y+1), &mut canvas.frame());
 
 
     // Header and sequence number
-
-    let banner_text = " zgicabra ";
-    let stripe_length = (width - banner_text.len() as u16) / 2;
-
-    print!("{}{}{}{}", goto(1,y),
-        barcode_string(stripe_length.into(), zgicabra.trigger_total == 0.0),
-        banner_text,
-        barcode_string(stripe_length.into(), zgicabra.trigger_total == 0.0));
 
     let phase = zgicabra.seq_num as usize % 128;
     let step = (phase * LEVELS.len() / 128).min(LEVELS.len() - 1);
