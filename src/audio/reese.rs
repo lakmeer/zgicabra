@@ -53,7 +53,7 @@ const DEFAULT_DETUNE:    f32 = 24.0; // unison spread, cents
 const DEFAULT_SUB_LEVEL: f32 = 0.5;
 const DEFAULT_DRIVE:     f32 = 3.0;  // pre-filter tanh saturation
 const DEFAULT_CUTOFF:    f32 = 0.6;
-const DEFAULT_RESONANCE: f32 = 1.2;  // filter Q
+const DEFAULT_RESONANCE: f32 = 2.2;  // filter Q
 const DEFAULT_LFO_RATE:  f32 = 0.3;
 const DEFAULT_LFO_DEPTH: f32 = 0.35;
 const DEFAULT_WIDTH:     f32 = 0.7;
@@ -69,45 +69,30 @@ const IMPACT_DRIVE_POP:   f32 = 1.5;    // extra drive multiplier at full impact
 
 const DEFAULT_CRUSH_DEPTH: f32 = 1.0;
 
-// Feedback emulator, real (well, realer) version: a resonant "string" mode
-// per channel, closed into a loop through its own NAM ("lowgain") amp pass
-// and a truncated slice of the cabinet IR (see load_feedback_ir below).
-// Pitch, swell rate, and plateau level are all emergent from loop gain
-// crossing unity rather than an authored envelope -- see render(). Two
-// independent NAM instances so L/R never share WaveNet dilation state (same
-// reasoning as nam_mid_side's lo/hi split, see nam_graph.rs).
-// Fixed, not picked/jumped -- the same octave above the note every time, so
-// the feedback reliably punctuates a played note at a predictable pitch
-// rather than landing somewhere different each time.
 const FEEDBACK_MODE_OCTAVE: f32 = 3.0;
-
 const FEEDBACK_NAM_MODEL: &str = "lowgain";
 
-static FEEDBACK_IR_SAMPLE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/wav/mesa_ir.wav"));
-const FEEDBACK_IR_SAMPLE_RATE: f64 = 48_000.0; // mesa_ir.wav's own rate -- matches NAM_SAMPLE_RATE, no resample needed
-const FEEDBACK_IR_LEN_SAMPLES: usize = 400; // ~8ms: the cab's early resonant character only -- the full ~0.5s IR tail would make the loop's timing a slap-delay instead of a Larsen-style loop
-
-// Truncated so the loop's round-trip is dominated by NAM's own inference
-// latency (NAM_WINDOW, ~10.7ms) plus this short cab-resonance slice --
-// together landing in the same ballpark as a real close-mic'd amp's
-// acoustic path length, rather than the IR's full reverberant tail.
-fn load_feedback_ir () -> Wave {
-    let sample = Sample::parse(FEEDBACK_IR_SAMPLE);
-    let len = std::cmp::min(sample.length(), FEEDBACK_IR_LEN_SAMPLES);
-    let data: Vec<f32> = (0..len).map(|i| sample.at(i)).collect();
-    Wave::from_samples(FEEDBACK_IR_SAMPLE_RATE, &data)
-}
-
+const FEEDBACK_IR_SAMPLE_RATE: f64 = 48_000.0;
+const FEEDBACK_IR_LEN_SAMPLES: usize = 400;
 const FEEDBACK_RES_BW_FRACTION: f32 = 0.015; // resonator bandwidth as a fraction of its center freq -- narrow enough to ring rather than pass broadband noise
 const FEEDBACK_EXCITE_LEVEL:    f32 = 0.2;   // how much of the dry (post note_env) voice signal continuously excites the resonator
 const FEEDBACK_LOOP_GAIN_MAX:   f32 = 1.8;   // loop gain at feedback_attn = 1 -- comfortably above unity so the top of the knob range can self-sustain
-const FEEDBACK_OUT_LEVEL:       f32 = 1.5;   // final mix trim for the loop output
+const FEEDBACK_OUT_LEVEL:       f32 = 1.0;   // final mix trim for the loop output
 
 const DELAY_ENV_ATTACK_SEC:    f32 = 0.0005; // near-instant, matches IMPACT_ENV_ATTACK
 const DELAY_ENV_BASE_SEC:      f32 = 1.0;    // delay/decay time at DELAY_ENV_REF_FREQ
 const DELAY_ENV_REF_FREQ:      f32 = 110.0;  // A2 -- octave reference for delay scaling
 const DELAY_ENV_OCTAVE_FACTOR: f32 = 0.5;    // delay time multiplier per octave above reference
 const DELAY_ENV_MIN_SEC:       f32 = 0.02;   // floor so it never hits zero/negative
+
+static FEEDBACK_IR_SAMPLE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/wav/mesa_ir.wav"));
+
+fn load_feedback_ir () -> Wave {
+    let sample = Sample::parse(FEEDBACK_IR_SAMPLE);
+    let len = std::cmp::min(sample.length(), FEEDBACK_IR_LEN_SAMPLES);
+    let data: Vec<f32> = (0..len).map(|i| sample.at(i)).collect();
+    Wave::from_samples(FEEDBACK_IR_SAMPLE_RATE, &data)
+}
 
 // Instant attack, then decays to 0 over `delay_sec` -- retriggers on every
 // edge of `trigger` (NoteStart, same trigger impact_player resets on).
@@ -179,11 +164,11 @@ pub struct ReeseVoice {
     #[knob(cc = "1", range = 0.0..50.0, set = |v| v * 50.0)]        pub detune_input:    Shared,
     #[knob(cc = "2", range = 0.0..1.0)]               pub sub_level_input: Shared,
     #[knob(cc = "3", range = 0.0..1.0)]               pub cutoff_input:    Shared,
-    #[knob(          range = 0.3..3.0,  set = |v| 0.3 + v * 2.7)]   pub resonance_input: Shared,
-    #[knob(cc = "4", range = 0.05..3.0, set = |v| 0.05 + v * 2.95)] pub lfo_rate_input:  Shared,
-    #[knob(cc = "5", range = 0.0..1.0)]               pub lfo_depth_input: Shared,
-    #[knob(cc = "6", range = 0.0..1.0,  default = 0.0)] pub stutter_level_input: Shared,
-    #[knob(cc = "7", range = 0.0..1.0,  default = 0.0)] pub feedback_attn: Shared, // feedback loop gain -- 0 is always inert; crosses unity (self-sustaining) partway up
+    #[knob(cc = "4", range = 0.3..3.0,  set = |v| 0.3 + v * 2.7)]   pub resonance_input: Shared,
+    #[knob(          range = 0.05..3.0, set = |v| 0.05 + v * 2.95)] pub lfo_rate_input:  Shared,
+    #[knob(          range = 0.0..1.0)]               pub lfo_depth_input: Shared,
+    #[knob(cc = "5", range = 0.0..1.0,  default = 0.0)] pub stutter_level_input: Shared,
+    #[knob(cc = "6", range = 0.0..1.0,  default = 0.0)] pub feedback_attn: Shared, // feedback loop gain -- 0 is always inert; crosses unity (self-sustaining) partway up
 
     #[live(range = 0.0..5.0)]    pub drive_live:      Shared,
     #[live(range = 0.0..5.0)]    pub lfo_rate_live:   Shared,

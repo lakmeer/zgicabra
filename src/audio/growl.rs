@@ -323,47 +323,10 @@ const DEFAULT_WARP:          f32 = 0.3;
 const DEFAULT_NAM_CROSSOVER: f32 = 0.0;
 const DEFAULT_PLUCK_LEVEL:   f32 = 1.0;
 
-const TRI_BASE_LEVEL:  f32 = 0.0;
-const TRI_FIFTH_LEVEL: f32 = 0.0;
-const TRI_FIFTH_RATIO: f32 = 1.4983071250770082; // equal-tempered perfect fifth (+7 semitones)
+const TRI_BASE_LEVEL:  f32 = 0.2;
+const TRI_FIFTH_LEVEL: f32 = 0.1;
+const TRI_FIFTH_RATIO: f32 = 1.5; // equal-tempered perfect fifth (+7 semitones)
 
-const TRI_ENV_SUSTAIN:   f32 = 0.3;  // decays to and holds at this fraction
-const TRI_ENV_DECAY_SEC: f32 = 0.3;
-
-// Retriggers off the same thump_trigger Shared as ThumpMod (bumped on every
-// note-on, see mod.rs), decaying 1.0 -> TRI_ENV_SUSTAIN over TRI_ENV_DECAY_SEC
-// then holding -- same -5*t/decay time-constant convention as ThumpMod.
-#[derive(Clone)]
-struct TriEnv {
-    trigger: Shared,
-    last_trigger:    f32,
-    elapsed_samples: f32,
-    sample_rate:     f32,
-}
-
-impl TriEnv {
-    fn new (trigger: Shared) -> TriEnv {
-        TriEnv { trigger, last_trigger: 0.0, elapsed_samples: 0.0, sample_rate: 44100.0 }
-    }
-
-    fn set_sample_rate (&mut self, sample_rate: f64) {
-        self.sample_rate = sample_rate as f32;
-    }
-
-    fn tick (&mut self) -> f32 {
-        let trigger = self.trigger.value();
-        if trigger != self.last_trigger {
-            self.last_trigger = trigger;
-            self.elapsed_samples = 0.0;
-        }
-
-        let t = self.elapsed_samples / self.sample_rate;
-        self.elapsed_samples += 1.0;
-
-        let decay = (-5.0 * t / TRI_ENV_DECAY_SEC).exp();
-        TRI_ENV_SUSTAIN + (1.0 - TRI_ENV_SUSTAIN) * decay
-    }
-}
 
 // Audio-thread owner: the real WavetableGen plus one Shared cell per
 // externally-visible param (GUI reads these read-only; MIDI CC, via
@@ -386,7 +349,6 @@ pub struct GrowlVoice {
 
     #[node] tri_base:  An<WaveSynth<U1>>,
     #[node] tri_fifth: An<WaveSynth<U1>>,
-    #[node] tri_env:   TriEnv,
 
     #[node] pluck: PluckPlayer,
     #[knob(range = 0.0..1.0)] pub pluck_level_input: Shared, // persisted, no CC of its own
@@ -426,9 +388,8 @@ impl GrowlVoice {
             nam,
             nam_blend,
 
-            tri_base:  triangle(),
-            tri_fifth: triangle(),
-            tri_env:   TriEnv::new(thump_trigger.clone()),
+            tri_base:  saw(),
+            tri_fifth: saw(),
 
             pluck:             PluckPlayer::new(load_pluck_wave(), thump_trigger.clone()),
             pluck_level_input: shared(DEFAULT_PLUCK_LEVEL),
@@ -463,9 +424,8 @@ impl VoiceDsp for GrowlVoice {
             freq, drive, self.filter_live.value(), space, self.warp_live.value(),
         );
 
-        let tri_env = self.tri_env.tick();
-        raw += self.tri_base.filter_mono(freq) * TRI_BASE_LEVEL * tri_env;
-        raw += self.tri_fifth.filter_mono(freq * TRI_FIFTH_RATIO) * TRI_FIFTH_LEVEL * tri_env;
+        raw += self.tri_base.filter_mono(freq) * TRI_BASE_LEVEL;
+        raw += self.tri_fifth.filter_mono(freq * TRI_FIFTH_RATIO) * TRI_FIFTH_LEVEL;
 
         raw += self.pluck.tick(freq) * self.pluck_level_input.value() * self.sig.thump.value();
 
@@ -475,7 +435,7 @@ impl VoiceDsp for GrowlVoice {
         let mut wet = [0.0f32];
         self.nam.tick(&[raw], &mut wet);
 
-        let out = wet[0] * self.sig.env.value();
+        let out = wet[0] * self.sig.env.value() * (1.0 - self.sig.aux.value());
         Frame::from([out, out])
     }
 }

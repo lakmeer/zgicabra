@@ -115,17 +115,14 @@ fn draw_reese_panel (y: u16, reese: &ReeseView) {
     draw_range_label(2, y +  2, true, "detune",    reese.detune_input.value(),  0.0, 100.0);
     draw_range_label(2, y +  3, true, "sub_level", reese.sub_level_input.value(), 0.0, 1.0);
     draw_range_label(2, y +  4, true, "cutoff",    reese.cutoff_input.value(),    0.0, 1.0);
-    draw_range_label(2, y +  5, true, "lfo_rate",  reese.lfo_rate_input.value(),  0.0, 1.0);
-    draw_range_label(2, y +  6, true, "lfo_depth", reese.lfo_depth_input.value(), 0.0, 1.0);
-    draw_range_label(2, y +  7, true, "stutter",   reese.stutter_level_input.value(), 0.0, 1.0);
-    draw_range_label(2, y +  8, true, "squeal",    reese.feedback_attn.value(), 0.0, 1.0);
+    draw_range_label(2, y +  5, true, "rez",       reese.resonance_input.value(),    0.0, 3.0);
+    draw_range_label(2, y +  6, true, "stutter",   reese.stutter_level_input.value(), 0.0, 1.0);
+    draw_range_label(2, y +  7, true, "squeal",    reese.feedback_attn.value(), 0.0, 1.0);
 
     draw_range_label(2, y + 10, false, "drive",     reese.drive_live.value(),     0.0, 5.0);
     draw_range_label(2, y + 11, false, "lfo_rate",  reese.lfo_rate_live.value(),  0.0, 5.0);
     draw_range_label(2, y + 12, false, "detune",    reese.detune_live.value(),  0.0, 200.0);
     draw_range_label(2, y + 13, false, "cutoff",    reese.cutoff_live.value(), 0.0, 6000.0);
-    draw_range_label(2, y + 14, false, "delay_env", reese.delay_env_live.value(), 0.0, 1.0);
-    draw_range_label(2, y + 15, false, "feedback",  reese.loop_gain_live.value(), 0.0, 1.0);
 
     let meter = render_compressor_meter(
         reese.crush_env_live.value(),
@@ -141,14 +138,13 @@ fn draw_reese_panel (y: u16, reese: &ReeseView) {
 //
 
 fn draw_growl_panel (y: u16, growl: &GrowlView) {
-    draw_range_label(2, y + 2, true, "bass_drive", growl.bass_drive_input.value(), 0.0, 1.0);
-    draw_range_label(2, y + 3, true, "filter",     growl.filter_input.value(), 0.0, 1.0);
-    draw_range_label(2, y + 4, true, "space",      growl.space_input.value(), 0.0, 1.0);
-    draw_range_label(2, y + 5, true, "warp",       growl.warp_input.value(), 0.0, 1.0);
-    draw_range_label(2, y + 6, true, "nam_xover",  growl.nam_crossover_input.value(), 0.0, 10000.0);
+    draw_range_label(2, y + 2, true, "bass_drive",  growl.bass_drive_input.value(), 0.0, 1.0);
+    draw_range_label(2, y + 3, true, "filter",      growl.filter_input.value(), 0.0, 1.0);
+    draw_range_label(2, y + 4, true, "warp",        growl.warp_input.value(), 0.0, 1.0);
+    draw_range_label(2, y + 5, true, "nam_xover",   growl.nam_crossover_input.value(), 0.0, 10000.0);
 
-    draw_range_label(2, y + 8, false, "filter",    growl.filter_live.value(), 0.0, 1.0);
-    draw_range_label(2, y + 9, false, "warp",      growl.warp_live.value(), 0.0, 1.0);
+    draw_range_label(2, y + 10, false, "filter",    growl.filter_live.value(), 0.0, 1.0);
+    draw_range_label(2, y + 11, false, "warp",      growl.warp_live.value(), 0.0, 1.0);
 }
 
 

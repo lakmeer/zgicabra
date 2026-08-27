@@ -1,9 +1,9 @@
 detune_input=50
-sub_level_input=1
+sub_level_input=0.8425197
 cutoff_input=0.18897638
-resonance_input=1.2354331
+resonance_input=2.447244
 lfo_rate_input=0.9791339
 lfo_depth_input=0.36220473
-stutter_level_input=1
-feedback_attn=0.38582677
+stutter_level_input=0.062992126
+feedback_attn=0.047244094
 impact_level_input=0.7480315

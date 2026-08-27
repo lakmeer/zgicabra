@@ -27,7 +27,7 @@ const TEXT_WIDTH : u16 = 76;
 const MAIN_PANEL_Y  : u16 = 1;
 const AUDIO_PANEL_Y : u16 = 23;
 const DEBUG_PANEL_Y : u16 = 44;
-const BOTTOM_Y      : u16 = 70;
+const BOTTOM_Y      : u16 = 58;
 
 pub fn draw_all (
     zgicabra: &Zgicabra,
@@ -39,7 +39,7 @@ pub fn draw_all (
     let banner_text = " zgicabra ";
     let stripe_length = (TEXT_WIDTH - banner_text.len() as u16) / 2;
 
-    print!("{}", fg(tw::WHITE));
+    print!("{}", FG_RESET);
 
     print!("{}{}{}{}", goto(1,1),
         barcode_string(stripe_length, buzz),
