@@ -141,6 +141,27 @@ pub struct Handles {
     pub out_level_peak_r: Shared,
     pub out_level_rms_l:  Shared,
     pub out_level_rms_r:  Shared,
+
+    pub engine_selected_knob: Shared,
+}
+
+impl Handles {
+    // Engine's own knob list (see engine::ENGINE_KNOB_RANGES) -- the ordered
+    // (name, cell, min, max) list the debug panel's knob display iterates,
+    // same shape as a *View's knobs() (see ui/panel_debug.rs).
+    pub fn engine_knobs (&self) -> Vec<(&'static str, Shared, f32, f32)> {
+        engine::ENGINE_KNOB_RANGES.iter().map(|&(name, min, max)| {
+            let cell = match name {
+                "master_vol"     => self.master_vol.clone(),
+                "limiter_thresh" => self.limiter_thresh.clone(),
+                "reverb_dry"     => self.reverb_dry.clone(),
+                "main_sub_lvl"   => self.main_sub_lvl.clone(),
+                "dry_sub_lvl"    => self.dry_sub_lvl.clone(),
+                _ => unreachable!("ENGINE_KNOB_RANGES entry with no matching Handles cell"),
+            };
+            (name, cell, min, max)
+        }).collect()
+    }
 }
 
 impl Handles {
@@ -198,6 +219,7 @@ pub struct AudioOutput {
     thump_trigger:     Shared,
 
     signal: SharedSignal,
+    cc_connected: bool,
 
     handles: Handles,
 
@@ -296,6 +318,8 @@ impl AudioOutput {
         let voice_dirty = engine.voice_dirty.clone();
         let (voice_a, voice_b, voice_c, voice_d) = engine.voice_views.clone();
         let voice_names = engine.voice_names();
+        let engine_selected_knob = engine.selected_knob.clone();
+        let cc_connected = engine.cc_input.connected();
 
         let handles = Handles {
             voice_selected: voice_selected.clone(),
@@ -326,6 +350,8 @@ impl AudioOutput {
             out_level_peak_r: out_level_peak_r.clone(),
             out_level_rms_l:  out_level_rms_l.clone(),
             out_level_rms_r:  out_level_rms_r.clone(),
+
+            engine_selected_knob,
         };
 
         // Load persisted voice state (see snapshot.rs's module doc) --
@@ -393,6 +419,7 @@ impl AudioOutput {
         Ok(AudioOutput {
             freq, gate, thump_trigger,
             signal,
+            cc_connected,
             handles,
             capture, errors, stream,
         })
@@ -465,16 +492,52 @@ where
                 if voice.index() == selected { voice.on_block_start(frames); }
             }
 
-            // Drain the CC ring buffer and retarget each message to
-            // whichever voice is currently selected -- switching voices
-            // mid-performance retargets subsequent CC messages, it
-            // doesn't replay queued ones onto the old voice.
+            // Drain the CC ring buffer -- the fixed 8-knob AKAI layout (see
+            // voice.rs's module doc): CC1-4 are the global filter/width/
+            // fuzz/thump signals (gated the same way SharedSignal::set()
+            // gates wand writes -- only applied if actually different, so
+            // whichever of wand/CC moved most recently wins); CC5/6 move
+            // the selected voice's own selected_knob/value; CC7/8 do the
+            // same for Engine's own knob list. Retargeted to whichever
+            // voice is currently selected -- switching voices mid-
+            // performance retargets subsequent CC5/6 messages, it doesn't
+            // replay queued ones onto the old voice.
             while let Some((cc, value)) = engine.cc_input.pop() {
-                crate::dbg!("audio::build_stream - applying CC {cc}={value} to voice index {selected}");
-                for voice in engine.voices.iter_mut() {
-                    if voice.index() == selected { voice.apply_cc(cc, value); }
+                crate::dbg!("audio::build_stream - CC {cc}={value} (selected voice index {selected})");
+                match cc {
+                    1 => { let s = &engine.signal; if value != s.filter.value() { s.filter.set_value(value); } },
+                    2 => { let s = &engine.signal; if value != s.width.value()  { s.width.set_value(value); } },
+                    3 => { let s = &engine.signal; if value != s.fuzz.value()   { s.fuzz.set_value(value); } },
+                    4 => { let s = &engine.signal; if value != s.thump.value()  { s.thump.set_value(value); } },
+                    5 => {
+                        for voice in engine.voices.iter_mut() {
+                            if voice.index() == selected {
+                                let idx = std::cmp::min((value * voice.knob_count() as f32).floor() as usize,
+                                    voice.knob_count().saturating_sub(1));
+                                voice.set_selected_knob(idx);
+                            }
+                        }
+                    },
+                    6 => {
+                        for voice in engine.voices.iter_mut() {
+                            if voice.index() == selected {
+                                let k = voice.selected_knob();
+                                voice.set_knob_value(k, value);
+                            }
+                        }
+                        if let Some(flag) = engine.voice_dirty.get(selected) { flag.store(true, Ordering::Relaxed); }
+                    },
+                    7 => {
+                        let idx = std::cmp::min((value * engine.knob_count() as f32).floor() as usize,
+                            engine.knob_count().saturating_sub(1));
+                        engine.set_selected_knob(idx);
+                    },
+                    8 => {
+                        let k = engine.selected_knob();
+                        engine.set_knob_value(k, value);
+                    },
+                    _ => {},
                 }
-                if let Some(flag) = engine.voice_dirty.get(selected) { flag.store(true, Ordering::Relaxed); }
             }
 
             for i in 0..frames {
@@ -497,7 +560,7 @@ impl AudioOutput {
     }
 
     pub fn handle_signal (&mut self, signal: &SignalState) {
-        self.signal.set(signal);
+        self.signal.set(signal, self.cc_connected);
     }
 
     pub fn handle_event (&mut self, delta: &DeltaEvent) {

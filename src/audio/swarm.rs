@@ -31,7 +31,7 @@ use zgicabra_voice_macro::Voice;
 
 use crate::tools::linexp;
 use super::signal::SharedSignal;
-use super::voice::{Voice, VoiceDsp, ThumpMod};
+use super::voice::{Voice, VoiceDsp, ThumpMod, KnobPickup};
 use super::nam::{NamModelCycler, NamModelSlot};
 use super::nam_graph::nam_mid_side;
 use super::nam_node::NAM_WINDOW;
@@ -184,11 +184,11 @@ pub struct SwarmVoice {
     // Dry/wet, written from sig.fuzz each sample -- the graph reads it.
     nam_blend: Shared,
 
-    #[knob(cc = "1", range = 0.5..1.0,    set = |v| 0.5 + v * 0.5)] pub chase_factor_input: Shared,
-    #[knob(cc = "2", range = 0.0..200.0,  set = |v| v * 200.0)]     pub radius_input:       Shared,
-    #[knob(cc = "3", range = 0.0..2.0,    set = |v| v * 2.0)]       pub orbit_speed_input:  Shared,
-    #[knob(cc = "4", range = 0.0..1.0)]             pub phaser_depth_input: Shared,
-    #[knob(cc = "5", range = 0.0..2000.0, set = |v| v * 2000.0)]    pub xover_freq_input:   Shared,
+    #[knob(range = 0.5..1.0,    set = |v| 0.5 + v * 0.5)] pub chase_factor_input: Shared,
+    #[knob(range = 0.0..200.0,  set = |v| v * 200.0)]     pub radius_input:       Shared,
+    #[knob(range = 0.0..2.0,    set = |v| v * 2.0)]       pub orbit_speed_input:  Shared,
+    #[knob(range = 0.0..1.0)]             pub phaser_depth_input: Shared,
+    #[knob(range = 0.0..2000.0, set = |v| v * 2000.0)]    pub xover_freq_input:   Shared,
     #[view] pub nam_lo: NamModelCycler,
     #[view] pub nam_hi: NamModelCycler,
 
@@ -209,6 +209,9 @@ pub struct SwarmVoice {
     #[live(range = 0.0..2000.0)] pub origin_live: Shared,
 
     sample_rate: f32,
+
+    selected_knob: Shared,
+    knob_pickup:   KnobPickup,
 
     thump: ThumpMod,
     sig:   SharedSignal,
@@ -291,6 +294,10 @@ impl SwarmVoice {
             origin_live:   shared(110.0),
 
             sample_rate: DEFAULT_SR as f32,
+
+            selected_knob: shared(0.0),
+            knob_pickup:   KnobPickup::new(),
+
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
             sig:   signal,
         }

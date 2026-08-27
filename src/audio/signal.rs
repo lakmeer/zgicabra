@@ -44,14 +44,27 @@ impl SharedSignal {
     }
 
     // Called once per hydra tick (main.rs's run_engine_loop) with the
-    // latest control-thread snapshot.
-    pub fn set (&self, signal: &SignalState) {
+    // latest control-thread snapshot. `cc_connected` is whether an 8-knob
+    // controller is attached (see audio::cc_input) -- when it is, CC1-4
+    // write filter/width/fuzz/thump straight into these same cells from the
+    // audio thread (see build_stream), so wand tracking here only wins the
+    // tick if it actually produced a new value; a static wand reading
+    // leaves whatever the controller last set alone. When no controller is
+    // connected, wand tracking always wins, same as before this existed.
+    pub fn set (&self, signal: &SignalState, cc_connected: bool) {
         self.level.set_value(signal.level);
         self.bend.set_value(signal.bend);
-        self.filter.set_value(signal.filter);
-        self.fuzz.set_value(signal.fuzz);
-        self.width.set_value(signal.width);
-        self.thump.set_value(signal.thump);
+        if cc_connected {
+            if signal.filter != self.filter.value() { self.filter.set_value(signal.filter); }
+            if signal.fuzz   != self.fuzz.value()   { self.fuzz.set_value(signal.fuzz); }
+            if signal.width  != self.width.value()  { self.width.set_value(signal.width); }
+            if signal.thump  != self.thump.value()  { self.thump.set_value(signal.thump); }
+        } else {
+            self.filter.set_value(signal.filter);
+            self.fuzz.set_value(signal.fuzz);
+            self.width.set_value(signal.width);
+            self.thump.set_value(signal.thump);
+        }
         self.vel.set_value(signal.vel);
         self.acc.set_value(signal.acc);
         self.aux.set_value(signal.aux);

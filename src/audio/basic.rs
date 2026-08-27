@@ -14,7 +14,7 @@ use zgicabra_voice_macro::Voice;
 
 use super::stutter::stutter;
 use super::signal::SharedSignal;
-use super::voice::{Voice, VoiceDsp, ThumpMod};
+use super::voice::{Voice, VoiceDsp, ThumpMod, KnobPickup};
 
 #[derive(Clone, Voice)]
 #[voice(index = 2, label = "Basic")]
@@ -26,12 +26,15 @@ pub struct BasicVoice {
 
     #[node(init = stutter())]   stutter: An<Unit<U1, U1>>,
 
-    #[knob(cc = "1", range = 0.0..1.0,  default = 0.25)] pub sin_level:     Shared,
-    #[knob(cc = "2", range = 0.0..1.0,  default = 0.25)] pub tri_level:     Shared,
-    #[knob(cc = "3", range = 0.0..1.0,  default = 0.25)] pub square_level:  Shared,
-    #[knob(cc = "4", range = 0.0..1.0,  default = 0.25)] pub saw_level:     Shared,
-    #[knob(cc = "5", range = 1.0..1.0,  default = 0.25)] pub stutter_level: Shared,
-    #[knob(cc = "6", range = 1.0..10.0, set = |v| 1.0 + v*9.0, default = 1.0)]  pub saturation:    Shared,
+    #[knob(range = 0.0..1.0,  default = 0.25)] pub sin_level:     Shared,
+    #[knob(range = 0.0..1.0,  default = 0.25)] pub tri_level:     Shared,
+    #[knob(range = 0.0..1.0,  default = 0.25)] pub square_level:  Shared,
+    #[knob(range = 0.0..1.0,  default = 0.25)] pub saw_level:     Shared,
+    #[knob(range = 1.0..1.0,  default = 0.25)] pub stutter_level: Shared,
+    #[knob(range = 1.0..10.0, set = |v| 1.0 + v*9.0, default = 1.0)]  pub saturation:    Shared,
+
+    selected_knob: Shared,
+    knob_pickup:   KnobPickup,
 
     thump: ThumpMod,
     sig:   SharedSignal,

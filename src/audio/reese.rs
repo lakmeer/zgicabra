@@ -16,7 +16,7 @@ use zgicabra_voice_macro::Voice;
 
 use crate::tools::linexp;
 use super::signal::SharedSignal;
-use super::voice::{Voice, VoiceDsp, ThumpMod};
+use super::voice::{Voice, VoiceDsp, ThumpMod, KnobPickup};
 use super::crusher::{crusher, LOW_MID_HZ, MID_HIGH_HZ};
 use super::sample::{Sample, SamplePlayer, play_sample};
 use super::stutter::stutter;
@@ -161,14 +161,14 @@ pub struct ReeseVoice {
     #[node] filter_r: An<Svf<f64, LowpassMode<f64>>>,
 
     drive_input:                                                      Shared,
-    #[knob(cc = "1", range = 0.0..50.0, set = |v| v * 50.0)]        pub detune_input:    Shared,
-    #[knob(cc = "2", range = 0.0..1.0)]               pub sub_level_input: Shared,
-    #[knob(cc = "3", range = 0.0..1.0)]               pub cutoff_input:    Shared,
-    #[knob(cc = "4", range = 0.3..3.0,  set = |v| 0.3 + v * 2.7)]   pub resonance_input: Shared,
-    #[knob(          range = 0.05..3.0, set = |v| 0.05 + v * 2.95)] pub lfo_rate_input:  Shared,
-    #[knob(          range = 0.0..1.0)]               pub lfo_depth_input: Shared,
-    #[knob(cc = "5", range = 0.0..1.0,  default = 0.0)] pub stutter_level_input: Shared,
-    #[knob(cc = "6", range = 0.0..1.0,  default = 0.0)] pub feedback_attn: Shared, // feedback loop gain -- 0 is always inert; crosses unity (self-sustaining) partway up
+    #[knob(range = 0.0..50.0, set = |v| v * 50.0)]        pub detune_input:    Shared,
+    #[knob(range = 0.0..1.0)]               pub sub_level_input: Shared,
+    #[knob(range = 0.0..1.0)]               pub cutoff_input:    Shared,
+    #[knob(range = 0.3..3.0,  set = |v| 0.3 + v * 2.7)]   pub resonance_input: Shared,
+    #[knob(range = 0.05..3.0, set = |v| 0.05 + v * 2.95)] pub lfo_rate_input:  Shared,
+    #[knob(range = 0.0..1.0)]               pub lfo_depth_input: Shared,
+    #[knob(range = 0.0..1.0,  default = 0.0)] pub stutter_level_input: Shared,
+    #[knob(range = 0.0..1.0,  default = 0.0)] pub feedback_attn: Shared, // feedback loop gain -- 0 is always inert; crosses unity (self-sustaining) partway up
 
     #[live(range = 0.0..5.0)]    pub drive_live:      Shared,
     #[live(range = 0.0..5.0)]    pub lfo_rate_live:   Shared,
@@ -188,6 +188,9 @@ pub struct ReeseVoice {
     #[live(range = -60.0..0.0)] pub crush_env_live: Shared,
     #[live(range = -60.0..0.0)] pub crush_out_live: Shared,
     #[live(range = -60.0..0.0)] pub crush_gr_live:  Shared,
+
+    selected_knob: Shared,
+    knob_pickup:   KnobPickup,
 
     thump: ThumpMod,
     sig:   SharedSignal,
@@ -273,6 +276,9 @@ impl ReeseVoice {
             crusher_r: Box::new(crusher(&shared(1.0), shared(LOW_MID_HZ), shared(MID_HIGH_HZ), shared(0.0), shared(0.0), shared(0.0),)),
 
             crush_env_live, crush_out_live, crush_gr_live,
+
+            selected_knob: shared(0.0),
+            knob_pickup:   KnobPickup::new(),
 
             thump: ThumpMod::new(thump_trigger, thump_peak, thump_decay),
             sig:   signal,

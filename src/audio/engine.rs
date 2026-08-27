@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicBool;
 use fundsp::prelude64::*;
 
 use super::signal::SharedSignal;
-use super::voice::Voice;
+use super::voice::{Voice, KnobPickup};
 use super::growl::GrowlVoice;
 use super::swarm::SwarmVoice;
 use super::reese::ReeseVoice;
@@ -28,6 +28,18 @@ const LIMITER_RELEASE: f32 = 0.1;
 
 const MASTER_CRUSH_DEPTH: f32 = 1.0;
 
+// Engine's own CC-controllable knob list (see the same mechanism on Voice,
+// in voice.rs's module doc) -- name/min/max, in the order CC7 selects them
+// and CC8 sets their value. Hand-written (not macro-derived) since Engine
+// is a single unique struct, not one of several concrete Voice types.
+pub const ENGINE_KNOB_RANGES: &[(&str, f32, f32)] = &[
+    ("master_vol",     0.0, 1.5),
+    ("limiter_thresh", -24.0, 0.0),
+    ("reverb_dry",     0.0, 1.0),
+    ("main_sub_lvl",   0.0, 1.0),
+    ("dry_sub_lvl",    0.0, 1.0),
+];
+
 // Peak, matching nam_graph.rs's per-band monitors -- this feeds a level
 // indicator, not a loudness readout. RMS runs a slower window alongside it
 // for the same tap, giving the UI meter both a fast peak and a perceived
@@ -45,19 +57,11 @@ pub struct Engine {
     pub freq: Shared,
     pub gate: Shared,
 
-    pub main_sub_tri: An<WaveSynth<U1>>,
-    pub dry_sub:      An<Sine<f64>>,
-    pub envelope:     Box<dyn AudioUnit>,
+    pub main_sub: An<Sine<f64>>,
+    pub dry_sub:  An<Sine<f64>>,
+    pub envelope: Box<dyn AudioUnit>,
 
-    // Homogeneous -- every concrete voice is boxed behind the same
-    // object-safe Voice trait (see voice.rs), so this array needs no
-    // per-concrete-type dispatch. Whether a given voice is selected is
-    // decided here in Engine (tick), not inside the voice itself.
     pub voices: [Box<dyn Voice>; VOICE_COUNT],
-    // Built once at construction, before the concrete voices above get
-    // boxed -- Voice::view() isn't part of the trait (each voice has its
-    // own concrete View type), so this is the only place that can still see
-    // the concrete types.
     pub voice_views: (ReeseView, GrowlView, BasicView, SwarmView),
     pub voice_selected: Shared,
 
@@ -89,6 +93,9 @@ pub struct Engine {
     pub out_level_rms_r:  Shared,
 
     pub cc_input: CcInput,
+
+    pub selected_knob: Shared,
+    knob_pickup: KnobPickup,
 }
 
 impl Engine {
@@ -137,8 +144,8 @@ impl Engine {
 
             signal: signal.clone(),
 
-            main_sub_tri: triangle(),
-            dry_sub:      sine(),
+            main_sub: sine(),
+            dry_sub:  sine(),
             envelope: Box::new(adsr_live(ENVELOPE_ATTACK, 0.0, 1.0, ENVELOPE_RELEASE)),
             voice_selected,
 
@@ -169,11 +176,66 @@ impl Engine {
             out_level_rms_r,
 
             cc_input: CcInput::connect(),
+
+            selected_knob: shared(0.0),
+            knob_pickup: KnobPickup::new(),
+        }
+    }
+
+    // Engine's own knob list -- see ENGINE_KNOB_RANGES. Mirrors the Voice
+    // knob_count/knob_name/knob_range/knob_value/set_knob_value/
+    // selected_knob/set_selected_knob surface, hand-written here since
+    // Engine isn't a #[derive(Voice)] type.
+    pub fn knob_count (&self) -> usize { ENGINE_KNOB_RANGES.len() }
+
+    pub fn knob_name (&self, index: usize) -> &'static str {
+        ENGINE_KNOB_RANGES.get(index).map(|k| k.0).unwrap_or("")
+    }
+
+    pub fn knob_range (&self, index: usize) -> (f32, f32) {
+        ENGINE_KNOB_RANGES.get(index).map(|k| (k.1, k.2)).unwrap_or((0.0, 1.0))
+    }
+
+    pub fn knob_value (&self, index: usize) -> f32 {
+        match index {
+            0 => self.master_vol.value(),
+            1 => self.limiter_thresh.value(),
+            2 => self.reverb_dry.value(),
+            3 => self.main_sub_lvl.value(),
+            4 => self.dry_sub_lvl.value(),
+            _ => 0.0,
+        }
+    }
+
+    pub fn selected_knob (&self) -> usize {
+        std::cmp::min(self.selected_knob.value().floor() as usize, self.knob_count().saturating_sub(1))
+    }
+
+    pub fn set_selected_knob (&mut self, index: usize) {
+        let index = std::cmp::min(index, self.knob_count().saturating_sub(1));
+        self.selected_knob.set_value(index as f32);
+        self.knob_pickup.reset();
+    }
+
+    pub fn set_knob_value (&mut self, index: usize, raw: f32) {
+        let raw = raw.clamp(0.0, 1.0);
+        let (min, max) = self.knob_range(index);
+        let current = self.knob_value(index);
+        let target_norm = if max > min { (current - min) / (max - min) } else { 0.0 };
+        let Some(raw) = self.knob_pickup.update(raw, target_norm) else { return; };
+        let value = min + raw * (max - min);
+        match index {
+            0 => self.master_vol.set_value(value),
+            1 => self.limiter_thresh.set_value(value),
+            2 => self.reverb_dry.set_value(value),
+            3 => self.main_sub_lvl.set_value(value),
+            4 => self.dry_sub_lvl.set_value(value),
+            _ => {},
         }
     }
 
     pub fn set_sample_rate (&mut self, sr: f64) {
-        self.main_sub_tri.set_sample_rate(sr);
+        self.main_sub.set_sample_rate(sr);
         self.dry_sub.set_sample_rate(sr);
         self.envelope.set_sample_rate(sr);
         for voice in self.voices.iter_mut() { voice.set_sample_rate(sr); }
@@ -221,7 +283,7 @@ impl Engine {
         }
 
         // main_sub isn't a Voice -- still gated here directly, same as dry_sub.
-        let main_sub = self.main_sub_tri.filter_mono(base_freq) * self.main_sub_lvl.value() * env;
+        let main_sub = self.main_sub.filter_mono(base_freq) * self.main_sub_lvl.value() * env;
         let dry_sub  = self.dry_sub.filter_mono(base_freq * 0.5) * self.dry_sub_lvl.value() * env;
 
         let dry_l = voice_l + main_sub;

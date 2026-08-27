@@ -9,7 +9,7 @@ use zgicabra_voice_macro::Voice;
 
 use crate::tools::linexp;
 use super::signal::SharedSignal;
-use super::voice::{Voice, VoiceDsp, ThumpMod};
+use super::voice::{Voice, VoiceDsp, ThumpMod, KnobPickup};
 use super::nam_graph::nam_high_band;
 use super::nam_node::NAM_WINDOW;
 use super::sample::Sample;
@@ -353,11 +353,11 @@ pub struct GrowlVoice {
     #[node] pluck: PluckPlayer,
     #[knob(range = 0.0..1.0)] pub pluck_level_input: Shared, // persisted, no CC of its own
 
-    #[knob(cc = "1", range = 0.0..1.0)]           pub bass_drive_input:    Shared,
-    #[knob(cc = "2", range = 0.0..1.0)]           pub filter_input:        Shared,
-    #[knob(cc = "3", range = 0.0..1.0)]           pub space_input:         Shared,
-    #[knob(cc = "4", range = 0.0..1.0)]           pub warp_input:          Shared,
-    #[knob(cc = "5", range = 0.0..10000.0, set = |v| v * 10000.0)] pub nam_crossover_input: Shared,
+    #[knob(range = 0.0..1.0)]           pub bass_drive_input:    Shared,
+    #[knob(range = 0.0..1.0)]           pub filter_input:        Shared,
+    #[knob(range = 0.0..1.0)]           pub space_input:         Shared,
+    #[knob(range = 0.0..1.0)]           pub warp_input:          Shared,
+    #[knob(range = 0.0..10000.0, set = |v| v * 10000.0)] pub nam_crossover_input: Shared,
 
     #[live(range = 0.0..1.0)] pub filter_live:    Shared,
     #[live(range = 0.0..1.0)] pub warp_live:      Shared,
@@ -365,6 +365,9 @@ pub struct GrowlVoice {
     // Post-blend peak of the modeled band, written by a monitor() node
     // inside the NAM graph.
     #[live(range = 0.0..1.0)] pub nam_live:       Shared,
+
+    selected_knob: Shared,
+    knob_pickup:   KnobPickup,
 
     sig:   SharedSignal,
 }
@@ -404,6 +407,9 @@ impl GrowlVoice {
             warp_live:      shared(0.0),
             freq_mult_live: shared(0.0),
             nam_live,
+
+            selected_knob: shared(0.0),
+            knob_pickup:   KnobPickup::new(),
 
             sig:   signal,
         }

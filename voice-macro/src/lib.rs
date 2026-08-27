@@ -1,8 +1,9 @@
 //
 // #[derive(Voice)] -- generates the mechanical skeleton every concrete voice
 // in src/audio/*.rs used to hand-write: the read-only *View struct + view(),
-// the fields()/apply() snapshot tables, apply_cc(), a UI_RANGES table, an
-// optional new(), and the `impl Voice for` block (index, name,
+// the fields()/apply() snapshot tables, the knob_*/selected_knob/
+// set_knob_value methods, a UI_RANGES table, an optional new(), and the
+// `impl Voice for` block (index, name,
 // set_sample_rate, and the tick wrapper that applies thump before calling
 // the author's hand-written VoiceDsp::render). Whether this voice is the
 // selected one is the caller's call (see audio::engine::Engine) -- the
@@ -15,9 +16,14 @@
 // pre-init logic (#[voice(new = manual)]).
 //
 // Field attributes:
-//   #[knob(cc="6|44", range=1.0..10.0, set=|v| 1.0+v*9.0, default=1.0)]
-//       a CC-settable, persisted Shared. cc/set optional (a persisted-but-not-
-//       CC param omits both). default only needed for a generated new().
+//   #[knob(range=1.0..10.0, set=|v| 1.0+v*9.0, default=1.0)]
+//       a persisted Shared, collected (in struct declaration order) into
+//       this voice's ordered knob list -- see Voice::knob_count/knob_name/
+//       knob_range/knob_value/set_knob_value in voice.rs. set optional
+//       (defaults to the identity closure). default only needed for a
+//       generated new(). A voice with any #[knob] field must also declare
+//       `selected_knob: Shared` and `knob_pickup: KnobPickup` fields (like
+//       `thump`/`sig`) -- the macro drives them, it can't add fields itself.
 //   #[live(range=0.0..5.0)]   Shared written by render(), View-visible + in
 //       UI_RANGES, but never persisted or CC-set. Seeded to shared(0.0).
 //   #[node]  /  #[node(each)]  /  #[node(init = sine())]
@@ -48,8 +54,7 @@ pub fn derive_voice (input: TokenStream) -> TokenStream {
 
 struct KnobField {
     ident:   Ident,
-    ccs:     Vec<u8>,
-    set:     Option<ExprClosure>,
+    set:     ExprClosure,
     min:     Expr,
     max:     Expr,
     default: Option<Expr>,
@@ -85,6 +90,8 @@ struct Voice {
     plains: Vec<PlainField>,
     thump:  Option<Ident>,
     sig:    Option<Ident>,
+    selected_knob: Option<Ident>,
+    knob_pickup:   Option<Ident>,
 }
 
 // ---- top-level expansion --------------------------------------------------
@@ -119,6 +126,10 @@ fn expand (input: DeriveInput) -> syn::Result<TokenStream2> {
             v.thump = Some(ident);
         } else if ident == "sig" {
             v.sig = Some(ident);
+        } else if ident == "selected_knob" {
+            v.selected_knob = Some(ident);
+        } else if ident == "knob_pickup" {
+            v.knob_pickup = Some(ident);
         } else {
             v.plains.push(PlainField { ident });
         }
@@ -131,6 +142,10 @@ fn expand (input: DeriveInput) -> syn::Result<TokenStream2> {
     let thump = v.thump.clone();
     if v.sig.is_none() {
         return Err(syn::Error::new_spanned(&input, "Voice derive needs a `sig: SharedSignal` field"));
+    }
+    if !v.knobs.is_empty() && (v.selected_knob.is_none() || v.knob_pickup.is_none()) {
+        return Err(syn::Error::new_spanned(&input,
+            "a Voice with any #[knob] field needs `selected_knob: Shared` and `knob_pickup: KnobPickup` fields"));
     }
 
     let view_struct = gen_view_struct(&name, &v);
@@ -193,15 +208,12 @@ fn range_bounds (r: &ExprRange) -> syn::Result<(Expr, Expr)> {
 }
 
 fn parse_knob (ident: &Ident, attr: &Attribute) -> syn::Result<KnobField> {
-    let mut cc: Option<LitStr> = None;
     let mut range: Option<ExprRange> = None;
     let mut set: Option<ExprClosure> = None;
     let mut default: Option<Expr> = None;
 
     attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("cc") {
-            cc = Some(meta.value()?.parse()?);
-        } else if meta.path.is_ident("range") {
+        if meta.path.is_ident("range") {
             range = Some(meta.value()?.parse()?);
         } else if meta.path.is_ident("set") {
             set = Some(meta.value()?.parse()?);
@@ -215,19 +227,9 @@ fn parse_knob (ident: &Ident, attr: &Attribute) -> syn::Result<KnobField> {
 
     let range = range.ok_or_else(|| syn::Error::new_spanned(attr, "#[knob] missing range"))?;
     let (min, max) = range_bounds(&range)?;
+    let set = set.unwrap_or_else(|| syn::parse_quote! { |v| v });
 
-    let ccs = match &cc {
-        Some(lit) => lit.value().split('|')
-            .map(|s| s.trim().parse::<u8>()
-                .map_err(|_| syn::Error::new_spanned(lit, "cc must be like \"6|44\"")))
-            .collect::<syn::Result<Vec<_>>>()?,
-        None => Vec::new(),
-    };
-    if !ccs.is_empty() && set.is_none() {
-        set = Some(syn::parse_quote! { |v| v });
-    }
-
-    Ok(KnobField { ident: ident.clone(), ccs, set, min, max, default })
+    Ok(KnobField { ident: ident.clone(), set, min, max, default })
 }
 
 fn parse_live (ident: &Ident, attr: &Attribute) -> syn::Result<LiveField> {
@@ -274,12 +276,16 @@ fn gen_view_struct (name: &Ident, v: &Voice) -> TokenStream2 {
     let live_f  = v.lives.iter().map(|f| &f.ident);
     let view_f  = v.views.iter().map(|f| &f.ident);
     let view_t  = v.views.iter().map(|f| &f.ty);
+    // Only present when this voice has any #[knob] field (see the
+    // selected_knob/knob_pickup requirement in expand()).
+    let selected_knob_f = v.selected_knob.iter();
     quote! {
         #[derive(Clone)]
         pub struct #view_name {
             #( pub #knob_f: Shared, )*
             #( pub #live_f: Shared, )*
             #( pub #view_f: #view_t, )*
+            #( pub #selected_knob_f: Shared, )*
         }
     }
 }
@@ -315,12 +321,14 @@ fn gen_inherent (name: &Ident, v: &Voice, generate_new: bool, thump: Option<&Ide
     let clone_knobs = v.knobs.iter().map(|f| &f.ident);
     let clone_lives  = v.lives.iter().map(|f| &f.ident);
     let clone_views  = v.views.iter().map(|f| &f.ident);
+    let clone_selected_knob = v.selected_knob.iter();
     let view_fn = quote! {
         pub fn view (&self) -> #view_name {
             #view_name {
                 #( #clone_knobs: self.#clone_knobs.clone(), )*
                 #( #clone_lives: self.#clone_lives.clone(), )*
                 #( #clone_views: self.#clone_views.clone(), )*
+                #( #clone_selected_knob: self.#clone_selected_knob.clone(), )*
             }
         }
     };
@@ -337,6 +345,32 @@ fn gen_inherent (name: &Ident, v: &Voice, generate_new: bool, thump: Option<&Ide
         pub const UI_RANGES: &'static [(&'static str, f32, f32)] = &[ #( #range_entries ),* ];
     };
 
+    // KNOB_NAMES/KNOB_RANGES: knobs only, in struct declaration order --
+    // this *is* the ordered knob list (see voice.rs's module doc).
+    let knob_names_lits = v.knobs.iter().map(|f| { let id = &f.ident; quote! { stringify!(#id) } });
+    let knob_range_entries = v.knobs.iter().map(|f| {
+        let (mn, mx) = (&f.min, &f.max);
+        quote! { (#mn as f32, #mx as f32) }
+    });
+    let knob_lists = quote! {
+        pub const KNOB_NAMES:  &'static [&'static str]   = &[ #( #knob_names_lits ),* ];
+        pub const KNOB_RANGES: &'static [(f32, f32)]     = &[ #( #knob_range_entries ),* ];
+    };
+
+    // View::knobs() -- the ordered (name, cell, min, max) list every voice
+    // panel can iterate generically (see ui/panel_voice.rs).
+    let view_knob_entries = v.knobs.iter().map(|f| {
+        let id = &f.ident; let (mn, mx) = (&f.min, &f.max);
+        quote! { (stringify!(#id), self.#id.clone(), #mn as f32, #mx as f32) }
+    });
+    let view_knobs_fn = quote! {
+        impl #view_name {
+            pub fn knobs (&self) -> Vec<(&'static str, Shared, f32, f32)> {
+                vec![ #( #view_knob_entries ),* ]
+            }
+        }
+    };
+
     let new_fn = if generate_new {
         Some(gen_new(v, thump)?)
     } else {
@@ -347,8 +381,10 @@ fn gen_inherent (name: &Ident, v: &Voice, generate_new: bool, thump: Option<&Ide
         impl #name {
             #view_fn
             #ranges
+            #knob_lists
             #new_fn
         }
+        #view_knobs_fn
     })
 }
 
@@ -395,12 +431,17 @@ fn gen_new (v: &Voice, thump: Option<&Ident>) -> syn::Result<TokenStream2> {
         quote! { #id: shared(0.0) }
     });
 
+    let selected_knob_init = v.selected_knob.iter().map(|id| quote! { #id: shared(0.0) });
+    let knob_pickup_init   = v.knob_pickup.iter().map(|id| quote! { #id: KnobPickup::new() });
+
     Ok(quote! {
         pub fn new (thump_trigger: Shared, thump_peak: Shared, thump_decay: Shared, signal: SharedSignal) -> Self {
             Self {
                 #( #node_inits, )*
                 #( #knob_inits, )*
                 #( #live_inits, )*
+                #( #selected_knob_init, )*
+                #( #knob_pickup_init, )*
                 #thump: ThumpMod::new(thump_trigger.clone(), thump_peak.clone(), thump_decay.clone()),
                 sig: signal,
             }
@@ -409,9 +450,10 @@ fn gen_new (v: &Voice, thump: Option<&Ident>) -> syn::Result<TokenStream2> {
 }
 
 // The whole `impl Voice for #name` block: index/name, tick (thump + render),
-// set_sample_rate (forwards to every #[node] + thump), on_block_start,
-// on_silence and apply_cc (all delegating to the author's VoiceDsp impl,
-// except apply_cc which is fully generated from each #[knob]'s cc=..).
+// set_sample_rate (forwards to every #[node] + thump), on_block_start and
+// on_silence (delegating to the author's VoiceDsp impl), and the knob_*/
+// selected_knob/set_knob_value methods (fully generated from the #[knob]
+// list and the selected_knob/knob_pickup fields).
 fn gen_voice_trait (name: &Ident, index: &Expr, label: &LitStr, v: &Voice, thump: Option<&Ident>, manual_thump: bool) -> TokenStream2 {
     let scalar_nodes = v.nodes.iter().filter(|f| !f.each).map(|f| &f.ident);
     let each_nodes   = v.nodes.iter().filter(|f| f.each).map(|f| &f.ident);
@@ -438,12 +480,57 @@ fn gen_voice_trait (name: &Ident, index: &Expr, label: &LitStr, v: &Voice, thump
         self.#thump.set_sample_rate(sample_rate);
     });
 
-    let cc_arms = v.knobs.iter().filter(|f| !f.ccs.is_empty()).map(|f| {
+    let knob_value_arms = v.knobs.iter().enumerate().map(|(i, f)| {
+        let idx = Literal::usize_unsuffixed(i);
         let id = &f.ident;
-        let set = f.set.as_ref().unwrap();
-        let ccs = f.ccs.iter().map(|n| Literal::u8_unsuffixed(*n));
-        quote! { #( #ccs )|* => self.#id.set_value((#set)(value)), }
+        quote! { #idx => self.#id.value(), }
     });
+
+    let set_knob_value_arms = v.knobs.iter().enumerate().map(|(i, f)| {
+        let idx = Literal::usize_unsuffixed(i);
+        let id = &f.ident;
+        let set = &f.set;
+        quote! { #idx => self.#id.set_value((#set)(raw)), }
+    });
+
+    // selected_knob/set_knob_value need real per-voice state
+    // (selected_knob/knob_pickup fields, required whenever there's any
+    // #[knob] -- see expand()); a voice with no knobs at all gets inert
+    // stubs instead.
+    let knob_selection_impl = match (&v.selected_knob, &v.knob_pickup) {
+        (Some(selected_knob), Some(knob_pickup)) => quote! {
+            fn selected_knob (&self) -> usize {
+                let count = crate::audio::voice::Voice::knob_count(self);
+                if count == 0 { return 0; }
+                std::cmp::min(self.#selected_knob.value().floor() as usize, count - 1)
+            }
+
+            fn set_selected_knob (&mut self, index: usize) {
+                let count = crate::audio::voice::Voice::knob_count(self);
+                let index = if count == 0 { 0 } else { std::cmp::min(index, count - 1) };
+                self.#selected_knob.set_value(index as f32);
+                self.#knob_pickup.reset();
+            }
+
+            fn set_knob_value (&mut self, index: usize, raw: f32) {
+                let raw = raw.clamp(0.0, 1.0);
+                let (min, max) = crate::audio::voice::Voice::knob_range(self, index);
+                let current = crate::audio::voice::Voice::knob_value(self, index);
+                let target_norm = if max > min { (current - min) / (max - min) } else { 0.0 };
+                if let Some(raw) = self.#knob_pickup.update(raw, target_norm) {
+                    match index {
+                        #( #set_knob_value_arms )*
+                        _ => {},
+                    }
+                }
+            }
+        },
+        _ => quote! {
+            fn selected_knob (&self) -> usize { 0 }
+            fn set_selected_knob (&mut self, _index: usize) {}
+            fn set_knob_value (&mut self, _index: usize, _raw: f32) {}
+        },
+    };
 
     quote! {
         impl Voice for #name {
@@ -472,13 +559,24 @@ fn gen_voice_trait (name: &Ident, index: &Expr, label: &LitStr, v: &Voice, thump
                 crate::audio::voice::VoiceDsp::on_silence(self);
             }
 
-            fn apply_cc (&mut self, cc: u8, value: f32) {
-                let value = value.clamp(0.0, 1.0);
-                match cc {
-                    #( #cc_arms )*
-                    _ => {},
+            fn knob_count (&self) -> usize { Self::KNOB_NAMES.len() }
+
+            fn knob_name (&self, index: usize) -> &'static str {
+                Self::KNOB_NAMES.get(index).copied().unwrap_or("")
+            }
+
+            fn knob_range (&self, index: usize) -> (f32, f32) {
+                Self::KNOB_RANGES.get(index).copied().unwrap_or((0.0, 1.0))
+            }
+
+            fn knob_value (&self, index: usize) -> f32 {
+                match index {
+                    #( #knob_value_arms )*
+                    _ => 0.0,
                 }
             }
+
+            #knob_selection_impl
         }
     }
 }

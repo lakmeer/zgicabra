@@ -21,21 +21,30 @@ const CC_RING_CAPACITY: usize = 256;
 // cpal callback block from mod.rs's build_stream, right next to the
 // existing per-block on_block_start dispatch.
 pub struct CcInput {
-    consumer: Consumer<(u8, f32)>,
-    _backend: Backend,
+    consumer:  Consumer<(u8, f32)>,
+    connected: bool,
+    _backend:  Backend,
 }
 
 impl CcInput {
     pub fn connect () -> CcInput {
         let (producer, consumer) = RingBuffer::<(u8, f32)>::new(CC_RING_CAPACITY);
         let backend = backend::connect(producer);
-        CcInput { consumer, _backend: backend }
+        let connected = backend.is_connected();
+        CcInput { consumer, connected, _backend: backend }
     }
 
     // Non-blocking: returns the next queued (cc, value) if any, or None if
     // the queue is empty (or no controller is connected at all).
     pub fn pop (&mut self) -> Option<(u8, f32)> {
         self.consumer.pop().ok()
+    }
+
+    // Fixed at connect time (no hot-plug detection, same as hydra::midi) --
+    // read once at startup (see AudioOutput::new) to gate the wand/CC
+    // arbitration in SharedSignal::set.
+    pub fn connected (&self) -> bool {
+        self.connected
     }
 }
 
@@ -49,6 +58,10 @@ mod backend {
     // port was found at connect time -- caller just never receives CC
     // events, same no-op-safe fallback as hydra/midi.rs.
     pub struct Real(Option<MidiInputConnection<()>>);
+
+    impl Real {
+        pub fn is_connected (&self) -> bool { self.0.is_some() }
+    }
 
     // True for ALSA's software-only ports (the "Midi Through" loopback, and
     // "VirMIDI" clients from the snd-virmidi kernel module) -- never a real
@@ -106,6 +119,10 @@ mod backend {
     use rtrb::Producer;
 
     pub struct Real;
+
+    impl Real {
+        pub fn is_connected (&self) -> bool { false }
+    }
 
     pub fn connect (_producer: Producer<(u8, f32)>) -> Real {
         println!("║ CC MIDI: unsupported platform, proceeding without CC input.");
