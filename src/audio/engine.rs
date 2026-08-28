@@ -28,24 +28,16 @@ const LIMITER_RELEASE: f32 = 0.1;
 
 const MASTER_CRUSH_DEPTH: f32 = 1.0;
 
-// Engine's own CC-controllable knob list (see the same mechanism on Voice,
-// in voice.rs's module doc) -- name/min/max, in the order CC7 selects them
-// and CC8 sets their value. Hand-written (not macro-derived) since Engine
-// is a single unique struct, not one of several concrete Voice types.
 pub const ENGINE_KNOB_RANGES: &[(&str, f32, f32)] = &[
     ("master_vol",     0.0, 1.5),
-    ("limiter_thresh", -24.0, 0.0),
-    ("reverb_dry",     0.0, 1.0),
+    ("limiter",      -24.0, 0.0),
+    ("reverb_mix",     0.0, 1.0),
     ("main_sub_lvl",   0.0, 1.0),
     ("dry_sub_lvl",    0.0, 1.0),
 ];
 
-// Peak, matching nam_graph.rs's per-band monitors -- this feeds a level
-// indicator, not a loudness readout. RMS runs a slower window alongside it
-// for the same tap, giving the UI meter both a fast peak and a perceived
-// loudness reading.
-const OUT_METER_PEAK_SMOOTH_S: f64 = 0.05;
-const OUT_METER_RMS_SMOOTH_S:  f64 = 0.2;
+const OUT_METER_PEAK_SMOOTH_S: f64 = 0.01;
+const OUT_METER_RMS_SMOOTH_S:  f64 = 0.02;
 
 
 //
@@ -75,11 +67,11 @@ pub struct Engine {
 
     pub reverb: Box<dyn AudioUnit>, // 2 in (L, R) / 2 out, built from reverb_stereo
     pub reverb_bypass: Shared,
-    pub reverb_dry:    Shared,
+    pub reverb_mix:    Shared,
 
     pub limiter: An<Limiter<U2>>,
     pub limiter_bypass: Shared,
-    pub limiter_thresh: Shared,
+    pub limiter_thr: Shared,
 
     pub master_vol: Shared,
 
@@ -117,13 +109,13 @@ impl Engine {
         nam_names: Arc<Vec<String>>,
 
         reverb_bypass: Shared,
-        reverb_dry: Shared,
+        reverb_mix: Shared,
         reverb_decay: f32,
         reverb_damp: f32,
         reverb_size: f32,
 
         limiter_bypass: Shared,
-        limiter_thresh: Shared,
+        limiter_thr: Shared,
 
         master_vol: Shared,
 
@@ -160,9 +152,9 @@ impl Engine {
             crusher_l: Box::new(crusher(&shared(MASTER_CRUSH_DEPTH), shared(LOW_MID_HZ), shared(MID_HIGH_HZ), shared(0.0), shared(0.0), shared(0.0))),
             crusher_r: Box::new(crusher(&shared(MASTER_CRUSH_DEPTH), shared(LOW_MID_HZ), shared(MID_HIGH_HZ), shared(0.0), shared(0.0), shared(0.0))),
 
-            reverb: Box::new(reverb_stereo(reverb_size, reverb_decay, reverb_damp)), reverb_bypass, reverb_dry,
+            reverb: Box::new(reverb_stereo(reverb_size, reverb_decay, reverb_damp)), reverb_bypass, reverb_mix,
 
-            limiter: limiter_stereo(LIMITER_ATTACK, LIMITER_RELEASE), limiter_bypass, limiter_thresh,
+            limiter: limiter_stereo(LIMITER_ATTACK, LIMITER_RELEASE), limiter_bypass, limiter_thr,
 
             master_vol,
 
@@ -185,7 +177,7 @@ impl Engine {
     // Engine's own knob list -- see ENGINE_KNOB_RANGES. Mirrors the Voice
     // knob_count/knob_name/knob_range/knob_value/set_knob_value/
     // selected_knob/set_selected_knob surface, hand-written here since
-    // Engine isn't a #[derive(Voice)] type.
+    // Engine isn't a #[voice(..)] type.
     pub fn knob_count (&self) -> usize { ENGINE_KNOB_RANGES.len() }
 
     pub fn knob_name (&self, index: usize) -> &'static str {
@@ -199,8 +191,8 @@ impl Engine {
     pub fn knob_value (&self, index: usize) -> f32 {
         match index {
             0 => self.master_vol.value(),
-            1 => self.limiter_thresh.value(),
-            2 => self.reverb_dry.value(),
+            1 => self.limiter_thr.value(),
+            2 => self.reverb_mix.value(),
             3 => self.main_sub_lvl.value(),
             4 => self.dry_sub_lvl.value(),
             _ => 0.0,
@@ -226,8 +218,8 @@ impl Engine {
         let value = min + raw * (max - min);
         match index {
             0 => self.master_vol.set_value(value),
-            1 => self.limiter_thresh.set_value(value),
-            2 => self.reverb_dry.set_value(value),
+            1 => self.limiter_thr.set_value(value),
+            2 => self.reverb_mix.set_value(value),
             3 => self.main_sub_lvl.set_value(value),
             4 => self.dry_sub_lvl.set_value(value),
             _ => {},
@@ -263,19 +255,13 @@ impl Engine {
         let bend_mult = 2f32.powf(self.signal.bend.value());
         let base_freq = self.freq.value() * bend_mult;
 
-        // Published before voices render, so a voice's own DSP (e.g.
-        // ReeseVoice's crusher) can see this sample's envelope value --
-        // Engine's own dry_l/dry_r multiply below happens too late for that.
         let env = self.envelope.filter_mono(self.gate.value());
         self.signal.env.set_value(env);
 
         let sel = self.voice_selected.value() as usize;
         let mut voice_l = 0.0;
         let mut voice_r = 0.0;
-        // Each voice reads self.signal.env (published above) and gates its
-        // own output by it in render() -- Engine no longer applies a blanket
-        // env multiply here, so a voice can choose to leave part of its
-        // signal ungated (ReeseVoice's feedback loop).
+
         for voice in self.voices.iter_mut() {
             let (l, r) = if voice.index() == sel { voice.tick(base_freq) } else { voice.on_silence(); (0.0, 0.0) };
             voice_l += l;
@@ -302,7 +288,7 @@ impl Engine {
 
         // Global reverb
         if self.reverb_bypass.value() < 1.0 {
-            let wet = self.reverb_dry.value().clamp(0.0, 1.0);
+            let wet = self.reverb_mix.value().clamp(0.0, 1.0);
             let mut tail = [0.0f32; 2];
             self.reverb.tick(&[l, r], &mut tail);
             l = l + (tail[0] - l) * wet;
@@ -321,8 +307,6 @@ impl Engine {
         let out_l = ((l + dry_sub) * vol).clamp(-1.0, 1.0);
         let out_r = ((r + dry_sub) * vol).clamp(-1.0, 1.0);
 
-        // Output meter -- taps the exact signal handed to cpal, post
-        // limiter/volume/clamp, so it reads what's actually audible.
         let mut buf_l = [0.0f32];
         let mut buf_r = [0.0f32];
         self.out_meter_peak_l.tick(&[out_l], &mut buf_l);

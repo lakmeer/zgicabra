@@ -2,31 +2,37 @@
 
 | ⚠️ Full FunDSP docs: `ref/fundsp.md`. FunDSP builtins list: `ref/fundsp-modules.md`.
 
-Working notes for agents touching this codebase — architecture, the fundsp
-API surface in use, and this project's conventions. Read before touching
-`src/audio/` or `src/gui.rs`.
+
+Working notes for agents touching this codebase. Read before touching
+`src/audio/`, `src/zgicabra.rs`, or `src/ui/`.
 
 Do not touch `src/zgicabra.rs` unless asked — it's the core instrument
 logic, under the developer's direct control.
+
+## Project Style Guide
+
+- ⚠️ Comments should be minimal and necessary.
 
 ## What this is
 
 A Rust synth/controller app built around a Razer Hydra-style two-wand
 controller ("Sixense Hydra"). Wand motion/triggers/buttons drive a live
-audio engine. The GUI mode has been removed (see `4048c9a`) -- the terminal
-UI is the only front end now; a mock controller still stands in for
-keyboard/mouse/MIDI when no real hardware is attached (`src/hydra/mock.rs`).
+audio engine, rendered live to a terminal UI (`src/ui/`, termion +
+drawille — no GUI/imgui path exists any more). A mock backend stands in
+for keyboard/mouse/MIDI when no real hardware is attached
+(`src/hydra/mock.rs`).
 
 Entry point: `src/main.rs`. CLI flags (`tools::parse_args`): `--debug` to
-suppress the terminal UI and print verbose diagnostics (see "Debug logging"
-below), `--test` to run the audio self-test.
+suppress the terminal UI and print verbose diagnostics to stderr instead,
+`--test` to run the audio self-test (see "Debug logging" below).
 
 ## Hardware
 
 The Sixense Hydra (Razer Hydra) is a discontinued two-handed motion
 controller; its SDK is adapted here into a performance instrument. The
 controller is "Hydra", the instrument is "zgicabra" (Lojban; "a musical
-apparatus").
+apparatus"). An 8-knob MIDI CC controller (fixed AKAI-style layout, see
+`src/audio/cc_input.rs`) is a second, optional live-tuning input.
 
 ## Platform notes
 
@@ -39,8 +45,7 @@ Two machines, different roles — confirm which one you're on.
 
 | ⚠️ Do not read or write `/etc/nixos/configuration.nix` on this machine —
 | show the user the commands and let them run it.
-| ⚠️ Static linking is an architectural goal: one binary, no external
-| runtime deps.
+| ⚠️ Static linking is an architectural goal: one binary, no external runtime deps.
 
 **Performance-mode launch**: both `sys/config.nix`'s boot service and
 `bin/perform` (dev-box vt3 smoke test) run zgicabra via
@@ -65,48 +70,46 @@ the binary.
 
 - `src/hydra/` backends: `sdk.rs` (Linux, real Sixense SDK), `hid.rs`
   (macOS, raw USB HID), `mock.rs` (keyboard/mouse/MIDI stand-in, active
-  whenever no real backend connects).
-- **Engine loop** (`main.rs::run_engine_loop`): polls hydra → derives
+  whenever no real backend connects). All implement the `Backend` trait
+  (`mod.rs`).
+- **Engine loop** (`main.rs::run_engine_loop`, runs on the main thread —
+  there is no separate GUI thread any more): polls hydra → derives
   `Zgicabra` state (`zgicabra::update`) → emits `DeltaEvent`s plus a
-  continuous `SignalState` → feeds both straight to `audio::AudioOutput`
-  (the only output backend; the old OSC/`DeltaConsumer` trait indirection
-  was removed once the native audio engine became the sole target). Runs
-  on the main thread, or a background thread when `--gui` is set.
-- **GUI thread**: winit/AppKit require the window + event loop on the
-  process's main thread on macOS, so `gui::run()` owns `main()` whenever
-  `--gui` is passed, and the engine loop is spawned instead.
+  continuous `SignalState` → draws the terminal UI (`ui::draw_all`,
+  skipped under `--debug`) → feeds both straight to `audio::AudioOutput`
+  (the only output backend).
 - **Audio thread**: cpal owns a real-time callback thread running the DSP
-  graph (`audio::build_stream`). Never blocks, allocates, or locks
-  contentiously (see the one `Mutex` in the NAM section below).
-- **`--test` self-test** (`main.rs::run_self_test`, requires `--gui`):
-  holds a synthetic A4 note, captures ~0.1s of raw cpal output via
-  `AudioCapture`, reports PASS/FAIL on non-zero signal — isolates "engine
-  produces no signal" from "OS/device routing is broken" (the latter needs
-  a human to listen for 3 seconds). Only automated audio-path check; no
-  unit-test coverage of the DSP graph itself.
+  graph (`audio::build_stream`). Never blocks or allocates contentiously.
+  Also drains the CC-input ring buffer and calls each selected voice's
+  `on_block_start` once per callback block, before the per-sample tick
+  loop.
+- **`--test` self-test** (`main.rs::run_self_test`): holds a synthetic A4
+  note, captures ~0.1s of raw cpal output via `AudioCapture`, reports
+  PASS/FAIL on non-zero signal — isolates "engine produces no signal" from
+  "OS/device routing is broken". Runs on its own thread, signals the main
+  loop to quit via a shared `AtomicBool` when done.
 
-## Cross-thread communication: no channels, only atomics
+## Cross-thread communication
 
-No mpsc/crossbeam channel and no `Arc<Mutex<_>>` for engine state anywhere.
-Every value crossing from the GUI/engine-loop thread into the real-time
-audio thread is one of:
+No mpsc/crossbeam channel and no `Arc<Mutex<_>>` for **engine parameters**
+(control values crossing from the main/hydra thread into the real-time
+audio thread) anywhere. Every such value is one of:
 
 - **`fundsp::shared::Shared`** — `Arc`-wrapped atomic f32 cell,
   `.value()`/`.set_value()`. Used for nearly everything: note freq/gate,
-  every live-tunable param, voice selection.
+  every live-tunable param, voice selection. `audio::signal::SharedSignal`
+  bundles one `Shared` per `zgicabra::SignalState` field (plus `env`,
+  audio-thread-only) and is cloned into `Engine` and every `Voice`.
 - **`tools::AtomicF32`** — hand-rolled lock-free f32 cell, used where
   `Shared` isn't already in scope (mock hydra stick position, wand
-  telemetry, `SignalOverride`, MIDI CC/pitch-bend).
+  telemetry, MIDI CC/pitch-bend).
 - **`Arc<AtomicBool>`** for flags (quit signal, trigger/button state,
-  override toggles).
-
-A struct on the audio-engine side owns the "master" cell; a cheap
-`.clone()` goes to the GUI. GUI writes, audio thread reads on its next
-tick — no extra sync needed since these are control-rate values.
-
-**Never introduce a channel or mutex for new engine parameters.** Make it
-a `Shared`, construct it on the `AudioOutput`/`Engine` side, hand a clone
-to the GUI via `AudioHandles`.
+  per-voice "dirty, needs persisting" flags).
+- **`rtrb`** wait-free SPSC ring buffer for the one *event* stream that
+  isn't a live-updating value: MIDI CC messages from the second, dedicated
+  CC-tuning connection (`audio::cc_input::CcInput`) — a ring buffer, not a
+  `Shared`, because CC messages are discrete events the audio thread must
+  not miss, popped once per cpal callback block.
 
 ## fundsp: what's actually in play
 
@@ -115,20 +118,17 @@ to the GUI via `AudioHandles`.
 - **`AudioNode`** (`audionode.rs`): compile-time-sized. `type
   Inputs`/`type Outputs` (typenum sizes: `U0`, `U1`, `U2`, ...), `fn
   tick(&mut self, input: &Frame<f32, Self::Inputs>) -> Frame<f32,
-  Self::Outputs>`, requires `Self: Clone`. Implement this for a new
-  self-contained DSP voice/effect (see `GrowlVoice`/`BasicVoice`). `An<X>`
-  wraps one for `>>`/`|` combinator syntax and gets a blanket `AudioUnit`
-  impl for free.
+  Self::Outputs>`, requires `Self: Clone`. `An<X>` wraps one for
+  `>>`/`|` combinator syntax and gets a blanket `AudioUnit` impl for free.
 - **`AudioUnit`** (`audiounit.rs`): dynamic, runtime-sized, object-safe —
-  `fn tick(&mut self, input: &[f32], output: &mut [f32])`, plus
-  block-processing entry points used by the NAM convolution path.
-  `Box<dyn AudioUnit>` is `Clone` (via `DynClone`), so it's safe to hold as
-  a field on a `#[derive(Clone)]` struct (`Engine::envelope`,
-  `ReverbFx::tail`).
+  `fn tick(&mut self, input: &[f32], output: &mut [f32])`. `Box<dyn
+  AudioUnit>` is `Clone` (via `DynClone`), so it's safe to hold as a field
+  on a `#[derive(Clone)]` struct (used for the crusher, reverb tail, per-
+  voice NAM chains, etc).
 
-Rule of thumb: implement `AudioNode` when arity is known at compile time
-(most voices/effects); reach for `Box<dyn AudioUnit>` for type erasure or
-to wrap nam-rs's non-`Clone` `Model` (see `NamModelSlot`).
+Rule of thumb: implement `AudioNode` for a self-contained hand-written
+node (see `NamNode` in `nam_node.rs`); reach for `Box<dyn AudioUnit>` for
+type erasure or to wrap nam-rs's non-`Clone` `Model`.
 
 ### `prelude64` gotchas
 
@@ -149,186 +149,168 @@ imports — a non-generic re-export monomorphized to `f64`:
 
 - `get_mono()`/`filter_mono()` are default methods on `AudioUnit` itself —
   callable directly, no extra imports.
-- `ConstantFrame` (used by `dc()`/`constant()`) works for any `T: Float`
-  and for tuples up to 10 elements.
 - Every hand-written `AudioNode` here picks a private `const ID: u64` in
-  the `0x7A_xx` range (fundsp's own IDs stay well below it). Current:
-  `0x7A_10` (`FmVoice`, orphaned), `0x7A_11` (`ReeseVoice`), `0x7A_12`
-  (`NamStage`), `0x7A_20` (orphaned `gen_node`/`fx_node`), `0x7A_24`
-  (`ReverbFx`), `0x7A_30` (`BasicOscGen`, orphaned), `0x7A_40`
-  (`GrowlVoice`), `0x7A_41` (`BasicVoice`), `0x7A_60` (`BlankVoice`). Grep
-  `const ID: u64 = 0x7A_` before picking a new one.
-- `NAM_BLOCK_CAP` bounds any single NAM-stage block call — the convolver
-  re-runs its WaveNet dilation machinery per call, so per-sample `tick()`
-  causes audible stutter; must be driven in batches via `process_block()`
-  (see `NamStage::process_block` and `Engine::tick_pre_nam`/`run_nam`/
-  `tick_post_nam`).
+  the `0x7A_xx` range (fundsp's own IDs stay well below it) —
+  `nam_node.rs` (`0x7A_70`), `crusher.rs` (`0x7A_C1`). Grep `const ID: u64`
+  before picking a new one. `sample.rs` uses a bare `9001` — an outlier,
+  don't copy it; use `0x7A_xx`.
+- `NAM_SAMPLE_RATE = 48_000` is forced for the output device because every
+  NAM model in `nam/` was captured at that rate.
 
 ## Audio engine architecture (`src/audio/`)
 
-Not one big fundsp-composed graph — a hand-driven `Engine` struct,
-manually sequenced once per sample/block inside `build_stream`'s cpal
-callback:
+A hand-driven `Engine` struct (`engine.rs`, private — `AudioOutput`,
+`src/audio/mod.rs`, is the public handle), ticked once per sample from
+cpal's callback (`mod.rs::build_stream`):
 
+- Ticks every `Voice` in `Engine::voices` in parallel (only the selected
+  one renders; the rest get `on_silence()`), plus `main_sub`/`dry_sub`
+  (plain triangle/sine sub-oscillators, not `Voice`s) gated by a shared
+  `adsr_live` envelope.
+- Sums the result, soft-clips (`tanh`), runs it through a global reverb
+  (`reverb_stereo`, bypassable) and a stereo-linked safety limiter
+  (bypassable), applies master volume, clamps to `[-1, 1]`.
+- `dry_sub` bypasses reverb/limiter, mixed in post.
+- Feeds an output peak/RMS meter (`fundsp::monitor`) off the final signal,
+  read by the UI's level meters.
+
+Each voice owns and runs **its own** NAM amp-sim chain internally (see
+`nam_node.rs`/`nam_graph.rs`/`nam.rs` below) — there is no engine-level
+fixed amp stage any more; `NamStage`'s old block-driven cycling shape
+(`nam.rs`) is present but unused/dead, don't assume it's wired anywhere.
+
+### NAM (neural amp sim), split three ways
+
+- **`nam.rs`**: model loading/selection. NAM `*.nam` model files are
+  embedded into the binary at compile time (no reliable runtime folder
+  next to the systemd-launched binary on the performance box) and
+  discovered/loaded into `NamModelSlot`s (`Arc<Mutex<Model>>` — required
+  only because nam-rs's `Model` isn't `Clone`; each slot is touched by one
+  audio-thread owner, never contended).
+- **`nam_node.rs`**: `NamNode`, the one hand-written `AudioNode` — pure
+  model inference, 1 in/1 out. fundsp hands a node ≤64 samples per call,
+  far below what nam-rs wants efficiently, so this node buffers into a
+  `window`-sized chunk and runs one `process_buffer` per window (latency =
+  `window` samples, decoupled from cpal's callback size).
+- **`nam_graph.rs`**: everything else (crossover split, gain staging, DC
+  blocking, dry/wet blend, mid/side collapse) as ordinary fundsp graph
+  expressions/combinators around `NamNode` — routing, not a hand-written
+  node, because routing is what combinators are for.
+
+### One module per voice, `#[derive(Voice)]` generates the boilerplate
+
+`voice.rs` holds the shared contract: the `Voice` trait (object-safe,
+what `Engine` holds as `Box<dyn Voice>`), the `VoiceDsp` trait (what an
+author actually implements), `ViewFields`, `ThumpMod`, `KnobPickup`. Each
+concrete voice's struct + `impl VoiceDsp` lives in its own file:
+`ReeseVoice` (`reese.rs`), `GrowlVoice` (`growl.rs`, wraps `WavetableGen`),
+`BasicVoice` (`basic.rs`), `SwarmVoice` (`swarm.rs`). `mod.rs` re-exports
+each generated `*View` so callers import from `crate::audio`.
+
+**Four voice slots** (`VOICE_COUNT = 4`, `engine.rs`): `voice_a` (Reese,
+`index = 0`, detuned-unison-saw bass), `voice_b` (Growl, `index = 1`,
+wavetable + NAM), `voice_c` (Basic, `index = 2`, four builtin oscillators
+— test voice, not a real patch), `voice_d` (Swarm, `index = 3`, 5
+orbiting oscillators + mid/side NAM). `Engine::voices` order must match
+`index`; `Engine::voice_names()` / the CC5-8 knob-selection scheme both
+key off it.
+
+## The `Voice` macro
+
+`#[derive(Voice)]` (`voice-macro/`, `zgicabra_voice_macro::Voice`)
+generates, from one annotated struct: the read-only `*View` struct +
+`view()`, `fields()`/`apply()` (persistence), the `knob_*`/
+`selected_knob`/`set_knob_value` methods, `UI_RANGES`/`KNOB_NAMES`/
+`KNOB_RANGES` tables, an optional `new()`, and `impl Voice for` (index,
+name, `set_sample_rate`, and the `tick()` wrapper that applies pitch-thump
+before calling your `render()`). You write: the annotated struct + `impl
+VoiceDsp` (`render`, optionally `on_block_start`/`on_silence`/
+`on_set_sample_rate`).
+
+Required fields: `sig: SharedSignal` always; `thump: ThumpMod` unless this
+voice never pitch-thumps; `selected_knob: Shared` + `knob_pickup:
+KnobPickup` if it has any `#[knob]` field.
+
+Field attributes:
+- `#[knob(range=1.0..10.0, set=|v| 1.0+v*9.0, default=1.0)]` — a
+  persisted, CC-tunable `Shared`, collected in struct-declaration order
+  into this voice's knob list. `set` maps a raw `0..1` CC level to the
+  real value (identity if omitted); `default` is only needed for a
+  generated `new()`.
+- `#[live(range=0.0..5.0)]` — a `Shared` written by `render()`, visible in
+  `*View`/`UI_RANGES`, never persisted or CC-set. Seeded to `shared(0.0)`.
+- `#[node]` / `#[node(each)]` / `#[node(init = sine())]` — a sub-node
+  whose `set_sample_rate` is forwarded (`each` for an array/Vec of them).
+  `init` only matters for a generated `new()`.
+- `#[view]` — a non-`Shared` field that still belongs in the `*View`.
+- Unannotated fields are internal state, excluded from `*View` and
+  `set_sample_rate` — only allowed under `#[voice(new = manual)]`.
+
+Struct-level: `#[voice(index = N, label = "Name")]` required;
+`new = manual` when construction needs pre-init logic (a generated `new()`
+can't handle plain/`#[view]` fields, or a `#[node]`/`#[knob]` missing
+`init`/`default`); `thump = manual` when the voice applies thump itself
+inside `render()` instead of having the wrapper do it first (`SwarmVoice`,
+which chases an origin point before thumping it).
+
+Minimal shape (see `basic.rs` for the simplest real example, `reese.rs`
+for a fully-loaded one):
+
+```rust
+#[derive(Clone, Voice)]
+#[voice(index = 2, label = "Basic")]
+pub struct BasicVoice {
+    #[node] osc: An<Sine<f64>>,
+    #[knob(range = 0.0..1.0, default = 0.5)] pub level_input: Shared,
+    selected_knob: Shared,
+    knob_pickup:   KnobPickup,
+    thump: ThumpMod,
+    sig:   SharedSignal,
+}
+
+impl VoiceDsp for BasicVoice {
+    fn render (&mut self, freq: f32, _thump_mult: f32) -> Frame<f32, U2> {
+        let s = self.osc.filter_mono(freq) * self.level_input.value() * self.sig.env.value();
+        Frame::from([s, s])
+    }
+}
 ```
-Engine::tick_pre_nam()  -->  Engine::run_nam() [NamStage L/R]  -->  Engine::tick_post_nam() [reverb + limiter]
-     (per-sample)              (per-block, <=NAM_BLOCK_CAP)              (per-sample)
-```
 
-- **`Engine`** (mod.rs, private — `AudioOutput` is the public handle)
-  mixes every sound-generating piece each sample: the four `Voice` impls
-  (below, each silences itself unless selected), a `main_sub` triangle
-  oscillator, `dry_sub` (fixed sine an octave down, bypasses
-  NAM/reverb/limiter), and an
-  `adsr_live` envelope gated by `gate`. `tick_thump()` layers a percussive
-  pitch-decay bump onto `base_freq` on note-on. `FmVoice`/`StutterGen`/
-  `Crusher`/`MoogFilterFx`/`LowpassFx`/`BasicOscGen` (`fm.rs`, `stutter.rs`,
-  `crusher.rs`, `filter.rs`, `gen_node.rs`) compile but are **not wired
-  into `Engine`** — don't assume a module is live just because it
-  compiles; check `Engine::tick_pre_nam`/`run_nam`/`tick_post_nam`.
-- **`NamStage`** (`nam.rs`): NAM neural amp-sim stage, block-driven, with
-  a live low/high crossover split and dry/wet blend. The fixed "amp" stage
-  in `Engine` (`amp_l`/`amp_r`, independent instances so L/R WaveNet state
-  never mixes) always runs one hardcoded model (`AMP_MODEL = "lowgain"`) —
-  no bypass slot, no cycling. `NamStage` also supports a `*.nam`-file-
-  discovery + cycle-by-index shape (`load_nam_models`/`NamModelCycler`),
-  unused by `Engine`/`AudioHandles` today. The one `Mutex` in the audio
-  path (`NamModelSlot.model: Arc<Mutex<Model>>`) exists only because
-  `nam-rs`'s `Model` isn't `Clone`; never contended since only the audio
-  thread touches it.
-- **Reverb** (`reverb.rs`, `ReverbFx`): fixed FDN tail, genuinely stereo.
-  `room_size`/`decay`/`damp` are baked in at `Engine::new()` time —
-  editing those GUI knobs has no live effect, only a restart applies them.
-  `reverb_dry` is live; `reverb_bypass` skips the stage entirely
-  (preserving stereo width, since the tail itself mono-sums).
-- **Limiter** (`compressor.rs`, `Compressor`): downward-only,
-  stereo-linked peak compressor, final safety stage. `limiter_thresh` is
-  live; `RATIO`/`ATTACK`/`RELEASE` are fixed constants.
+`render()` is responsible for reading `self.sig.env` and shaping its own
+output by it — `Engine` does not gate a voice's output by the note
+envelope itself (this is what lets `ReeseVoice` deliberately leave its
+feedback loop ungated while everything else multiplies by `env`).
 
-### One module per voice
+### Live tuning: CC5-8
 
-`voice.rs` holds only the shared contract: the `Voice` trait, `VoiceParams`
-trait, and `ThumpMod` (`pub(super)`). Each concrete voice's
-`*Params`/`*Handle`/`*Voice` trio lives in its own patch file:
-`GrowlParams`/`GrowlHandle`/`GrowlVoice` in `growl.rs` (below
-`WavetableGen`), `ReeseParams`/`ReeseHandle`/`ReeseVoice` in `reese.rs`,
-`BasicParams`/`BasicHandle`/`BasicVoice` in `basic.rs`. `mod.rs`
-re-exports each `*Handle`/`*Params` pair so `gui.rs`/`AudioHandles` import
-from `crate::audio`. **When adding a voice, put its structs in its own
-file, not `voice.rs`.** `BlankVoice` (`blank.rs`) is the exception — no
-params, no `*Handle`, nothing to re-export.
-
-### The `Voice` trait (`voice.rs`)
-
-Every param is a plain `Shared` cell; every GUI control for it is a
-hand-written call in `gui.rs` — adding a tunable value means adding both
-the `Shared` plumbing and a `draw_knob_row`/`draw_module_card` line, no
-generic pickup mechanism exists.
-
-- **`Voice` trait**: `AudioNode<Inputs = U2, Outputs = U2>` plus `const
-  INDEX: usize`, `fn name()`, `fn set_signal(&mut self, bend, filter,
-  fuzz, width, thump: f32)` (both current voices no-op this), `fn
-  on_block_start(&mut self, len: usize)` (extension point for a future
-  block-driven voice). Every `Voice` is wired in parallel into `Engine`
-  and ticked every sample with input `[freq, selected]`; each impl returns
-  silence unless `selected as usize == Self::INDEX`.
-- **Four voice slots**: `voice_a` (`ReeseVoice`, `INDEX = 0`), `voice_b`
-  (`GrowlVoice`, `INDEX = 1`, wraps `WavetableGen`), `voice_c`
-  (`BasicVoice`, `INDEX = 2`, four fundsp builtin oscillators,
-  independently level-mixed — a test voice, not a real patch), `voice_d`
-  (`BlankVoice`, `INDEX = 3`, always-silent placeholder). The struct field
-  letter always matches the slot's `INDEX`, not which voice type occupies
-  it — reordering means renaming the fields to match. `VOICE_NAMES` in
-  `gui.rs` and `voice_selected` must stay in sync with each `Voice::INDEX`.
-- **`VoiceParams` trait**: `fn voice_name()`, `fn fields(&self) ->
-  Vec<(&'static str, f32)>`, `fn from_fields(&[(String, f32)]) -> Self` —
-  the shape `snapshot.rs` needs. `GrowlParams`/`BasicParams`/`ReeseParams`
-  implement it; `BlankVoice` has no params, so `gui.rs`'s save/load match
-  arms just skip index `3`.
-- **`*Handle` structs**: just the live `Shared` cells, cheap to clone,
-  held by `AudioHandles`/`gui.rs`. The matching `*Voice` struct owns the
-  real DSP state plus a clone of the same handle — GUI writes go straight
-  through the shared cell. `BlankVoice` is constructed with no handle at
-  all.
-
-### `WavetableGen` (`growl.rs`) — Growl's patch
-
-Reproduces one specific Vital synth patch as a fundsp `AudioNode` graph, 4
-macro knobs (`bass_drive`, `filter`, `space`, `warp`) via `GrowlHandle`.
-`WavetableGen::clone()` resets to a fresh, un-warmed-up instance — only
-clone at construction, not mid-stream. Also holds the bolted-on NAM amp
-stage (`nam_crossover`/`nam` model cycler on `GrowlHandle`, `NamStage` on
-`GrowlVoice`, run from `on_block_start`).
-
-### `BlankVoice` (`blank.rs`)
-
-`voice_d` is an intentionally empty slot — a trivial `AudioNode`/`Voice`
-impl that unconditionally returns silence, no params or state. Reuse this
-pattern to blank out a slot rather than leaving a half-removed voice
-around.
-
-### Adding a new Voice
-
-Follow `BasicVoice` (`basic.rs`, simplest example): own module (or append
-to an existing patch file that already wraps a generator, e.g.
-`growl.rs`) — not `voice.rs`. Pick an unused `INDEX`, `#[derive(Clone)]`
-struct, implement `AudioNode<Inputs = U2, Outputs = U2>` + `Voice`
-(silence-unless-selected check first in `tick()`), forward
-`set_sample_rate` to every child unit. Add its `*Params`/`*Handle` pair if
-it has tunable params, re-export from `mod.rs`, wire the handle through
-`AudioOutput`/`Engine`/`AudioHandles`, add it to `Engine` as a field
-ticked every sample, add a `VOICE_NAMES` entry and `draw_voice_*` match
-arm in `gui.rs`.
+CC1-4 (from the wand/mock, arbitrated with the 8-knob controller in
+`SharedSignal::set`) drive the global filter/width/fuzz/thump signals.
+CC5/6 move the **selected voice's** `selected_knob`/knob value; CC7/8 do
+the same for `Engine`'s own fixed knob list (`ENGINE_KNOB_RANGES`).
+Switching voices retargets CC5/6 to the newly-selected voice. Every knob
+write goes through `KnobPickup` (soft/absolute-pot takeover) so a knob
+never jumps when it's freshly selected.
 
 ### Persistence
 
-No `serde` anywhere — don't add one for something this small.
-`src/audio/snapshot.rs` saves one voice's live params as flat
-`name=value` text, one file per save named
-`snapshots/{voice_name}_{NNNN}.snap` (monotonic per-voice index, scanned
-from existing files, never overwrites). `snapshot.rs` has this project's
-only `#[cfg(test)]` unit test; everything else is verified by ear.
+No `serde` anywhere. `snapshot.rs` does two things: numbered one-shot
+dumps (`snapshots/{voice_name}_{NNNN}.snap`, monotonic index, never
+overwrites) and an always-current pair (`config/{voice_name}.state` +
+`config/selected`, version-controlled, loaded on startup, rewritten
+whenever `AudioHandles::persist_dirty_voices` sees a voice's dirty flag
+set by a live CC edit). Flat `name=value` text either way.
 
-## GUI (`src/gui.rs`)
+## UI (`src/ui/`)
 
-Dear ImGui via `imgui` + `imgui-winit-support` + `imgui-glow-renderer`,
-windowed with `winit`/`glutin`/`glow`. **Immediate mode** — `draw_ui()`
-runs fresh every frame, no retained widget tree. State that must persist
-across frames (selected snapshot, whether the test note is currently held)
-lives as a local variable in `gui::run()`'s scope, threaded in by `&mut`
-each frame (see `SnapshotBrowser`). Everything else reads straight out of
-the same `Shared` cells the audio thread reads.
-
-- **Custom-drawn controls for most knobs.** `knob()`/`xy_pad()` are
-  hand-drawn on `ui.get_window_draw_list()` — not imgui's `Slider`/`Drag`.
-  `imgui::Drag` is used for exactly one control: the held test-tone's note
-  field. Every knob's `(lo, hi)` range is a hardcoded literal at its call
-  site in `gui.rs`.
-- **`AudioHandles`** (`audio::mod.rs`) bundles everything the GUI needs
-  from a running `AudioOutput`: `test_tone`, `voice_selected` + one
-  `*Handle` per voice slot, the main/dry-sub + thump knobs, `amp_*`/
-  `reverb_*`/`limiter_*` cells, and `capture` (for `--test`).
-  `AudioOutput::handles()` builds one; `main.rs` threads it into
-  `gui::run`. Add new audio-thread handles as fields here, not positional
-  params.
-- **Module-card pattern**: `draw_module_card(ui, title, bypass_cell, size,
-  body_fn)` — bordered child window, optional bypass checkbox, body
-  closure. `draw_knob_row(ui, &[(id, label, lo, hi, cell), ...])` lays out
-  knobs side-by-side. Reuse for new fixed-knob cards.
-- **Voice selector / snapshot browser**: `draw_voice_selector` cycles
-  `voice_selected` through `VOICE_NAMES`. `SnapshotBrowser` drives
-  save/load against whichever voice is selected.
-- **Hydra panel** (`draw_hydra_panel`): mock wand controls (joysticks +
-  trigger/button toggles) when on the mock backend, else a "hardware
-  connected" message. A center column of `signal_override_row`s lets the
-  GUI take a `SignalState` field over from whatever normally computes it,
-  via `ZgicabraBridge`/`SignalOverride` — the same mechanism
-  `hydra::mock`'s MIDI listener uses, so a MIDI controller and the GUI
-  knobs fight over the same field if both drive it live.
-- **Screenshot self-check**: `ZGICABRA_GUI_SCREENSHOT=<path>` makes the
-  window capture its framebuffer to PNG on frame 10 and exit — bypasses
-  macOS's screen-recording prompt, useful for verifying a GUI change
-  rendered without a human watching.
+Terminal UI via `termion` (cursor/clear/color escapes) + `drawille`
+(braille-cell canvas plotting, for waveforms/meters) — redrawn every
+engine-loop tick (`ui::draw_all`), not retained/immediate-mode like a GUI
+toolkit. `--debug` suppresses this entirely in favor of stderr logging.
+Three stacked panels: `panel_main.rs` (wand/note state), `panel_voice.rs`
+(selected voice's knobs, generically over any `*View::knobs()`),
+`panel_debug.rs` (history/delta-event log, output meters via
+`comp_meter.rs`). `tw.rs`/`utils.rs` hold shared terminal-drawing helpers
+(cursor positioning, color codes, box-drawing).
 
 ## Hydra / mock backend (`src/hydra/`)
 
@@ -340,63 +322,65 @@ the same `Shared` cells the audio thread reads.
 - **`MockBackend`** (`mock.rs`) owns an optional MIDI input via
   `hydra::midi` (`midi.rs`): `midi::connect(notes) -> (MidiState,
   Connection)` has a `real` impl (macOS x86_64 only, via `midir`) and a
-  `stub` impl elsewhere (inert `MidiState`, zero-sized `Connection`) —
-  `mock.rs`/`main.rs` call the same API unconditionally, no `#[cfg]`
-  needed at the call site. `midir` is scoped macOS-only in `Cargo.toml` —
-  the Linux performance box has no ALSA dev headers, so it must never be a
-  plain dependency. CC 1-4 (filter/width/fuzz/thump) and pitch-bend feed
-  `AtomicF32` cells that `run_engine_loop` pushes onto `SignalOverride`s
-  each tick when `mc.midi.connected`; Note On/Off go through the normal
-  `DeltaEvent` pipeline, monophonic/last-note-priority like a wand
-  trigger.
+  `stub` impl elsewhere (inert `MidiState`, zero-sized `Connection`) — no
+  `#[cfg]` needed at the call site. `midir` is scoped macOS/Linux-only in
+  `Cargo.toml`, and also backs the unrelated `audio::cc_input` live-tuning
+  path on both platforms (cpal already pulls in ALSA on Linux, so this
+  isn't an extra dependency there).
 - Keyboard: `z`/`.` toggle wand triggers, `a`/`s` cycle voice, `-`/`=`
   cycle tune, arrow keys drive the left stick to full deflection (toggle,
-  not held). Right wand stick + button rows are GUI-only, no keyboard
-  equivalent.
+  not held).
 
 ## Debug logging
 
-Run with `--debug` for diagnosis — it suppresses the terminal UI and
-prints verbose per-frame/per-event diagnostics straight to stderr instead
-(hydra frame telemetry, `DeltaEvent`s as they're handled, raw HID
-read errors from `src/hydra/hid.rs`). This is the first thing to reach
-for when tracking down a controller/engine issue instead of guessing from
-the TUI.
+Run with `--debug` to suppress the terminal UI and print verbose per-
+frame/per-event diagnostics straight to stderr instead (hydra frame
+telemetry, `DeltaEvent`s as they're handled, CC messages, raw HID read
+errors). First thing to reach for when tracking down a controller/engine
+issue instead of guessing from the TUI.
 
 Under the hood: `tools::parse_args` flips a crate-wide `AtomicBool`
-(`tools::DEBUG_ENABLED`, via `tools::set_debug_enabled`/`debug_enabled`),
-and `crate::dbg!(...)` (defined in `tools.rs`, `#[macro_export]`'d to the
-crate root) wraps `eprintln!` gated on that flag — a no-op when `--debug`
-isn't passed. Use `crate::dbg!(...)` for any new verbose/diagnostic
-logging; reserve plain `eprintln!` for actual user-facing error surfaces
-(failed snapshot load/save, bad CLI flag, etc.) that should print
-regardless of `--debug`.
+(`tools::DEBUG_ENABLED`), and `crate::dbg!(...)` (defined in `tools.rs`,
+`#[macro_export]`'d to the crate root) wraps `eprintln!` gated on that
+flag — a no-op when `--debug` isn't passed. Use `crate::dbg!(...)` for new
+verbose/diagnostic logging; reserve plain `eprintln!` for user-facing
+errors that should print regardless (failed snapshot load/save, bad CLI
+flag).
+
+## Other top-level files
+
+- `src/zgicabra.rs` — core instrument logic (don't touch unless asked).
+  Turns raw `HydraState` into `Zgicabra` (wand/note/signal state) each
+  tick via `update()`; exports `SignalState` (continuous performance
+  signal piped to audio every tick), `DeltaEvent` (discrete note/voice/
+  panic events), `Wand`/`NoteState`/`Hand`/`Direction`/`Joystick`.
+- `src/functions.rs` — small standalone math helpers (`hyp`,
+  `rad_to_cycles`, `button_mask`, `smoothstep`), no shared state.
+- `src/plot.rs` — vendored/trimmed terminal line-chart lib (from
+  textplots-rs), used by `ui/panel_debug.rs`'s history plots.
+- `src/tools.rs` — `AtomicF32`, `Args`/`parse_args`, `linexp`, signal
+  handlers, the debug-logging machinery above.
 
 ## Conventions
 
 - `main.rs` has `#![allow(dead_code, unused_imports, unused_variables)]` —
-  this project keeps unreferenced modules around for later reuse (`fm.rs`,
-  `stutter.rs`, `crusher.rs`, `filter.rs`, `gen_node.rs`, `fx_node.rs`,
-  `nam.rs`'s cycling path). **Don't "clean up" unreferenced audio modules
-  unless asked**, and don't assume a module is wired into `Engine` just
-  because it compiles — check `Engine::tick_pre_nam`/`run_nam`/
-  `tick_post_nam`.
-- `Cargo.toml`'s `[profile.dev] debug-assertions = false` works around an
-  imgui-rs 0.12 UB check that only trips in debug builds on an empty draw
-  list — don't second-guess it.
-- `NAM_SAMPLE_RATE = 48_000` is forced for the output device because
-  every NAM model in `nam/` was captured at that rate — always honor
-  `set_sample_rate()`, never assume `DEFAULT_SR`.
-- Verification is mostly ears-driven: `cargo build` + running `--gui` (or
-  `--gui --test` for the automated signal-present check) is the primary
+  this project keeps unreferenced modules around for later reuse (`fm.rs`
+  is the clearest example — see its module doc for *why* it's kept
+  despite being unused; `nam.rs`'s `NamStage`/cycling path is currently
+  dead too). **Don't "clean up" unreferenced audio modules unless asked**,
+  and don't assume a module is wired into `Engine` just because it
+  compiles — check `engine.rs`.
+- Verification is mostly ears-driven: `cargo build` + running the binary
+  (or `--test` for the automated signal-present check) is the primary
   loop. `cargo build` clean is necessary but not sufficient; flag when you
   can't verify audibly.
+- Tests exist (`#[cfg(test)]`) in `snapshot.rs`, `growl.rs`, and
+  `nam_graph.rs` — not just snapshot.rs any more; check for more before
+  assuming a module is untested.
 - Grep the installed crate source under
   `~/.cargo/registry/src/*/fundsp-0.23.0/src/` before assuming a fundsp
   function's signature, especially through `prelude64` — see the gotchas
   above.
-
-## Non-Rust material
-
-- `hid_test/` — standalone side Cargo project (own `Cargo.toml`/target)
-  for probing the macOS raw-HID path; not built by the main `cargo build`.
+- Cargo workspace members: `["voice-macro"]` only. `hid_test/` is a
+  separate, non-member Cargo project (own `Cargo.toml`/target) for probing
+  the macOS raw-HID path; not built by the main `cargo build`.

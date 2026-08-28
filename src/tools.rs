@@ -95,7 +95,6 @@ pub fn smoothstep (a: f32, b: f32, t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-// Exponential range mapping (SC's `linexp`): val in [in_lo,in_hi] -> [out_lo,out_hi]
 pub fn linexp (in_lo: f32, in_hi: f32, out_lo: f32, out_hi: f32, val: f32) -> f32 {
     let t = ((val - in_lo) / (in_hi - in_lo)).clamp(0.0, 1.0);
     out_lo * (out_hi / out_lo).powf(t)
@@ -113,6 +112,11 @@ pub fn unlerp (a: f32, b: f32, x: f32) -> f32 {
     if b == a { return 0.0; }
     return (x - a) / (b - a);
 }
+
+
+// Musical
+
+pub fn cents_to_ratio (cents: f32) -> f32 { 2f32.powf(cents / 1200.0) }
 
 
 // CLI

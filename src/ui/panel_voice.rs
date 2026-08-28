@@ -53,6 +53,7 @@ fn draw_range_label (x: u16, y: u16, in_out: bool, selected: bool, label: &str, 
 pub(super) fn draw_knob_list (x: u16, y: u16, knobs: &[(&'static str, Shared, f32, f32)], selected: usize) {
     for (i, (name, cell, min, max)) in knobs.iter().enumerate() {
         let label = name.strip_suffix("_input").unwrap_or(name);
+        let label = label.strip_suffix("_level").unwrap_or(label);
         draw_range_label(x, y + i as u16, true, i == selected, label, cell.value(), *min, *max);
     }
 }
@@ -89,12 +90,12 @@ fn amp_db (amp: f32) -> f32 {
 fn render_channel (peak_db: f32, rms_db: f32, backwards: bool) -> String {
     let cells: Vec<(char, RGB8)> = (0..VU_CELLS).map(|i| {
         let cell_db = VU_MIN_DB + i as f32 * VU_STEP_DB;
-        if cell_db <= rms_db {
-            ('━', db_color(cell_db)) // RMS level
-        } else if cell_db <= peak_db {
-            ('─', db_color(peak_db)) // RMS level
+        if cell_db < rms_db {
+            ('━', db_color(cell_db)) 
+        } else if cell_db < peak_db {
+            ('-', db_color(peak_db))
         } else {
-            ('─', tw::SLATE_500) // headroom
+            ('·', tw::SLATE_500) // headroom
         }
     }).collect();
 
@@ -129,8 +130,16 @@ pub fn draw_voice_panel (y: u16, zgicabra: &Zgicabra, audio: &AudioHandles) {
 
     print!("{}{}", goto(5, y + 2), out_meter);
 
+    draw_engine_knob_panel(38, y + 4, audio);
+
     draw_audio_errors(y, &audio.errors);
 }
+
+fn draw_engine_knob_panel (x: u16, y: u16, audio: &AudioHandles) {
+    let knobs = audio.engine_knobs();
+    draw_knob_list(x, y, &knobs, selected_index(&audio.engine_selected_knob, knobs.len()));
+}
+
 
 
 //
@@ -175,6 +184,11 @@ fn draw_growl_panel (y: u16, growl: &GrowlView) {
 fn draw_basic_panel (y: u16, basic: &BasicView) {
     let knobs = basic.knobs();
     draw_knob_list(2, y + 2, &knobs, selected_index(&basic.selected_knob, knobs.len()));
+
+    let live_y = y + 2 + knobs.len() as u16 + 1;
+    draw_range_label(2, live_y,     false, false, "wt1_pos", basic.wt1_pos.value(), 0.0, 1.0);
+    draw_range_label(2, live_y + 1, false, false, "wt2_pos", basic.wt2_pos.value(), 0.0, 1.0);
+    draw_range_label(2, live_y + 2, false, false, "wt3_pos", basic.wt3_pos.value(), 0.0, 1.0);
 }
 
 

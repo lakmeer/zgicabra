@@ -1,6 +1,7 @@
-sin_level=0
-tri_level=0.42519686
-square_level=0.16535433
-saw_level=0.20472442
-stutter_level=0.21259843
-saturation=1
+wt1_level=0.33070865
+wt2_level=0.33070865
+wt3_level=0.31496063
+stutter_level=0.03937008
+saturation=3.976378
+max_filter_input=1
+filter_rez=1.5590551

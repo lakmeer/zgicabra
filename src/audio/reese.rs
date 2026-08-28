@@ -1,18 +1,12 @@
 
 //
-// Reese -- classic detuned-unison-saw bass, per ref/reese-bass-dsp-guide.md.
-// VOICES band-limited saws spread symmetrically in cents (odd count so one
-// voice anchors at zero detune/center pan), each panned via fundsp's
-// equal-power panner() so live `width` spreads/collapses the stack. A
-// detuned sub-octave layer adds weight and stays unpanned/centered for a
-// phase-coherent low end. A slow LFO animates detune spread and filter
-// cutoff together; tanh soft-clip sits pre-filter for harmonic richness.
+// Reese
 //
 
 use std::sync::Arc;
 
 use fundsp::prelude64::*;
-use zgicabra_voice_macro::Voice;
+use zgicabra_voice_macro::voice;
 
 use crate::tools::linexp;
 use super::signal::SharedSignal;
@@ -26,14 +20,8 @@ use super::nam_node::NAM_WINDOW;
 
 const VOICES: usize = 8; // odd -- center voice lands at zero detune/pan
 
-// Impact/kick sample embedded straight into the binary at compile time --
-// same reasoning as nam.rs's NAM_MODELS (see there): the boot-time systemd
-// service execs zgicabra from target/release with no reliable runtime wav/
-// folder alongside it.
 static IMPACT_SAMPLE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/wav/kick_dry.wav"));
 
-// Decodes the embedded kick sample into a one-shot mono SamplePlayer --
-// plays through once, then sits silent until reset().
 fn load_impact_player () -> An<SamplePlayer> {
     let sample = Sample::parse(IMPACT_SAMPLE);
     play_sample(&Arc::new(sample))
@@ -94,8 +82,6 @@ fn load_feedback_ir () -> Wave {
     Wave::from_samples(FEEDBACK_IR_SAMPLE_RATE, &data)
 }
 
-// Instant attack, then decays to 0 over `delay_sec` -- retriggers on every
-// edge of `trigger` (NoteStart, same trigger impact_player resets on).
 #[derive(Clone)]
 struct DelayEnv {
     trigger_seen:    f32,
@@ -127,8 +113,8 @@ impl DelayEnv {
     }
 }
 
-#[derive(Clone, Voice)]
 #[voice(index = 0, label = "Reese", new = manual)]
+#[derive(Clone)]
 pub struct ReeseVoice {
     #[node(each)] unison: [An<WaveSynth<U1>>; VOICES],
     unison_pan: [An<Panner<U2>>; VOICES],
@@ -138,14 +124,13 @@ pub struct ReeseVoice {
     #[node] lfo: An<Sine<f64>>,
     #[node] stutter: An<Unit<U1, U1>>,
 
-    // Fake feedback, closed-loop version -- see the FEEDBACK_* consts and
-    // render() for the mechanism.
     #[node] feedback_res_l:  An<Resonator<f64, U3>>,
     #[node] feedback_res_r:  An<Resonator<f64, U3>>,
     #[node] feedback_nam_l:  Box<dyn AudioUnit>,
     #[node] feedback_nam_r:  Box<dyn AudioUnit>,
     #[node] feedback_conv_l: An<Convolver>,
     #[node] feedback_conv_r: An<Convolver>,
+
     feedback_nam_blend:   Shared, // pinned to 1.0 -- fully wet always, feedback_attn controls loop gain instead
     feedback_nam_level_l: Shared, // nam_band's post-blend peak monitor -- required by its signature, unused for now
     feedback_nam_level_r: Shared,
@@ -189,9 +174,6 @@ pub struct ReeseVoice {
     #[live(range = -60.0..0.0)] pub crush_out_live: Shared,
     #[live(range = -60.0..0.0)] pub crush_gr_live:  Shared,
 
-    selected_knob: Shared,
-    knob_pickup:   KnobPickup,
-
     thump: ThumpMod,
     sig:   SharedSignal,
 }
@@ -202,22 +184,21 @@ impl ReeseVoice {
             if VOICES == 1 { 0.0 } else { (2.0 * i as f32 / (VOICES - 1) as f32) - 1.0 }
         });
 
-        // Crusher writes these itself every tick -- see crusher.rs.
         let crush_env_live = shared(0.0);
         let crush_out_live = shared(0.0);
         let crush_gr_live  = shared(0.0);
 
-        // Two independent "lowgain" model instances (own Arc<Mutex<Model>>
-        // each) so the L/R feedback passes never share WaveNet dilation
-        // state -- see the FEEDBACK_* consts doc comment.
         let feedback_nam_slot_l = load_named_model(FEEDBACK_NAM_MODEL).unwrap();
         let feedback_nam_slot_r = load_named_model(FEEDBACK_NAM_MODEL).unwrap();
+
         let feedback_nam_blend   = shared(1.0);
         let feedback_nam_level_l = shared(0.0);
         let feedback_nam_level_r = shared(0.0);
+
         let feedback_nam_l: Box<dyn AudioUnit> = Box::new(nam_band(
             &feedback_nam_slot_l, &feedback_nam_blend, &feedback_nam_level_l, NAM_WINDOW,
         ));
+
         let feedback_nam_r: Box<dyn AudioUnit> = Box::new(nam_band(
             &feedback_nam_slot_r, &feedback_nam_blend, &feedback_nam_level_r, NAM_WINDOW,
         ));

@@ -1,6 +1,7 @@
 //
-// #[derive(Voice)] -- generates the mechanical skeleton every concrete voice
-// in src/audio/*.rs used to hand-write: the read-only *View struct + view(),
+// #[voice(index = .., label = ..)] -- an attribute macro that generates the
+// mechanical skeleton every concrete voice in src/audio/*.rs used to
+// hand-write: the read-only *View struct + view(),
 // the fields()/apply() snapshot tables, the knob_*/selected_knob/
 // set_knob_value methods, a UI_RANGES table, an optional new(), and the
 // `impl Voice for` block (index, name,
@@ -21,9 +22,11 @@
 //       this voice's ordered knob list -- see Voice::knob_count/knob_name/
 //       knob_range/knob_value/set_knob_value in voice.rs. set optional
 //       (defaults to the identity closure). default only needed for a
-//       generated new(). A voice with any #[knob] field must also declare
-//       `selected_knob: Shared` and `knob_pickup: KnobPickup` fields (like
-//       `thump`/`sig`) -- the macro drives them, it can't add fields itself.
+//       generated new(). A voice with any #[knob] field gets `selected_knob:
+//       Shared` and `knob_pickup: KnobPickup` fields injected by the macro
+//       (a generated new() seeds them; a #[voice(new = manual)] new() must
+//       still name them in its struct literal -- `selected_knob: shared(0.0)`,
+//       `knob_pickup: KnobPickup::new()`).
 //   #[live(range=0.0..5.0)]   Shared written by render(), View-visible + in
 //       UI_RANGES, but never persisted or CC-set. Seeded to shared(0.0).
 //   #[node]  /  #[node(each)]  /  #[node(init = sine())]
@@ -35,17 +38,22 @@
 //
 
 use proc_macro::TokenStream;
-use proc_macro2::{Literal, TokenStream as TokenStream2};
+use proc_macro2::{Literal, Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{
-    parse_macro_input, Attribute, Data, DeriveInput, Expr, ExprClosure, ExprRange,
-    Fields, Ident, LitStr, Type,
+    parse_macro_input, parse::Parser, Attribute, Data, DeriveInput, Expr, ExprClosure,
+    ExprRange, Field, Fields, Ident, LitStr, Type,
 };
 
-#[proc_macro_derive(Voice, attributes(voice, knob, live, node, view))]
-pub fn derive_voice (input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    expand(input)
+// Helper attributes the macro consumes off individual fields -- stripped
+// from the emitted struct (an attribute macro, unlike a derive, gets no
+// free pass for inert helper attributes).
+const FIELD_ATTRS: [&str; 4] = ["knob", "live", "node", "view"];
+
+#[proc_macro_attribute]
+pub fn voice (attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as DeriveInput);
+    expand(input, attr.into())
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
 }
@@ -96,21 +104,21 @@ struct Voice {
 
 // ---- top-level expansion --------------------------------------------------
 
-fn expand (input: DeriveInput) -> syn::Result<TokenStream2> {
+fn expand (mut input: DeriveInput, args: TokenStream2) -> syn::Result<TokenStream2> {
     let name = input.ident.clone();
 
-    let (index, label, manual_new, manual_thump) = parse_voice_attr(&input)?;
+    let (index, label, manual_new, manual_thump) = parse_voice_attr(args)?;
 
-    let fields = match &input.data {
-        Data::Struct(s) => match &s.fields {
-            Fields::Named(f) => &f.named,
-            _ => return Err(syn::Error::new_spanned(&input, "Voice derive needs named fields")),
+    let named = match &mut input.data {
+        Data::Struct(s) => match &mut s.fields {
+            Fields::Named(f) => &mut f.named,
+            _ => return Err(syn::Error::new_spanned(&name, "#[voice] needs named fields")),
         },
-        _ => return Err(syn::Error::new_spanned(&input, "Voice can only be derived for structs")),
+        _ => return Err(syn::Error::new_spanned(&name, "#[voice] can only be applied to a struct")),
     };
 
     let mut v = Voice::default();
-    for field in fields {
+    for field in named.iter() {
         let ident = field.ident.clone().unwrap();
         let ty = field.ty.clone();
 
@@ -126,10 +134,6 @@ fn expand (input: DeriveInput) -> syn::Result<TokenStream2> {
             v.thump = Some(ident);
         } else if ident == "sig" {
             v.sig = Some(ident);
-        } else if ident == "selected_knob" {
-            v.selected_knob = Some(ident);
-        } else if ident == "knob_pickup" {
-            v.knob_pickup = Some(ident);
         } else {
             v.plains.push(PlainField { ident });
         }
@@ -141,11 +145,25 @@ fn expand (input: DeriveInput) -> syn::Result<TokenStream2> {
     // the field but applies it itself.
     let thump = v.thump.clone();
     if v.sig.is_none() {
-        return Err(syn::Error::new_spanned(&input, "Voice derive needs a `sig: SharedSignal` field"));
+        return Err(syn::Error::new_spanned(&name, "#[voice] needs a `sig: SharedSignal` field"));
     }
-    if !v.knobs.is_empty() && (v.selected_knob.is_none() || v.knob_pickup.is_none()) {
-        return Err(syn::Error::new_spanned(&input,
-            "a Voice with any #[knob] field needs `selected_knob: Shared` and `knob_pickup: KnobPickup` fields"));
+
+    // Helper attributes carry no meaning to the compiler now that this is an
+    // attribute macro (a derive gets inert helper attributes for free) --
+    // strip them off every field before the struct is re-emitted.
+    for field in named.iter_mut() {
+        field.attrs.retain(|a| !FIELD_ATTRS.iter().any(|n| a.path().is_ident(n)));
+    }
+
+    // The knob-selection state every voice with a #[knob] field used to
+    // hand-declare -- injected here so it lives in one place. A generated
+    // new() seeds these (see gen_new); a #[voice(new = manual)] new() still
+    // names them in its struct literal.
+    if !v.knobs.is_empty() {
+        named.push(Field::parse_named.parse2(quote! { selected_knob: Shared }).unwrap());
+        named.push(Field::parse_named.parse2(quote! { knob_pickup: KnobPickup }).unwrap());
+        v.selected_knob = Some(syn::parse_quote!(selected_knob));
+        v.knob_pickup   = Some(syn::parse_quote!(knob_pickup));
     }
 
     let view_struct = gen_view_struct(&name, &v);
@@ -154,6 +172,7 @@ fn expand (input: DeriveInput) -> syn::Result<TokenStream2> {
     let voice_trait = gen_voice_trait(&name, &index, &label, &v, thump.as_ref(), manual_thump);
 
     Ok(quote! {
+        #input
         #view_struct
         #view_impl
         #voice_inh
@@ -167,35 +186,31 @@ fn find_attr<'a> (attrs: &'a [Attribute], name: &str) -> Option<&'a Attribute> {
     attrs.iter().find(|a| a.path().is_ident(name))
 }
 
-fn parse_voice_attr (input: &DeriveInput) -> syn::Result<(Expr, LitStr, bool, bool)> {
-    let attr = find_attr(&input.attrs, "voice")
-        .ok_or_else(|| syn::Error::new_spanned(input, "missing #[voice(index=.., label=..)]"))?;
-
+fn parse_voice_attr (args: TokenStream2) -> syn::Result<(Expr, LitStr, bool, bool)> {
     let mut index = None;
     let mut label = None;
     let mut manual_new = false;
     let mut manual_thump = false;
 
-    attr.parse_nested_meta(|meta| {
+    let parser = syn::meta::parser(|meta| {
         if meta.path.is_ident("index") {
             index = Some(meta.value()?.parse::<Expr>()?);
         } else if meta.path.is_ident("label") {
             label = Some(meta.value()?.parse::<LitStr>()?);
         } else if meta.path.is_ident("new") {
-            let v: Ident = meta.value()?.parse()?;
-            manual_new = v == "manual";
+            manual_new = meta.value()?.parse::<Ident>()? == "manual";
         } else if meta.path.is_ident("thump") {
-            let v: Ident = meta.value()?.parse()?;
-            manual_thump = v == "manual";
+            manual_thump = meta.value()?.parse::<Ident>()? == "manual";
         } else {
             return Err(meta.error("unknown #[voice] key"));
         }
         Ok(())
-    })?;
+    });
+    parser.parse2(args)?;
 
     Ok((
-        index.ok_or_else(|| syn::Error::new_spanned(attr, "#[voice] missing index"))?,
-        label.ok_or_else(|| syn::Error::new_spanned(attr, "#[voice] missing label"))?,
+        index.ok_or_else(|| syn::Error::new(Span::call_site(), "#[voice] missing index"))?,
+        label.ok_or_else(|| syn::Error::new(Span::call_site(), "#[voice] missing label"))?,
         manual_new,
         manual_thump,
     ))

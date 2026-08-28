@@ -27,6 +27,8 @@ mod voice;
 mod cc_input;
 mod signal;
 mod sample;
+mod analysis;
+mod wavetable;
 
 use signal::SharedSignal;
 
@@ -127,7 +129,7 @@ pub struct Handles {
     pub thump_decay:   Shared,
 
     pub reverb_bypass: Shared,
-    pub reverb_dry:    Shared,
+    pub reverb_mix:    Shared,
     pub reverb_decay:  Shared,
     pub reverb_damp:   Shared,
     pub reverb_size:   Shared,
@@ -153,8 +155,8 @@ impl Handles {
         engine::ENGINE_KNOB_RANGES.iter().map(|&(name, min, max)| {
             let cell = match name {
                 "master_vol"     => self.master_vol.clone(),
-                "limiter_thresh" => self.limiter_thresh.clone(),
-                "reverb_dry"     => self.reverb_dry.clone(),
+                "limiter"        => self.limiter_thresh.clone(),
+                "reverb_mix"     => self.reverb_mix.clone(),
                 "main_sub_lvl"   => self.main_sub_lvl.clone(),
                 "dry_sub_lvl"    => self.dry_sub_lvl.clone(),
                 _ => unreachable!("ENGINE_KNOB_RANGES entry with no matching Handles cell"),
@@ -259,10 +261,10 @@ impl AudioOutput {
         let main_sub_lvl  = shared(0.35);
         let dry_sub_lvl   = shared(0.35);
         let thump_peak    = shared(1.5);
-        let thump_decay   = shared(0.10);
+        let thump_decay   = shared(0.07);
 
         let reverb_bypass = shared(0.0);
-        let reverb_dry    = shared(0.12);
+        let reverb_mix    = shared(0.12);
         let reverb_decay  = shared(0.6);
         let reverb_damp   = shared(0.5);
         let reverb_size   = shared(10.0);
@@ -297,7 +299,7 @@ impl AudioOutput {
             nam_names,
 
             reverb_bypass.clone(),
-            reverb_dry.clone(),
+            reverb_mix.clone(),
             reverb_decay.value(),
             reverb_damp.value(),
             reverb_size.value(),
@@ -336,7 +338,7 @@ impl AudioOutput {
             thump_decay:   thump_decay.clone(),
 
             reverb_bypass: reverb_bypass.clone(),
-            reverb_dry:    reverb_dry.clone(),
+            reverb_mix:    reverb_mix.clone(),
             reverb_decay:  reverb_decay.clone(),
             reverb_damp:   reverb_damp.clone(),
             reverb_size:   reverb_size.clone(),

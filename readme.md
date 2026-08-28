@@ -81,8 +81,9 @@ licenses. Some samples have been modified from their original forms.
 
 | File | Source | License |
 |---|---|---|
-| kick_dry.wav     | https://pixabay.com/sound-effects/musical-kick-greg-232043/           | [Pixabay Content License](https://pixabay.com/service/license-summary/) |
-| kick_deep.wav    | https://pixabay.com/sound-effects/musical-awesome-house-kick-98685/   | [Pixabay Content License](https://pixabay.com/service/license-summary/) |
-| kick_pitched.wav | https://pixabay.com/sound-effects/musical-kick-183936/                | [Pixabay Content License](https://pixabay.com/service/license-summary/) |
-| pluck.wav        | https://pixabay.com/sound-effects/musical-clean-fingered-bass-101922/ | [Pixabay Content License](https://pixabay.com/service/license-summary/) |
+| kick_dry.wav     | https://pixabay.com/sound-effects/musical-kick-greg-232043/             | [Pixabay Content License](https://pixabay.com/service/license-summary/) |
+| kick_deep.wav    | https://pixabay.com/sound-effects/musical-awesome-house-kick-98685/     | [Pixabay Content License](https://pixabay.com/service/license-summary/) |
+| kick_pitched.wav | https://pixabay.com/sound-effects/musical-kick-183936/                  | [Pixabay Content License](https://pixabay.com/service/license-summary/) |
+| pluck.wav        | https://pixabay.com/sound-effects/musical-clean-fingered-bass-101922/   | [Pixabay Content License](https://pixabay.com/service/license-summary/) |
+| feedback.wav     | https://pixabay.com/sound-effects/musical-scream-guitar-feedback-83835/ | [Pixabay Content License](https://pixabay.com/service/license-summary/) |
 

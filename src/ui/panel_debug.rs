@@ -69,8 +69,6 @@ pub fn draw_debug_panel (y: u16, zgicabra: &Zgicabra, history: &Vec<Zgicabra>, d
         zgicabra.right.rot[2],
         zgicabra.right.rot[3]);
 
-    draw_engine_knob_panel(RHS, y + 13, audio);
-
     /*
     for row in 0..10 {
         println!("{}{}", goto(RHS, y + 15 + row as u16), " ".repeat(25));
@@ -83,15 +81,6 @@ pub fn draw_debug_panel (y: u16, zgicabra: &Zgicabra, history: &Vec<Zgicabra>, d
     */
 
     print!("{}{}", goto(RHS, y), default_color);
-}
-
-// Engine's own CC7/8-selectable knob list (see engine::ENGINE_KNOB_RANGES
-// and the same mechanism on Voice in voice.rs) -- shares draw_knob_list
-// with the per-voice panels (panel_voice.rs) so the selected-knob
-// highlight looks the same everywhere.
-fn draw_engine_knob_panel (x: u16, y: u16, audio: &AudioHandles) {
-    let knobs = audio.engine_knobs();
-    draw_knob_list(x, y, &knobs, selected_index(&audio.engine_selected_knob, knobs.len()));
 }
 
 const SPECTRUM_FFT_LEN: usize = 1024;
