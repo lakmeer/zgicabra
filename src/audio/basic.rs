@@ -109,10 +109,9 @@ impl VoiceDsp for BasicVoice {
 
         let namd = self.filter.tick(&Frame::from([namd, cutoff_hz, self.filter_rez.value()]))[0];
 
-        let mut crushed = [0.0f32];
-        self.crush.tick(&[namd], &mut crushed);
+        let crushed = self.crush.filter_mono(namd);
 
-        Frame::from([crushed[0], crushed[0]])
+        Frame::from([crushed, crushed])
     }
 }
 

@@ -369,12 +369,10 @@ impl VoiceDsp for ReeseVoice {
         let out_l = self.filter_l.tick(&Frame::from([shaped_l, cutoff_hz, q]))[0];
         let out_r = self.filter_r.tick(&Frame::from([shaped_r, cutoff_hz, q]))[0];
 
-        let mut wet_l = [0.0f32];
-        let mut wet_r = [0.0f32];
-        self.crusher_l.tick(&[out_l], &mut wet_l);
-        self.crusher_r.tick(&[out_r], &mut wet_r);
+        let wet_l = self.crusher_l.filter_mono(out_l);
+        let wet_r = self.crusher_r.filter_mono(out_r);
 
-        Frame::from([wet_l[0] * 0.6, wet_r[0] * 0.6])
+        Frame::from([wet_l * 0.6, wet_r * 0.6])
     }
 
     fn on_set_sample_rate (&mut self, sample_rate: f64) {

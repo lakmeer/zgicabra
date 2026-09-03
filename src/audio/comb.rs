@@ -13,7 +13,7 @@ use fundsp::prelude64::*;
 pub const MAX_DELAY_S: f32 = 0.05;
 
 #[derive(Clone)]
-struct Comb {
+pub struct Comb {
     buffer: Vec<f32>,
     pos: usize,
     sample_rate: f32,
@@ -59,8 +59,7 @@ impl AudioNode for Comb {
     }
 }
 
-//pub fn comb () -> An<impl AudioNode<Inputs = U4, Outputs = U1>> {
-pub fn comb () -> An<impl AudioNode<Inputs = U4, Outputs = U1>> {
+pub fn comb () -> An<Comb> {
     An(Comb::new())
 }
 

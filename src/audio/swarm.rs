@@ -15,7 +15,7 @@ use super::nam_graph::nam_mid_side;
 use super::nam_node::NAM_WINDOW;
 use super::filter::MoogFilterFx;
 use super::crusher::{crusher, LOW_MID_HZ, MID_HIGH_HZ};
-use super::comb::{comb, MAX_DELAY_S};
+use super::comb::{comb, Comb, MAX_DELAY_S};
 
 const NUM_OSCS: usize = 5;
 
@@ -297,7 +297,7 @@ struct ChannelChain {
     limiter: An<Limiter<U1>>,
     moog:    MoogFilterFx,
     crusher: Box<dyn AudioUnit>,
-    comb:    Box<dyn AudioUnit>,
+    comb:    An<Comb>,
     comb_time: Shared,
     comb_ff:   Shared,
     comb_fb:   Shared,
@@ -314,7 +314,7 @@ impl ChannelChain {
                 shared(LOW_MID_HZ), shared(MID_HIGH_HZ),
                 shared(0.0), shared(0.0), shared(0.0),
             )),
-            comb: Box::new(comb()),
+            comb: comb(),
             comb_time, comb_ff, comb_fb, comb_mix,
         }
     }
@@ -333,17 +333,16 @@ impl ChannelChain {
     fn post (&mut self, x: f32, filter_cutoff: f32) -> f32 {
         let filtered = self.moog.tick(x, filter_cutoff, MOOG_RESONANCE);
 
-        let mut wet = [0.0f32];
-        self.crusher.tick(&[filtered], &mut wet);
+        let wet = self.crusher.filter_mono(filtered);
 
-        let mut combed = [0.0f32];
-        self.comb.tick(&[wet[0],
+        let combed = self.comb.tick(&Frame::from([
+            wet,
             self.comb_time.value(),
             self.comb_ff.value(),
-            self.comb_fb.value()],
-            &mut combed);
+            self.comb_fb.value(),
+        ]))[0];
 
-        lerp(wet[0], combed[0], self.comb_mix.value())
+        lerp(wet, combed, self.comb_mix.value())
     }
 }
 
