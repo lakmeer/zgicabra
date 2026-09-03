@@ -21,6 +21,7 @@ pub struct SharedSignal {
     pub fuzz:   Shared,
     pub width:  Shared,
     pub thump:  Shared,
+    pub depth:  Shared,
     pub vel:    Shared,
     pub acc:    Shared,
     pub aux:    Shared,
@@ -36,6 +37,7 @@ impl SharedSignal {
             fuzz:   shared(0.0),
             width:  shared(0.0),
             thump:  shared(0.0),
+            depth:  shared(0.0),
             vel:    shared(0.0),
             acc:    shared(0.0),
             aux:    shared(0.0),
@@ -43,17 +45,10 @@ impl SharedSignal {
         }
     }
 
-    // Called once per hydra tick (main.rs's run_engine_loop) with the
-    // latest control-thread snapshot. `cc_connected` is whether an 8-knob
-    // controller is attached (see audio::cc_input) -- when it is, CC1-4
-    // write filter/width/fuzz/thump straight into these same cells from the
-    // audio thread (see build_stream), so wand tracking here only wins the
-    // tick if it actually produced a new value; a static wand reading
-    // leaves whatever the controller last set alone. When no controller is
-    // connected, wand tracking always wins, same as before this existed.
     pub fn set (&self, signal: &SignalState, cc_connected: bool) {
         self.level.set_value(signal.level);
         self.bend.set_value(signal.bend);
+        self.depth.set_value(signal.depth);
         if cc_connected {
             if signal.filter != self.filter.value() { self.filter.set_value(signal.filter); }
             if signal.fuzz   != self.fuzz.value()   { self.fuzz.set_value(signal.fuzz); }

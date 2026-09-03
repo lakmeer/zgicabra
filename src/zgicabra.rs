@@ -11,7 +11,7 @@ use crate::hydra::{HydraState,ControllerFrame};
 use crate::tools::*;
 
 const JOYSTICK_DEADZONE: f32 = 0.15;
-const TRIGGER_MODE: TriggerMode = TriggerMode::Instant;
+const TRIGGER_MODE: TriggerMode = TriggerMode::Full;
 const REPEAT_MODE: RepeatMode = RepeatMode { on_stick: false, on_swap: false, on_trigger: true };
 
 
@@ -170,6 +170,7 @@ pub struct SignalState {
     pub fuzz:         f32,
     pub width:        f32,
     pub thump:        f32,
+    pub depth:        f32,
     pub vel:          f32,
     pub acc:          f32,
     pub aux:          f32,
@@ -184,6 +185,7 @@ impl SignalState {
             fuzz:         0.0,
             width:        0.0,
             thump:        0.0,
+            depth:        0.0,
             vel:          0.0,
             acc:          0.0,
             aux:          0.0,
@@ -341,6 +343,13 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     if curr_state.trigger_total == 0.0 {
         curr_state.most_recent_wand = Hand::Neither;
     }
+
+    curr_state.signal.depth = match curr_state.most_recent_wand {
+        Hand::Left  => curr_state.left.trigger,
+        Hand::Right => curr_state.right.trigger,
+        Hand::Neither => 0.0,
+    };
+
 
     // Bumpers
 

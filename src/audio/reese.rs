@@ -356,9 +356,7 @@ impl VoiceDsp for ReeseVoice {
         mix_l += self.feedback_loop_l * FEEDBACK_OUT_LEVEL * feedback_mix_gain;
         mix_r += self.feedback_loop_r * FEEDBACK_OUT_LEVEL * feedback_mix_gain;
 
-        let drive = (self.drive_input.value()
-            * (1.0 + 2.0 * self.sig.fuzz.value().clamp(0.0, 1.0))
-            * (1.0 + IMPACT_DRIVE_POP * impact_env)).max(1.0);
+        let drive = (self.drive_input.value() * (1.0 + IMPACT_DRIVE_POP * impact_env)).max(1.0);
         self.drive_live.set_value(drive);
         let shaped_l = (mix_l * self.drive_live.value()).tanh();
         let shaped_r = (mix_r * self.drive_live.value()).tanh();
@@ -376,7 +374,7 @@ impl VoiceDsp for ReeseVoice {
         self.crusher_l.tick(&[out_l], &mut wet_l);
         self.crusher_r.tick(&[out_r], &mut wet_r);
 
-        Frame::from([wet_l[0], wet_r[0]])
+        Frame::from([wet_l[0] * 0.6, wet_r[0] * 0.6])
     }
 
     fn on_set_sample_rate (&mut self, sample_rate: f64) {

@@ -81,15 +81,17 @@ impl VoiceDsp for BasicVoice {
 
         let d1 =  lerp(0.02, 0.2, self.sig.vel.value().clamp(0.0, 1.0));
 
-        let pos1 = (WT1_OFFSET + self.lfo1.get_mono() * d1).clamp(0.0, 1.0);
+        let depth = self.sig.depth.value();
+
+        let pos1 = (depth + WT1_OFFSET + self.lfo1.get_mono() * d1).clamp(0.0, 1.0);
         self.wt1_pos.set_value(pos1);
         let osc1 = self.wt1.tick(&Frame::from([f, pos1]))[0] * self.wt1_level.value();
 
-        let pos2 = (width + self.lfo2.get_mono() * d1 + 0.1).clamp(0.0, 1.0);
+        let pos2 = (depth + width + self.lfo2.get_mono() * d1 + 0.1).clamp(0.0, 1.0);
         self.wt2_pos.set_value(pos2);
         let osc2 = self.wt2.tick(&Frame::from([f * cents_to_ratio(DETUNE_CENTS), pos2]))[0] * self.wt2_level.value();
 
-        let pos3 = (width + self.lfo3.get_mono() * d1).clamp(0.0, 1.0);
+        let pos3 = (depth + width + self.lfo3.get_mono() * d1).clamp(0.0, 1.0);
         self.wt3_pos.set_value(pos3);
         let osc3 = self.wt3.tick(&Frame::from([f * cents_to_ratio(-DETUNE_CENTS), pos3]))[0] * self.wt3_level.value();
 
