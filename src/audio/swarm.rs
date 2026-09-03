@@ -1,26 +1,4 @@
 
-//
-// Swarm -- 5 oscillators (2 tri, 2 saw, 1 square), each orbiting a shared
-// origin point in a 2D plane where x = frequency (Hz) offset and y = pan
-// (see num_complex usage below). The origin itself chases the input note's
-// frequency with a fast-but-imperfect lerp, so the whole swarm glides
-// rather than snapping. Each oscillator's orbit position feeds its own
-// frequency offset, stereo pan, and its own hand-rolled phaser (rate
-// tracks that oscillator's own orbiting frequency -- see Phaser below).
-//
-// The summed swarm splits into two per-channel chains (limiter ->
-// crossover -> moog filter -> crusher), one per output channel. The NAM
-// stage in between is mid/side, not per-channel: L/R low bands collapse to
-// mid_lo/side_lo (same for high), one NamStage runs on each of mid_lo and
-// mid_hi, and L/R are rebuilt as mid+side / mid-side afterward. This halves
-// the WaveNet inference cost (2 model runs/block instead of 4) and, unlike
-// giving each channel its own NamStage pointed at the same underlying
-// model, can't let one channel's dilation state bleed into the other's --
-// there's only one instance of each selected model, and it only ever sees
-// one (merged) signal. Side channels (side_lo/side_hi) stay dry, which is
-// where any stereo width the model would have added is traded away.
-//
-
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
 
@@ -37,6 +15,7 @@ use super::nam_graph::nam_mid_side;
 use super::nam_node::NAM_WINDOW;
 use super::filter::MoogFilterFx;
 use super::crusher::{crusher, LOW_MID_HZ, MID_HIGH_HZ};
+use super::comb::{comb, MAX_DELAY_S};
 
 const NUM_OSCS: usize = 5;
 
@@ -114,110 +93,56 @@ const DEFAULT_RADIUS:       f32 = 90.0; // cents -- orbit radius on the freq axi
 const DEFAULT_ORBIT_SPEED:  f32 = 2.25; // Hz -- rotations per second
 const DEFAULT_PHASER_DEPTH: f32 = 0.4;
 const DEFAULT_XOVER_FREQ:   f32 = 400.0; // Hz, splits the swarm mix before the two NAM stages
+const DEFAULT_COMB_TIME:    f32 = 0.01;  // seconds
+const DEFAULT_COMB_FF:      f32 = 0.5;
+const DEFAULT_COMB_FB:      f32 = 0.0;   // off by default -- feedback can self-resonate
 
 fn model_index_by_name (names: &[String], name: &str) -> usize {
     names.iter().position(|n| n == name).unwrap_or(0)
 }
 
-// One output channel's per-sample stages, split around the NAM graph:
-// `pre` is everything upstream of it (the limiter), `post` everything
-// downstream (moog filter -> crusher). The crossover, mid/side collapse and
-// inference that used to sit between them -- along with the one-block
-// latency ring that made a block kernel reachable from a per-sample tick --
-// are all nam_graph::nam_mid_side now.
-#[derive(Clone)]
-struct ChannelChain {
-    limiter: An<Limiter<U1>>,
-    moog:    MoogFilterFx,
-    crusher: Box<dyn AudioUnit>,
-}
-
-impl ChannelChain {
-    fn new () -> ChannelChain {
-        ChannelChain {
-            limiter: limiter(LIMITER_ATTACK, LIMITER_RELEASE),
-            moog:    MoogFilterFx::new(),
-            crusher: Box::new(crusher(
-                &shared(CRUSH_DEPTH),
-                shared(LOW_MID_HZ), shared(MID_HIGH_HZ),
-                shared(0.0), shared(0.0), shared(0.0),
-            )),
-        }
-    }
-
-    fn set_sample_rate (&mut self, sample_rate: f64) {
-        self.limiter.set_sample_rate(sample_rate);
-        self.moog.set_sample_rate(sample_rate);
-        self.crusher.set_sample_rate(sample_rate);
-    }
-
-    fn pre (&mut self, x: f32) -> f32 {
-        self.limiter.filter_mono(x)
-    }
-
-    fn post (&mut self, x: f32, filter_cutoff: f32) -> f32 {
-        let filtered = self.moog.tick(x, filter_cutoff, MOOG_RESONANCE);
-        let mut wet = [0.0f32];
-        self.crusher.tick(&[filtered], &mut wet);
-        wet[0]
-    }
-}
-
 #[voice(index = 3, label = "Swarm", new = manual, thump = manual)]
 #[derive(Clone)]
 pub struct SwarmVoice {
+
+    angle: [f32; NUM_OSCS], // phase per oscillator, radians
+    origin_freq: f32,
+
     #[node(each)] oscs:    [An<WaveSynth<U1>>; NUM_OSCS],
     #[node(each)] phasers: [Phaser; NUM_OSCS],
-    angle:   [f32; NUM_OSCS], // running orbit phase per oscillator, radians
-
-    origin_freq: f32, // chased origin, Hz -- thump = manual: applied to this, not the raw freq
-
     #[node] chain_l: ChannelChain,
     #[node] chain_r: ChannelChain,
-
-    // The whole mid/side NAM stage: crossover, mid/side collapse, one model
-    // per band on the mid signal, rebuild, band sum. Boxed because the
-    // combinator type is unnameable and impl Trait can't be a field type;
-    // Box<dyn AudioUnit> is Clone via dyn_clone, so #[derive(Clone)] still
-    // works. See nam_graph.rs.
     #[node] nam: Box<dyn AudioUnit>,
-    // Dry/wet, written from sig.fuzz each sample -- the graph reads it.
+
     nam_blend: Shared,
 
-    #[knob(range = 0.5..1.0,    set = |v| 0.5 + v * 0.5)] pub chase_factor_input: Shared,
+    #[knob(range = 0.0..1.0)]                             pub chase_factor_input: Shared,
     #[knob(range = 0.0..200.0,  set = |v| v * 200.0)]     pub radius_input:       Shared,
-    #[knob(range = 0.0..2.0,    set = |v| v * 2.0)]       pub orbit_speed_input:  Shared,
+    #[knob(range = 0.0..8.0,    set = |v| v * 8.0)]       pub orbit_speed_input:  Shared,
     #[knob(range = 0.0..1.0)]             pub phaser_depth_input: Shared,
     #[knob(range = 0.0..2000.0, set = |v| v * 2000.0)]    pub xover_freq_input:   Shared,
+    #[knob(range = 0.001..MAX_DELAY_S, set = |v| 0.001 + v * (MAX_DELAY_S - 0.001))] pub comb_time_input: Shared,
+    #[knob(range = -1.0..1.0,   set = |v| v * 2.0 - 1.0)] pub comb_ff_input:      Shared,
+    #[knob(range = -0.95..0.95, set = |v| v * 1.9 - 0.95)] pub comb_fb_input:     Shared,
+
+    #[live(range = 0.0..200.0)]  pub radius_live:       Shared,
+    #[live(range = 0.0..8.0)]    pub orbit_speed_live:  Shared,
+    #[live(range = 0.0..1.0)]    pub phaser_depth_live: Shared,
+    #[live(range = 0.0..1.0)]    pub nam_lo_live:       Shared,
+    #[live(range = 0.0..1.0)]    pub nam_hi_live:       Shared,
+    #[live(range = 0.0..2000.0)] pub origin_live:       Shared,
+    #[live(range = -1.0..1.0)]   pub comb_mix_live:         Shared,
+
     #[view] pub nam_lo: NamModelCycler,
     #[view] pub nam_hi: NamModelCycler,
-
-    #[live(range = 0.0..200.0)] pub radius_live:       Shared,
-    #[live(range = 0.0..2.0)]   pub orbit_speed_live:  Shared,
-    #[live(range = 0.0..1.0)]   pub phaser_depth_live: Shared,
-
-    // Post-blend peak of each band, written by monitor() nodes inside the
-    // NAM graph rather than by hand here.
-    #[live(range = 0.0..1.0)] pub nam_lo_live: Shared,
-    #[live(range = 0.0..1.0)] pub nam_hi_live: Shared,
-
-    // Live per-oscillator freq/pan, written every tick -- read-only from the
-    // UI side for the swarm scope (see ui.rs's draw_swarm_panel). Arrays, so
-    // #[view] (passthrough) rather than #[live].
     #[view] pub osc_freq_live: [Shared; NUM_OSCS],
     #[view] pub osc_pan_live:  [Shared; NUM_OSCS],
-    #[live(range = 0.0..2000.0)] pub origin_live: Shared,
 
     sample_rate: f32,
-
     thump: ThumpMod,
     sig:   SharedSignal,
 }
 
-// SwarmView + view()/fields()/apply()/UI_RANGES + the AudioNode/Voice impls
-// are generated by #[voice(..)]. new() stays hand-written (new = manual):
-// it takes the NAM model list, resolves default model indices by name, and
-// sizes the mid/side scratch buffers before the struct literal.
 impl SwarmVoice {
     pub fn new (
         nam_models: Vec<Option<NamModelSlot>>,
@@ -237,24 +162,16 @@ impl SwarmVoice {
         let nam_lo = NamModelCycler::new(shared(lo_index as f32), nam_names.clone());
         let nam_hi = NamModelCycler::new(shared(hi_index as f32), nam_names);
 
-        // Each band gets its own model instance, so neither band's WaveNet
-        // dilation state can bleed into the other's even if both cyclers land
-        // on the same model -- which the old shared Vec<Arc<Model>> allowed.
-        //
-        // Note the tradeoff: the model choice is now baked into the graph at
-        // construction, where NamStage read it from a Shared every block.
-        // Nothing actually drove that Shared (NamModelCycler::cycle has no
-        // caller -- see nam.rs), so this loses no working behaviour, but
-        // making model choice live again would mean Net::crossfade rather than
-        // a Shared write. That is the cost of expressing the path as a graph.
         let nam_blend        = shared(0.0);
         let xover_freq_input = shared(DEFAULT_XOVER_FREQ);
         let nam_lo_live = shared(0.0);
         let nam_hi_live = shared(0.0);
+
         let slot_lo = nam_models.get(lo_index).and_then(Option::as_ref)
             .expect("swarm lo NAM model slot");
         let slot_hi = nam_models.get(hi_index).and_then(Option::as_ref)
             .expect("swarm hi NAM model slot");
+
         let nam = Box::new(nam_mid_side(
             slot_lo, slot_hi,
             &nam_blend, &xover_freq_input,
@@ -262,13 +179,18 @@ impl SwarmVoice {
             NAM_WINDOW,
         ));
 
+        let comb_time_input = shared(DEFAULT_COMB_TIME);
+        let comb_ff_input   = shared(DEFAULT_COMB_FF);
+        let comb_fb_input   = shared(DEFAULT_COMB_FB);
+        let comb_mix_live       = shared(0.0);
+
         SwarmVoice {
             oscs,
             phasers: std::array::from_fn(|_| Phaser::new()),
             angle,
             origin_freq: 110.0,
-            chain_l: ChannelChain::new(),
-            chain_r: ChannelChain::new(),
+            chain_l: ChannelChain::new(comb_time_input.clone(), comb_ff_input.clone(), comb_fb_input.clone(), comb_mix_live.clone()),
+            chain_r: ChannelChain::new(comb_time_input.clone(), comb_ff_input.clone(), comb_fb_input.clone(), comb_mix_live.clone()),
 
             nam,
             nam_blend,
@@ -278,6 +200,7 @@ impl SwarmVoice {
             orbit_speed_input:  shared(DEFAULT_ORBIT_SPEED),
             phaser_depth_input: shared(DEFAULT_PHASER_DEPTH),
             xover_freq_input,
+            comb_time_input, comb_ff_input, comb_fb_input, comb_mix_live,
             nam_lo, nam_hi,
 
             radius_live:       shared(0.0),
@@ -302,25 +225,19 @@ impl SwarmVoice {
 }
 
 impl VoiceDsp for SwarmVoice {
-    // thump = manual: SwarmVoice chases an origin freq from the raw input,
-    // then applies thump to that origin (not the incoming freq), so it does
-    // its own thump.tick here -- the generated tick hands over the raw freq.
     fn render (&mut self, freq: f32, _thump_mult: f32) -> Frame<f32, U2> {
-        let chase_factor = self.chase_factor_input.value().clamp(0.0, 0.999_999);
+        let chase_factor = self.chase_factor_input.value().clamp(0.0, 0.999_999) / 1000.0;
         self.origin_freq = lerp(self.origin_freq, freq, chase_factor);
         let origin_freq = self.origin_freq * self.thump.tick(self.sig.thump.value());
 
         let width_signal = self.sig.width.value().clamp(0.0, 1.0);
         let radius_cents = self.radius_input.value().max(0.0) * (1.0 + width_signal);
         let orbit_speed  = self.orbit_speed_input.value()     * (1.0 + width_signal);
-        let phaser_depth = (self.phaser_depth_input.value() + width_signal + self.sig.fuzz.value()).clamp(0.0, 1.0);
+        let phaser_depth = self.phaser_depth_input.value();
         self.radius_live.set_value(radius_cents);
         self.orbit_speed_live.set_value(orbit_speed);
         self.phaser_depth_live.set_value(phaser_depth);
 
-        // cents -> Hz radius against the current origin, so a fixed cents
-        // width reads the same at any pitch instead of shrinking as origin
-        // rises (which is what a fixed-Hz radius did).
         let radius_hz = origin_freq * (2.0f32.powf(radius_cents / 1200.0) - 1.0);
 
         self.origin_live.set_value(origin_freq);
@@ -342,7 +259,6 @@ impl VoiceDsp for SwarmVoice {
             let phaser_rate = (osc_freq / 100.0).clamp(0.05, 8.0);
             let wet = self.phasers[k].tick(dry, phaser_rate, phaser_depth);
 
-            // Equal-power pan, same law as fundsp's own panner().
             let angle_pan = (pan * 0.5 + 0.5) * (PI * 0.5);
             mix_l += wet * angle_pan.cos();
             mix_r += wet * angle_pan.sin();
@@ -354,14 +270,12 @@ impl VoiceDsp for SwarmVoice {
 
         let filter_cutoff = self.sig.filter.value().clamp(0.0, 1.0);
 
-        // The graph reads blend and crossover cutoff from Shared cells, so
-        // the only thing to hand it is audio. Crossover cutoff is already a
-        // Shared (xover_freq_input); blend has to be published from the
-        // live performance signal.
         self.nam_blend.set_value(self.sig.fuzz.value().clamp(0.0, 1.0));
 
         let mut namd = [0.0f32; 2];
         self.nam.tick(&[self.chain_l.pre(mix_l), self.chain_r.pre(mix_r)], &mut namd);
+
+        self.comb_mix_live.set_value(self.sig.vel.value());
 
         let note_env = self.sig.env.value();
         Frame::from([
@@ -373,5 +287,63 @@ impl VoiceDsp for SwarmVoice {
     fn on_set_sample_rate (&mut self, sample_rate: f64) {
         self.sample_rate = sample_rate as f32;
     }
-
 }
+
+
+// One each for L/R stereo
+
+#[derive(Clone)]
+struct ChannelChain {
+    limiter: An<Limiter<U1>>,
+    moog:    MoogFilterFx,
+    crusher: Box<dyn AudioUnit>,
+    comb:    Box<dyn AudioUnit>,
+    comb_time: Shared,
+    comb_ff:   Shared,
+    comb_fb:   Shared,
+    comb_mix:  Shared,
+}
+
+impl ChannelChain {
+    fn new (comb_time: Shared, comb_ff: Shared, comb_fb: Shared, comb_mix: Shared) -> ChannelChain {
+        ChannelChain {
+            limiter: limiter(LIMITER_ATTACK, LIMITER_RELEASE),
+            moog:    MoogFilterFx::new(),
+            crusher: Box::new(crusher(
+                &shared(CRUSH_DEPTH),
+                shared(LOW_MID_HZ), shared(MID_HIGH_HZ),
+                shared(0.0), shared(0.0), shared(0.0),
+            )),
+            comb: Box::new(comb()),
+            comb_time, comb_ff, comb_fb, comb_mix,
+        }
+    }
+
+    fn set_sample_rate (&mut self, sample_rate: f64) {
+        self.limiter.set_sample_rate(sample_rate);
+        self.moog.set_sample_rate(sample_rate);
+        self.crusher.set_sample_rate(sample_rate);
+        self.comb.set_sample_rate(sample_rate);
+    }
+
+    fn pre (&mut self, x: f32) -> f32 {
+        self.limiter.filter_mono(x)
+    }
+
+    fn post (&mut self, x: f32, filter_cutoff: f32) -> f32 {
+        let filtered = self.moog.tick(x, filter_cutoff, MOOG_RESONANCE);
+
+        let mut wet = [0.0f32];
+        self.crusher.tick(&[filtered], &mut wet);
+
+        let mut combed = [0.0f32];
+        self.comb.tick(&[wet[0],
+            self.comb_time.value(),
+            self.comb_ff.value(),
+            self.comb_fb.value()],
+            &mut combed);
+
+        lerp(wet[0], combed[0], self.comb_mix.value())
+    }
+}
+

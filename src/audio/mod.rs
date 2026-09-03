@@ -34,6 +34,7 @@ use signal::SharedSignal;
 
 use voice::{Voice, ViewFields};
 pub mod crusher;
+pub mod comb;
 pub mod snapshot;
 
 use engine::Engine;

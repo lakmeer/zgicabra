@@ -206,13 +206,13 @@ fn draw_swarm_panel (y: u16, swarm: &SwarmView) {
     let knobs = swarm.knobs();
     draw_knob_list(2, y + 2, &knobs, selected_index(&swarm.selected_knob, knobs.len()));
 
-    draw_range_label(2, y +  8, false, false, "radius", swarm.radius_live.value(),       0.0, 200.0);
-    draw_range_label(2, y +  9, false, false, "orbit",  swarm.orbit_speed_live.value(),  0.0, 2.0);
-    draw_range_label(2, y + 10, false, false, "phaser", swarm.phaser_depth_live.value(), 0.0, 1.0);
-    draw_range_label(2, y + 11, false, false, "origin", swarm.origin_live.value(),       0.0, 2000.0);
+    let info_y = y + 2 + knobs.len() as u16 + 1;
 
-    print!("{}{:>13} {:<14}", goto(2, y + 6), "nam_lo", swarm.nam_lo.selected_name());
-    print!("{}{:>13} {:<14}", goto(2, y + 7), "nam_hi", swarm.nam_hi.selected_name());
+    draw_range_label(2, info_y + 0, false, false, "radius", swarm.radius_live.value(),       0.0, 200.0);
+    draw_range_label(2, info_y + 1, false, false, "orbit",  swarm.orbit_speed_live.value(),  0.0, 8.0);
+    draw_range_label(2, info_y + 2, false, false, "phaser", swarm.phaser_depth_live.value(), 0.0, 1.0);
+    draw_range_label(2, info_y + 3, false, false, "origin", swarm.origin_live.value(),       0.0, 2000.0);
+    draw_range_label(2, info_y + 3, false, false, "comb",   swarm.comb_mix_live.value(),     0.0, 1.0);
 
     let px_w = (SWARM_SCOPE_COLS * 2) as f32;
     let px_h = (SWARM_SCOPE_ROWS * 4) as f32;

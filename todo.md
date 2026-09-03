@@ -34,6 +34,8 @@
     - vel ^ comb
     - lfo_rate ^ pitch
     - check compressor
+  - Swarm
+    - Chase factor doesn't seem to do anything
 
 - Engine
   - More specific system status
