@@ -92,25 +92,21 @@ pub fn nam_high_band (
     >> map(|f: &Frame<f32, U2>| f[0] + f[1])
 }
 
-// The stage this spike exists to evaluate. 2 in (L, R) -> 2 out (L, R).
+// One model on the stereo mid channel. 2 in (L, R) -> 2 out (L, R).
 //
-// Split each channel into low/high, collapse each band to mid/side, run one
-// model on each band's mid, rebuild. Two inferences per block instead of
-// four, and -- because each band has its own NamNode -- no chance of one
-// band's dilation state bleeding into the other's.
+// Collapse to mid/side, run the model on the mid, rebuild -- one inference
+// per block. Swarm used to split into low/high bands here and model each
+// band's mid, but a 0Hz crossover made the split a no-op, so the band
+// machinery is gone.
 pub fn nam_mid_side (
-    lo: &NamModelSlot, hi: &NamModelSlot,
-    blend: &Shared, cutoff_hz: &Shared,
-    lo_level: &Shared, hi_level: &Shared,
+    model: &NamModelSlot,
+    blend: &Shared,
+    level: &Shared,
     window: usize,
 ) -> An<impl AudioNode<Inputs = U2, Outputs = U2>> {
-       (crossover(cutoff_hz) | crossover(cutoff_hz))            // [Llo, Lhi, Rlo, Rhi]
-    >> map(|f: &Frame<f32, U4>| (f[0], f[2], f[1], f[3]))       // regroup band-major
-    >> (to_mid_side() | to_mid_side())                          // [Mlo, Slo, Mhi, Shi]
-    >> (nam_band(lo, blend, lo_level, window) | pass()
-      | nam_band(hi, blend, hi_level, window) | pass())         // models on the mids
-    >> (from_mid_side() | from_mid_side())                      // [Llo, Rlo, Lhi, Rhi]
-    >> map(|f: &Frame<f32, U4>| (f[0] + f[2], f[1] + f[3]))     // sum the bands
+       to_mid_side()                                       // [M, S]
+    >> (nam_band(model, blend, level, window) | pass())    // model on the mid
+    >> from_mid_side()                                      // [L, R]
 }
 
 #[cfg(test)]

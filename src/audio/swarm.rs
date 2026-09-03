@@ -20,79 +20,28 @@ use super::comb::{comb, Comb, MAX_DELAY_S};
 const NUM_OSCS: usize = 5;
 
 #[derive(Clone, Copy)]
+
 enum OscShape { Tri, Saw, Square }
-const OSC_SHAPES: [OscShape; NUM_OSCS] = [OscShape::Tri, OscShape::Tri, OscShape::Saw, OscShape::Saw, OscShape::Square];
+
+const OSC_SHAPES: [OscShape; NUM_OSCS] = [
+    OscShape::Tri, OscShape::Tri, OscShape::Saw, OscShape::Saw, OscShape::Square,
+];
 
 const MIN_OSC_FREQ: f32 = 20.0;
 
-const PHASER_STAGES: usize = 4;
-const PHASER_FC_LO: f32 = 200.0;
-const PHASER_FC_HI: f32 = 3000.0;
-const PHASER_FEEDBACK: f32 = 0.6;
-
-#[derive(Clone)]
-struct Phaser {
-    stages: [f32; PHASER_STAGES],
-    last_out: f32,
-    lfo_phase: f32,
-    sample_rate: f32,
-}
-
-impl Phaser {
-    fn new () -> Phaser {
-        Phaser { stages: [0.0; PHASER_STAGES], last_out: 0.0, lfo_phase: 0.0, sample_rate: DEFAULT_SR as f32 }
-    }
-
-    fn set_sample_rate (&mut self, sample_rate: f64) {
-        self.sample_rate = sample_rate as f32;
-    }
-
-    // rate_hz: this oscillator's own LFO sweep rate. depth: 0..1 sweep amount.
-    fn tick (&mut self, x: f32, rate_hz: f32, depth: f32) -> f32 {
-        self.lfo_phase = (self.lfo_phase + rate_hz / self.sample_rate).fract();
-        let lfo = (self.lfo_phase * TAU).sin(); // -1..1
-        let mod_amt = (0.5 + 0.5 * lfo * depth.clamp(0.0, 1.0)).clamp(0.0, 1.0);
-        let fc = linexp(0.0, 1.0, PHASER_FC_LO, PHASER_FC_HI, mod_amt);
-
-        let wc = (PI * fc / self.sample_rate).tan();
-        let a = ((wc - 1.0) / (wc + 1.0)).clamp(-0.999, 0.999);
-
-        let mut s = x + self.last_out * PHASER_FEEDBACK;
-        for stage in self.stages.iter_mut() {
-            let y = -a * s + *stage;
-            *stage = s + a * y;
-            s = y;
-        }
-        self.last_out = s;
-        x + s // classic phaser: sum of dry and the allpass-chained signal
-    }
-}
 
 fn lerp (a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
 
 const LIMITER_ATTACK:  f32 = 0.003;
 const LIMITER_RELEASE: f32 = 0.1;
 
-// Fixed Crusher/moog character -- not GUI-exposed, the spec only calls out
-// crossover_freq/filter as live-tunable for this stage.
 const CRUSH_DEPTH:           f32 = 1.0;
-
-// 0..1, no GUI knob specified for this. MoogFilterFx (filter.rs) remaps this
-// into a raw Moog Q of 0.1..4.0 -- simulating that ladder's own feedback
-// equation shows it self-oscillates (sustained output with silent input)
-// once raw Q crosses ~0.6-1.0 depending on cutoff, i.e. past input~0.13-0.23.
-// 0.3 here maps to raw Q 1.27, comfortably past that onset at every cutoff,
-// which is the whine -- not the filter reacting to the swarm, oscillating
-// on its own. Kept well under the onset margin instead.
 const MOOG_RESONANCE: f32 = 0.08;
-// TODO: Map to signal width
 
 const PAN_NORM_HZ:          f32 = 20.0;
 const DEFAULT_CHASE_FACTOR: f32 = 0.99;
 const DEFAULT_RADIUS:       f32 = 90.0; // cents -- orbit radius on the freq axis, converted to Hz per-tick relative to the current origin frequency so the detune width stays perceptually consistent across pitch (see radius_hz in tick)
 const DEFAULT_ORBIT_SPEED:  f32 = 2.25; // Hz -- rotations per second
-const DEFAULT_PHASER_DEPTH: f32 = 0.4;
-const DEFAULT_XOVER_FREQ:   f32 = 400.0; // Hz, splits the swarm mix before the two NAM stages
 const DEFAULT_COMB_TIME:    f32 = 0.01;  // seconds
 const DEFAULT_COMB_FF:      f32 = 0.5;
 const DEFAULT_COMB_FB:      f32 = 0.0;   // off by default -- feedback can self-resonate
@@ -109,31 +58,23 @@ pub struct SwarmVoice {
     origin_freq: f32,
 
     #[node(each)] oscs:    [An<WaveSynth<U1>>; NUM_OSCS],
-    #[node(each)] phasers: [Phaser; NUM_OSCS],
     #[node] chain_l: ChannelChain,
     #[node] chain_r: ChannelChain,
     #[node] nam: Box<dyn AudioUnit>,
 
-    nam_blend: Shared,
-
     #[knob(range = 0.0..1.0)]                             pub chase_factor_input: Shared,
     #[knob(range = 0.0..200.0,  set = |v| v * 200.0)]     pub radius_input:       Shared,
     #[knob(range = 0.0..8.0,    set = |v| v * 8.0)]       pub orbit_speed_input:  Shared,
-    #[knob(range = 0.0..1.0)]             pub phaser_depth_input: Shared,
-    #[knob(range = 0.0..2000.0, set = |v| v * 2000.0)]    pub xover_freq_input:   Shared,
     #[knob(range = 0.001..MAX_DELAY_S, set = |v| 0.001 + v * (MAX_DELAY_S - 0.001))] pub comb_time_input: Shared,
     #[knob(range = -1.0..1.0,   set = |v| v * 2.0 - 1.0)] pub comb_ff_input:      Shared,
     #[knob(range = -0.95..0.95, set = |v| v * 1.9 - 0.95)] pub comb_fb_input:     Shared,
 
     #[live(range = 0.0..200.0)]  pub radius_live:       Shared,
     #[live(range = 0.0..8.0)]    pub orbit_speed_live:  Shared,
-    #[live(range = 0.0..1.0)]    pub phaser_depth_live: Shared,
-    #[live(range = 0.0..1.0)]    pub nam_lo_live:       Shared,
     #[live(range = 0.0..1.0)]    pub nam_hi_live:       Shared,
     #[live(range = 0.0..2000.0)] pub origin_live:       Shared,
     #[live(range = -1.0..1.0)]   pub comb_mix_live:         Shared,
 
-    #[view] pub nam_lo: NamModelCycler,
     #[view] pub nam_hi: NamModelCycler,
     #[view] pub osc_freq_live: [Shared; NUM_OSCS],
     #[view] pub osc_pan_live:  [Shared; NUM_OSCS],
@@ -157,25 +98,18 @@ impl SwarmVoice {
         });
         let angle: [f32; NUM_OSCS] = std::array::from_fn(|i| i as f32 * TAU / NUM_OSCS as f32);
 
-        let lo_index = model_index_by_name(&nam_names, "wetbass");
         let hi_index = model_index_by_name(&nam_names, "sansamp");
-        let nam_lo = NamModelCycler::new(shared(lo_index as f32), nam_names.clone());
         let nam_hi = NamModelCycler::new(shared(hi_index as f32), nam_names);
 
-        let nam_blend        = shared(0.0);
-        let xover_freq_input = shared(DEFAULT_XOVER_FREQ);
-        let nam_lo_live = shared(0.0);
+        let nam_blend   = shared(0.0);
         let nam_hi_live = shared(0.0);
 
-        let slot_lo = nam_models.get(lo_index).and_then(Option::as_ref)
-            .expect("swarm lo NAM model slot");
         let slot_hi = nam_models.get(hi_index).and_then(Option::as_ref)
             .expect("swarm hi NAM model slot");
 
         let nam = Box::new(nam_mid_side(
-            slot_lo, slot_hi,
-            &nam_blend, &xover_freq_input,
-            &nam_lo_live, &nam_hi_live,
+            slot_hi,
+            &shared(0.8), &nam_hi_live,
             NAM_WINDOW,
         ));
 
@@ -186,27 +120,21 @@ impl SwarmVoice {
 
         SwarmVoice {
             oscs,
-            phasers: std::array::from_fn(|_| Phaser::new()),
             angle,
             origin_freq: 110.0,
             chain_l: ChannelChain::new(comb_time_input.clone(), comb_ff_input.clone(), comb_fb_input.clone(), comb_mix_live.clone()),
             chain_r: ChannelChain::new(comb_time_input.clone(), comb_ff_input.clone(), comb_fb_input.clone(), comb_mix_live.clone()),
 
             nam,
-            nam_blend,
 
             chase_factor_input: shared(DEFAULT_CHASE_FACTOR),
             radius_input:       shared(DEFAULT_RADIUS),
             orbit_speed_input:  shared(DEFAULT_ORBIT_SPEED),
-            phaser_depth_input: shared(DEFAULT_PHASER_DEPTH),
-            xover_freq_input,
             comb_time_input, comb_ff_input, comb_fb_input, comb_mix_live,
-            nam_lo, nam_hi,
+            nam_hi,
 
             radius_live:       shared(0.0),
             orbit_speed_live:  shared(0.0),
-            phaser_depth_live: shared(0.0),
-            nam_lo_live,
             nam_hi_live,
 
             osc_freq_live: std::array::from_fn(|_| shared(0.0)),
@@ -233,10 +161,8 @@ impl VoiceDsp for SwarmVoice {
         let width_signal = self.sig.width.value().clamp(0.0, 1.0);
         let radius_cents = self.radius_input.value().max(0.0) * (1.0 + width_signal);
         let orbit_speed  = self.orbit_speed_input.value()     * (1.0 + width_signal);
-        let phaser_depth = self.phaser_depth_input.value();
         self.radius_live.set_value(radius_cents);
         self.orbit_speed_live.set_value(orbit_speed);
-        self.phaser_depth_live.set_value(phaser_depth);
 
         let radius_hz = origin_freq * (2.0f32.powf(radius_cents / 1200.0) - 1.0);
 
@@ -256,12 +182,10 @@ impl VoiceDsp for SwarmVoice {
             self.osc_pan_live[k].set_value(pan);
 
             let dry = self.oscs[k].filter_mono(osc_freq);
-            let phaser_rate = (osc_freq / 100.0).clamp(0.05, 8.0);
-            let wet = self.phasers[k].tick(dry, phaser_rate, phaser_depth);
 
             let angle_pan = (pan * 0.5 + 0.5) * (PI * 0.5);
-            mix_l += wet * angle_pan.cos();
-            mix_r += wet * angle_pan.sin();
+            mix_l += dry * angle_pan.cos();
+            mix_r += dry * angle_pan.sin();
         }
 
         let norm = 1.0 / (NUM_OSCS as f32).sqrt();
@@ -269,8 +193,6 @@ impl VoiceDsp for SwarmVoice {
         mix_r *= norm;
 
         let filter_cutoff = self.sig.filter.value().clamp(0.0, 1.0);
-
-        self.nam_blend.set_value(self.sig.fuzz.value().clamp(0.0, 1.0));
 
         let mut namd = [0.0f32; 2];
         self.nam.tick(&[self.chain_l.pre(mix_l), self.chain_r.pre(mix_r)], &mut namd);

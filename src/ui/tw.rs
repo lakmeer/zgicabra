@@ -1,4 +1,5 @@
 use rgb::RGB8;
+use drawille::PixelColor::TrueColor;
 
 pub const BLACK: RGB8 = RGB8 { r: 0, g: 0, b: 0 };
 pub const WHITE: RGB8 = RGB8 { r: 255, g: 255, b: 255 };
@@ -266,3 +267,12 @@ pub const STONE_700: RGB8 = RGB8 { r: 68, g: 64, b: 59 };
 pub const STONE_800: RGB8 = RGB8 { r: 41, g: 37, b: 36 };
 pub const STONE_900: RGB8 = RGB8 { r: 28, g: 25, b: 23 };
 pub const STONE_950: RGB8 = RGB8 { r: 12, g: 10, b: 9 };
+
+pub const fn tw_rgb (rgb: RGB8) -> drawille::PixelColor {
+    TrueColor {
+        r: rgb.r as u8,
+        g: rgb.g as u8,
+        b: rgb.b as u8,
+    }
+}
+

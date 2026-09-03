@@ -91,7 +91,7 @@ fn render_channel (peak_db: f32, rms_db: f32, backwards: bool) -> String {
     let cells: Vec<(char, RGB8)> = (0..VU_CELLS).map(|i| {
         let cell_db = VU_MIN_DB + i as f32 * VU_STEP_DB;
         if cell_db < rms_db {
-            ('━', db_color(cell_db)) 
+            ('━', db_color(cell_db))
         } else if cell_db < peak_db {
             ('-', db_color(peak_db))
         } else {
@@ -130,7 +130,7 @@ pub fn draw_voice_panel (y: u16, zgicabra: &Zgicabra, audio: &AudioHandles) {
 
     print!("{}{}", goto(5, y + 2), out_meter);
 
-    draw_engine_knob_panel(38, y + 4, audio);
+    draw_engine_knob_panel(41, y + 4, audio);
 
     draw_audio_errors(y, &audio.errors);
 }
@@ -148,19 +148,19 @@ fn draw_engine_knob_panel (x: u16, y: u16, audio: &AudioHandles) {
 
 fn draw_reese_panel (y: u16, reese: &ReeseView) {
     let knobs = reese.knobs();
-    draw_knob_list(2, y + 2, &knobs, selected_index(&reese.selected_knob, knobs.len()));
+    draw_knob_list(5, y + 2, &knobs, selected_index(&reese.selected_knob, knobs.len()));
 
-    draw_range_label(2, y + 13, false, false, "drive",     reese.drive_live.value(),     0.0, 5.0);
-    draw_range_label(2, y + 14, false, false, "lfo_rate",  reese.lfo_rate_live.value(),  0.0, 5.0);
-    draw_range_label(2, y + 15, false, false, "detune",    reese.detune_live.value(),  0.0, 200.0);
-    draw_range_label(2, y + 16, false, false, "cutoff",    reese.cutoff_live.value(), 0.0, 6000.0);
+    draw_range_label(5, y + 12, false, false, "drive",     reese.drive_live.value(),     0.0, 5.0);
+    draw_range_label(5, y + 13, false, false, "lfo_rate",  reese.lfo_rate_live.value(),  0.0, 5.0);
+    draw_range_label(5, y + 14, false, false, "detune",    reese.detune_live.value(),  0.0, 200.0);
+    draw_range_label(5, y + 15, false, false, "cutoff",    reese.cutoff_live.value(), 0.0, 6000.0);
 
     let meter = render_compressor_meter(
         reese.crush_env_live.value(),
         reese.crush_out_live.value(),
         CRUSH_THRESHOLD,
         reese.crush_gr_live.value());
-    print!("{}{}", goto(7, y + 19), meter);
+    print!("{}{}", goto(10, y + 17), meter);
 }
 
 
@@ -170,10 +170,10 @@ fn draw_reese_panel (y: u16, reese: &ReeseView) {
 
 fn draw_growl_panel (y: u16, growl: &GrowlView) {
     let knobs = growl.knobs();
-    draw_knob_list(2, y + 2, &knobs, selected_index(&growl.selected_knob, knobs.len()));
+    draw_knob_list(5, y + 2, &knobs, selected_index(&growl.selected_knob, knobs.len()));
 
-    draw_range_label(2, y + 9,  false, false, "filter",    growl.filter_live.value(), 0.0, 1.0);
-    draw_range_label(2, y + 10, false, false, "warp",      growl.warp_live.value(), 0.0, 1.0);
+    draw_range_label(5, y + 9,  false, false, "filter",    growl.filter_live.value(), 0.0, 1.0);
+    draw_range_label(5, y + 10, false, false, "warp",      growl.warp_live.value(), 0.0, 1.0);
 }
 
 
@@ -183,15 +183,13 @@ fn draw_growl_panel (y: u16, growl: &GrowlView) {
 
 fn draw_basic_panel (y: u16, basic: &BasicView) {
     let knobs = basic.knobs();
-    draw_knob_list(2, y + 2, &knobs, selected_index(&basic.selected_knob, knobs.len()));
+    draw_knob_list(5, y + 2, &knobs, selected_index(&basic.selected_knob, knobs.len()));
 
     let live_y = y + 2 + knobs.len() as u16 + 1;
-    draw_range_label(2, live_y,     false, false, "wt1_pos", basic.wt1_pos.value(), 0.0, 1.0);
-    draw_range_label(2, live_y + 1, false, false, "wt2_pos", basic.wt2_pos.value(), 0.0, 1.0);
-    draw_range_label(2, live_y + 2, false, false, "wt3_pos", basic.wt3_pos.value(), 0.0, 1.0);
+    draw_range_label(5, live_y,     false, false, "wt1_pos", basic.wt1_pos.value(), 0.0, 1.0);
+    draw_range_label(5, live_y + 1, false, false, "wt2_pos", basic.wt2_pos.value(), 0.0, 1.0);
+    draw_range_label(5, live_y + 2, false, false, "wt3_pos", basic.wt3_pos.value(), 0.0, 1.0);
 }
-
-
 
 
 //
@@ -200,19 +198,18 @@ fn draw_basic_panel (y: u16, basic: &BasicView) {
 
 const SWARM_SCOPE_X:    u16 = 42;
 const SWARM_SCOPE_COLS: u32 = 34; // char cols -- 2 px per drawille char
-const SWARM_SCOPE_ROWS: u32 = 14; // char rows -- 4 px per drawille char
+const SWARM_SCOPE_ROWS: u32 = 18; // char rows -- 4 px per drawille char
 
 fn draw_swarm_panel (y: u16, swarm: &SwarmView) {
     let knobs = swarm.knobs();
-    draw_knob_list(2, y + 2, &knobs, selected_index(&swarm.selected_knob, knobs.len()));
+    draw_knob_list(5, y + 2, &knobs, selected_index(&swarm.selected_knob, knobs.len()));
 
     let info_y = y + 2 + knobs.len() as u16 + 1;
 
-    draw_range_label(2, info_y + 0, false, false, "radius", swarm.radius_live.value(),       0.0, 200.0);
-    draw_range_label(2, info_y + 1, false, false, "orbit",  swarm.orbit_speed_live.value(),  0.0, 8.0);
-    draw_range_label(2, info_y + 2, false, false, "phaser", swarm.phaser_depth_live.value(), 0.0, 1.0);
-    draw_range_label(2, info_y + 3, false, false, "origin", swarm.origin_live.value(),       0.0, 2000.0);
-    draw_range_label(2, info_y + 3, false, false, "comb",   swarm.comb_mix_live.value(),     0.0, 1.0);
+    draw_range_label(5, info_y + 0, false, false, "radius", swarm.radius_live.value(),       0.0, 200.0);
+    draw_range_label(5, info_y + 1, false, false, "orbit",  swarm.orbit_speed_live.value(),  0.0, 8.0);
+    draw_range_label(5, info_y + 2, false, false, "origin", swarm.origin_live.value(),       0.0, 2000.0);
+    draw_range_label(5, info_y + 3, false, false, "comb",   swarm.comb_mix_live.value(),     0.0, 1.0);
 
     let px_w = (SWARM_SCOPE_COLS * 2) as f32;
     let px_h = (SWARM_SCOPE_ROWS * 4) as f32;
@@ -221,15 +218,14 @@ fn draw_swarm_panel (y: u16, swarm: &SwarmView) {
     let origin = swarm.origin_live.value().max(1.0);
     let freqs: Vec<f32> = swarm.osc_freq_live.iter().map(|s| s.value()).collect();
     let pans:  Vec<f32> = swarm.osc_pan_live.iter().map(|s| s.value()).collect();
-
-    // Autoscale the freq axis to whatever spread the oscillators are
-    // actually showing right now, with a little headroom.
     let spread = freqs.iter().fold(1.0f32, |m, &f| m.max((f - origin).abs())) * 1.3;
 
     const OSC_COLORS: [PixelColor; 5] = [
-        PixelColor::BrightCyan, PixelColor::Cyan,
-        PixelColor::BrightBlue, PixelColor::Blue,
-        PixelColor::White,
+        tw::tw_rgb(tw::RED_500),
+        tw::tw_rgb(tw::ORANGE_500),
+        tw::tw_rgb(tw::AMBER_500),
+        tw::tw_rgb(tw::YELLOW_500),
+        tw::tw_rgb(tw::WHITE),
     ];
 
     for (k, (&f, &p)) in freqs.iter().zip(pans.iter()).enumerate() {
@@ -237,9 +233,12 @@ fn draw_swarm_panel (y: u16, swarm: &SwarmView) {
         let px = (nx * 0.5 + 0.5) * (px_w - 1.0);
         let py = (1.0 - (p.clamp(-1.0, 1.0) * 0.5 + 0.5)) * (px_h - 1.0);
         pset(&mut canvas, px, py, OSC_COLORS[k % OSC_COLORS.len()]);
+        pset(&mut canvas, px+1.0, py, OSC_COLORS[k % OSC_COLORS.len()]);
+        pset(&mut canvas, px, py+1.0, OSC_COLORS[k % OSC_COLORS.len()]);
+        pset(&mut canvas, px+1.0, py+1.0, OSC_COLORS[k % OSC_COLORS.len()]);
     }
 
     let mut rows = canvas.rows();
-    drawille_paste(&mut rows, SWARM_SCOPE_X, y + 2);
+    drawille_paste(&mut rows, SWARM_SCOPE_X, y + 3);
 }
 
