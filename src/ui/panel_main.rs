@@ -15,14 +15,22 @@ use super::tw;
 const LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 
-fn draw_toggle_box (x: u16, y: u16, on_color: RGB8, on: bool) {
-    print!("{}┌───┐", goto(x, y + 0));
-    if on {
-        print!("{}│{}▐█▌{}│", goto(x, y + 1), fg(on_color), termion::color::Fg(termion::color::Reset));
+fn draw_toggle_box (x: u16, y: u16, on_color: RGB8, lock: bool, on: bool) {
+
+    if lock {
+        print!("{}", fg(on_color));
     } else {
-        print!("{}│   │", goto(x, y + 1));
+        print!("{}", FG_RESET);
     }
+
+    print!("{}┌───┐", goto(x, y + 0));
+    print!("{}│   │", goto(x, y + 1));
     print!("{}└───┘", goto(x, y + 2));
+
+    if on {
+        print!("{}{}▐█▌", goto(x + 1, y + 1), fg(on_color));
+    }
+    print!("{}", termion::color::Fg(termion::color::Reset));
 }
 
 
@@ -297,9 +305,9 @@ pub fn draw_main_panel (y: u16, width: u16, zgicabra: &Zgicabra, audio: &AudioHa
     // print!("{}{}{}", goto(57, y + 17), fg(tw::SLATE_500), delta_char(zgicabra.right.trigger_delta));
 
 
-    // Thump / Fuzz
+    // Alt channels
 
-    draw_toggle_box(        5, y + 18, GREEN_0, zgicabra.signal.thump > 0.0);
-    draw_toggle_box(width - 8, y + 18, RED_0,   zgicabra.signal.fuzz > 0.0);
+    draw_toggle_box(        5, y + 18, GREEN_0, zgicabra.alpha_lock, zgicabra.signal.alpha > 0.0);
+    draw_toggle_box(width - 8, y + 18, RED_0,   zgicabra.omega_lock, zgicabra.signal.omega > 0.0);
 
 }

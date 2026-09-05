@@ -18,13 +18,12 @@ pub struct SharedSignal {
     pub level:  Shared,
     pub bend:   Shared,
     pub filter: Shared,
-    pub fuzz:   Shared,
     pub width:  Shared,
-    pub thump:  Shared,
     pub depth:  Shared,
+    pub alpha:  Shared,
+    pub omega:  Shared,
     pub vel:    Shared,
     pub acc:    Shared,
-    pub aux:    Shared,
     pub env:    Shared, // Unique
 }
 
@@ -34,13 +33,12 @@ impl SharedSignal {
             level:  shared(0.0),
             bend:   shared(0.0),
             filter: shared(0.0),
-            fuzz:   shared(0.0),
             width:  shared(0.0),
-            thump:  shared(0.0),
             depth:  shared(0.0),
+            alpha:  shared(0.0),
+            omega:  shared(0.0),
             vel:    shared(0.0),
             acc:    shared(0.0),
-            aux:    shared(0.0),
             env:    shared(0.0),
         }
     }
@@ -51,17 +49,16 @@ impl SharedSignal {
         self.depth.set_value(signal.depth);
         if cc_connected {
             if signal.filter != self.filter.value() { self.filter.set_value(signal.filter); }
-            if signal.fuzz   != self.fuzz.value()   { self.fuzz.set_value(signal.fuzz); }
+            if signal.alpha   != self.alpha.value()   { self.alpha.set_value(signal.alpha); }
             if signal.width  != self.width.value()  { self.width.set_value(signal.width); }
-            if signal.thump  != self.thump.value()  { self.thump.set_value(signal.thump); }
+            if signal.omega  != self.omega.value()  { self.omega.set_value(signal.omega); }
         } else {
             self.filter.set_value(signal.filter);
-            self.fuzz.set_value(signal.fuzz);
+            self.alpha.set_value(signal.alpha);
             self.width.set_value(signal.width);
-            self.thump.set_value(signal.thump);
+            self.omega.set_value(signal.omega);
         }
         self.vel.set_value(signal.vel);
         self.acc.set_value(signal.acc);
-        self.aux.set_value(signal.aux);
     }
 }

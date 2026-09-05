@@ -34,9 +34,9 @@ const UNISON_DETUNE: f32 = 2.9;  // osc_2_unison_detune
 
 const NAM_MODEL: &str = "mesa";
 
-const CROSSFADE_HZ: f32 = 0.15;  // stand-in for lfo_1 (tempo-synced ~1Hz in the patch)
-const WOBBLE_HZ: f32 = 0.2;      // smoothing rate for the noise-based Perlin stand-in
-const CONTROL_RATE_DIV: usize = 64; // Smear resynthesis runs at this coarser rate, not per-sample
+const CROSSFADE_HZ: f32 = 0.15;
+const WOBBLE_HZ: f32 = 0.2;
+const CONTROL_RATE_DIV: usize = 64;
 
 const BASE_DRIVE: f32 = 3.1;
 const BASE_HIGHPASS_HZ: f32 = 681.0;
@@ -53,10 +53,6 @@ const REVERB_ROOM_SIZE: f32 = 15.0;
 const REVERB_TIME: f32 = 2.0;
 const REVERB_DAMPING: f32 = 0.5;
 
-// Recursive harmonic-magnitude carry across the harmonic index -- ported
-// directly from Vital's smearMorph (spectral_morph.h:217-239). At
-// smear=0 the spectrum is unchanged; increasing smear progressively
-// overrides higher harmonics with energy carried up from lower ones.
 fn smear_resynth (base: &[Complex32; NUM_HARMONICS], smear: f32) -> [f32; FRAME_LEN] {
     let mut spectrum = [Complex32::ZERO; FRAME_LEN];
     let mut running = base[0].norm() * (1.0 - smear);
@@ -85,11 +81,6 @@ fn smear_resynth (base: &[Complex32; NUM_HARMONICS], smear: f32) -> [f32; FRAME_
     table
 }
 
-// One Smear-morphed unison stack: a fixed base spectrum (stands in for
-// Vital's hand-drawn "Quad Saw"/"Basic Shapes" wavetable frames -- porting
-// the actual frame geometry is out of scope), resynthesized at a coarser
-// control rate (see CONTROL_RATE_DIV) and played back by `phases.len()`
-// detuned voices sharing that one table.
 #[derive(Clone)]
 struct SmearVoice {
     base_spectrum: [Complex32; NUM_HARMONICS],
@@ -139,9 +130,6 @@ impl SmearVoice {
     }
 }
 
-// Vital's real unison detune formula (synth_oscillator.cpp:609-631),
-// simplified: linear spread across voices instead of the exact nonlinear
-// detune_power curve (flagged approximation, see plan).
 fn osc_b_detune_ratios () -> Vec<f32> {
     (0..OSC_B_VOICES).map(|v| {
         let t = (2 * v as i32 - (OSC_B_VOICES as i32 - 1)) as f32 / (OSC_B_VOICES as i32 - 1) as f32;
@@ -198,10 +186,6 @@ impl WavetableGen {
         self.chorus.set_sample_rate(sample_rate);
     }
 
-    // Mono in the only sense that matters: the old U2 output duplicated one
-    // signal into both channels and the one caller took [0]. Params are named
-    // now -- p1..p4 were only ever positional because AudioNode demanded a
-    // fixed arity.
     pub fn tick (
         &mut self, freq: f32,
         bass_drive: f32, filter: f32, space: f32, warp: f32,
@@ -259,12 +243,7 @@ impl WavetableGen {
 // as everything else in this engine, plus a bolted-on NAM amp stage.
 //
 
-// Thump sample embedded straight into the binary at compile time -- same
-// reasoning as reese.rs's IMPACT_SAMPLE (see there).
 static PLUCK_SAMPLE: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/wav/pluck.wav"));
-
-// The sample's own recorded pitch, standard tuning (A4 = 440Hz) -- playback
-// rate is scaled from this to track the voice's incoming freq.
 const PLUCK_BASE_FREQ: f32 = 61.7354; // B1
 
 fn load_pluck_wave () -> Arc<Sample> {
@@ -314,8 +293,6 @@ impl PluckPlayer {
     }
 }
 
-// Fixed defaults, formerly GrowlParams::default() -- seeded directly into
-// the Shared cells below now that there's no separate snapshot/handle shape.
 const DEFAULT_BASS_DRIVE:    f32 = 0.8;
 const DEFAULT_FILTER:        f32 = 0.9;
 const DEFAULT_SPACE:         f32 = 0.25;
@@ -328,30 +305,17 @@ const TRI_FIFTH_LEVEL: f32 = 0.1;
 const TRI_FIFTH_RATIO: f32 = 1.5; // equal-tempered perfect fifth (+7 semitones)
 
 
-// Audio-thread owner: the real WavetableGen plus one Shared cell per
-// externally-visible param (GUI reads these read-only; MIDI CC, via
-// apply_cc, is the only writer -- see voice.rs's module doc). `_input`
-// fields are the authored knob values; `_live` fields are read-only,
-// written by GrowlVoice each tick, and show the actual post-modulation
-// values the DSP is using -- for visualisation only. Note WavetableGen's
-// Clone impl resets to a fresh, un-warmed-up instance (see above).
 #[voice(index = 1, label = "Growl", new = manual)]
 #[derive(Clone)]
 pub struct GrowlVoice {
     #[node] inner: WavetableGen,
-    // Crossover -> model -> blend -> band sum, as one graph. Replaces the
-    // hand-rolled one-block-latency scratch ring: NamNode carries its own
-    // inference window, so there is no cursor here to keep aligned and no
-    // on_silence hook to advance it. See nam_graph.rs.
     #[node] nam: Box<dyn AudioUnit>,
-    // Dry/wet, published from sig.fuzz each sample for the graph to read.
-    nam_blend: Shared,
 
     #[node] tri_base:  An<WaveSynth<U1>>,
     #[node] tri_fifth: An<WaveSynth<U1>>,
 
     #[node] pluck: PluckPlayer,
-    #[knob(range = 0.0..1.0)] pub pluck_level_input: Shared, // persisted, no CC of its own
+    #[knob(range = 0.0..1.0)] pub pluck_level_input: Shared,
 
     #[knob(range = 0.0..1.0)]           pub bass_drive_input:    Shared,
     #[knob(range = 0.0..1.0)]           pub filter_input:        Shared,
@@ -361,9 +325,6 @@ pub struct GrowlVoice {
 
     #[live(range = 0.0..1.0)] pub filter_live:    Shared,
     #[live(range = 0.0..1.0)] pub warp_live:      Shared,
-    // Post-blend peak of the modeled band, written by a monitor() node
-    // inside the NAM graph.
-    #[live(range = 0.0..1.0)] pub nam_live:       Shared,
 
     sig:   SharedSignal,
 }
@@ -375,17 +336,14 @@ pub struct GrowlVoice {
 impl GrowlVoice {
     pub fn new (thump_trigger: Shared, _thump_peak: Shared, _thump_decay: Shared, signal: SharedSignal) -> GrowlVoice {
         let model = super::nam::load_named_model(NAM_MODEL).unwrap();
-        let nam_blend           = shared(0.0);
         let nam_crossover_input = shared(DEFAULT_NAM_CROSSOVER);
-        let nam_live            = shared(0.0);
         let nam = Box::new(nam_high_band(
-            &model, &nam_blend, &nam_crossover_input, &nam_live, NAM_WINDOW,
+            &model, &shared(1.0), &nam_crossover_input, NAM_WINDOW,
         ));
 
         GrowlVoice {
             inner: WavetableGen::new(),
             nam,
-            nam_blend,
 
             tri_base:  saw(),
             tri_fifth: saw(),
@@ -401,7 +359,6 @@ impl GrowlVoice {
 
             filter_live:    shared(0.0),
             warp_live:      shared(0.0),
-            nam_live,
 
             selected_knob: shared(0.0),
             knob_pickup:   KnobPickup::new(),
@@ -426,15 +383,12 @@ impl VoiceDsp for GrowlVoice {
         raw += self.tri_base.filter_mono(freq) * TRI_BASE_LEVEL;
         raw += self.tri_fifth.filter_mono(freq * TRI_FIFTH_RATIO) * TRI_FIFTH_LEVEL;
 
-        raw += self.pluck.tick(freq) * self.pluck_level_input.value() * self.sig.thump.value();
-
-        // The graph reads blend and crossover cutoff from Shared cells.
-        self.nam_blend.set_value(self.sig.fuzz.value().clamp(0.0, 1.0));
+        raw += self.pluck.tick(freq) * self.pluck_level_input.value() * self.sig.alpha.value();
 
         let mut wet = [0.0f32];
         self.nam.tick(&[raw], &mut wet);
 
-        let out = wet[0] * self.sig.env.value() * (1.0 - self.sig.aux.value());
+        let out = wet[0] * self.sig.env.value() * (1.0 - self.sig.omega.value());
         Frame::from([out, out])
     }
 }

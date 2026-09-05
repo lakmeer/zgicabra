@@ -484,34 +484,19 @@ where
         move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
             let frames = data.len() / channels;
 
-            // Only the selected voice's on_block_start runs -- GrowlVoice's
-            // is a full NAM WaveNet block inference, wasted CPU when Growl
-            // isn't even the active voice. Switching voices while a note is
-            // audible can produce a brief startup transient on Growl's
-            // model (see NamStage::process_block's warm-state comment);
-            // switching between notes/songs is silent.
             let selected = engine.voice_selected.value() as usize;
             for voice in engine.voices.iter_mut() {
                 if voice.index() == selected { voice.on_block_start(frames); }
             }
 
-            // Drain the CC ring buffer -- the fixed 8-knob AKAI layout (see
-            // voice.rs's module doc): CC1-4 are the global filter/width/
-            // fuzz/thump signals (gated the same way SharedSignal::set()
-            // gates wand writes -- only applied if actually different, so
-            // whichever of wand/CC moved most recently wins); CC5/6 move
-            // the selected voice's own selected_knob/value; CC7/8 do the
-            // same for Engine's own knob list. Retargeted to whichever
-            // voice is currently selected -- switching voices mid-
-            // performance retargets subsequent CC5/6 messages, it doesn't
-            // replay queued ones onto the old voice.
+            // Drain the CC ring buffer -- the fixed 8-knob AKAI layout
             while let Some((cc, value)) = engine.cc_input.pop() {
                 crate::dbg!("audio::build_stream - CC {cc}={value} (selected voice index {selected})");
                 match cc {
                     1 => { let s = &engine.signal; if value != s.filter.value() { s.filter.set_value(value); } },
                     2 => { let s = &engine.signal; if value != s.width.value()  { s.width.set_value(value); } },
-                    3 => { let s = &engine.signal; if value != s.fuzz.value()   { s.fuzz.set_value(value); } },
-                    4 => { let s = &engine.signal; if value != s.thump.value()  { s.thump.set_value(value); } },
+                    3 => { let s = &engine.signal; if value != s.alpha.value()  { s.alpha.set_value(value); } },
+                    4 => { let s = &engine.signal; if value != s.omega.value()  { s.omega.set_value(value); } },
                     5 => {
                         for voice in engine.voices.iter_mut() {
                             if voice.index() == selected {

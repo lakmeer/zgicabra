@@ -49,7 +49,7 @@ pub struct BasicVoice {
 
     #[node(init = lowpass())] filter: An<Svf<f64, LowpassMode<f64>>>,
 
-    #[node(init = Box::new(nam_band(&load_named_model(NAM_MODEL).unwrap(), &shared(1.0), &shared(0.0), NAM_WINDOW)))]
+    #[node(init = Box::new(nam_band(&load_named_model(NAM_MODEL).unwrap(), &shared(1.0), NAM_WINDOW)))]
     nam: Box<dyn AudioUnit>,
 
     #[node(init = Box::new(crusher(&shared(CRUSH_DEPTH), shared(LOW_MID_HZ), shared(MID_HIGH_HZ), shared(0.0), shared(0.0), shared(0.0))))]
@@ -77,21 +77,18 @@ impl VoiceDsp for BasicVoice {
         let f = freq * thump_mult / 2.0;
 
         let width = lerp(0.2, 0.8, self.sig.width.value().clamp(0.0, 1.0));
-        let fuzz  = self.sig.fuzz.value().clamp(0.0, 1.0) / 2.0;
-
-        let d1 =  lerp(0.02, 0.2, self.sig.vel.value().clamp(0.0, 1.0));
-
+        let lfo_d    =  lerp(0.02, 0.2, self.sig.vel.value().clamp(0.0, 1.0));
         let depth = self.sig.depth.value();
 
-        let pos1 = (depth + WT1_OFFSET + self.lfo1.get_mono() * d1).clamp(0.0, 1.0);
+        let pos1 = (depth + WT1_OFFSET + self.lfo1.get_mono() * lfo_d).clamp(0.0, 1.0);
         self.wt1_pos.set_value(pos1);
         let osc1 = self.wt1.tick(&Frame::from([f, pos1]))[0] * self.wt1_level.value();
 
-        let pos2 = (depth + width + self.lfo2.get_mono() * d1 + 0.1).clamp(0.0, 1.0);
+        let pos2 = (depth + width + self.lfo2.get_mono() * lfo_d + 0.1).clamp(0.0, 1.0);
         self.wt2_pos.set_value(pos2);
         let osc2 = self.wt2.tick(&Frame::from([f * cents_to_ratio(DETUNE_CENTS), pos2]))[0] * self.wt2_level.value();
 
-        let pos3 = (depth + width + self.lfo3.get_mono() * d1).clamp(0.0, 1.0);
+        let pos3 = (depth + width + self.lfo3.get_mono() * lfo_d).clamp(0.0, 1.0);
         self.wt3_pos.set_value(pos3);
         let osc3 = self.wt3.tick(&Frame::from([f * cents_to_ratio(-DETUNE_CENTS), pos3]))[0] * self.wt3_level.value();
 
@@ -104,7 +101,7 @@ impl VoiceDsp for BasicVoice {
         let cutoff_hz = linexp(0.0, 1.0, CUTOFF_LO, CUTOFF_HI, cutoff);
 
         let wet = self.nam.filter_mono(mono);
-        let nam_blend = self.sig.fuzz.value().clamp(0.0, 1.0);
+        let nam_blend = self.sig.alpha.value().clamp(0.0, 1.0);
         let namd = mono + nam_blend * (wet - mono);
 
         let namd = self.filter.tick(&Frame::from([namd, cutoff_hz, self.filter_rez.value()]))[0];

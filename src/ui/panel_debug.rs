@@ -46,14 +46,14 @@ pub fn draw_debug_panel (y: u16, zgicabra: &Zgicabra, history: &Vec<Zgicabra>, d
         draw_graph(RHS as u32 - 5, 15, y, &history);
     }
 
-    println!("{}Current: {:>17}",   goto(RHS, y + 2), format_note(zgicabra.note.current));
+    println!("{}Note:    {:>17}",   goto(RHS, y + 2), format_note(zgicabra.note.current));
     println!("{}Pitch:   {:>17.4}", goto(RHS, y + 3), zgicabra.note.bend);
     println!("{}Filter:  {:>17.4}", goto(RHS, y + 4), zgicabra.signal.filter);
     println!("{}Width:   {:>17.4}", goto(RHS, y + 5), zgicabra.signal.width);
     println!("{}Depth:   {:>17.4}", goto(RHS, y + 5), zgicabra.signal.depth);
-    println!("{}Aux:     {:>17.4}", goto(RHS, y + 6), zgicabra.signal.aux);
+    println!("{}Alpha:   {:>17.4}", goto(RHS, y + 6), zgicabra.signal.alpha);
+    println!("{}Omega:   {:>17.4}", goto(RHS, y + 6), zgicabra.signal.omega);
     println!("{}Level:   {:>17.4}", goto(RHS, y + 7), zgicabra.signal.level);
-    println!("{}Total:   {:>17.4}", goto(RHS, y + 8), zgicabra.trigger_total);
 
     let default_color = termion::color::Fg(termion::color::White);
 

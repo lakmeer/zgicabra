@@ -464,23 +464,13 @@ fn gen_new (v: &Voice, thump: Option<&Ident>) -> syn::Result<TokenStream2> {
     })
 }
 
-// The whole `impl Voice for #name` block: index/name, tick (thump + render),
-// set_sample_rate (forwards to every #[node] + thump), on_block_start and
-// on_silence (delegating to the author's VoiceDsp impl), and the knob_*/
-// selected_knob/set_knob_value methods (fully generated from the #[knob]
-// list and the selected_knob/knob_pickup fields).
 fn gen_voice_trait (name: &Ident, index: &Expr, label: &LitStr, v: &Voice, thump: Option<&Ident>, manual_thump: bool) -> TokenStream2 {
     let scalar_nodes = v.nodes.iter().filter(|f| !f.each).map(|f| &f.ident);
     let each_nodes   = v.nodes.iter().filter(|f| f.each).map(|f| &f.ident);
 
-    // The common case: the macro applies thump to the incoming freq. thump =
-    // manual voices (SwarmVoice chases an origin first, then thumps that) get
-    // the raw freq + apply thump themselves inside render(). Voices with no
-    // thump field at all (no pitch-thump modulation) get the same pass-
-    // through body.
     let tick_body = match thump {
         Some(thump) if !manual_thump => quote! {
-            let thump_mult = self.#thump.tick(self.sig.thump.value());
+            let thump_mult = self.#thump.tick(self.sig.alpha.value());
             let freq = freq * thump_mult;
             let out = crate::audio::voice::VoiceDsp::render(self, freq, thump_mult);
             (out[0], out[1])

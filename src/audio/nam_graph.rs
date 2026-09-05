@@ -21,10 +21,6 @@ use super::nam_node::NamNode;
 // the audible range and matches the ~5Hz one-pole NamStage used.
 const DC_BLOCK_HZ: f32 = 5.0;
 
-// Smoothing for the per-band output monitors. Peak rather than RMS because
-// these feed a level indicator, not a loudness readout.
-const METER_SMOOTH_S: f64 = 0.05;
-
 // 1 in -> 2 out: [low, high].
 //
 // Complementary one-pole: high is defined as input - low, so low + high ==
@@ -53,14 +49,10 @@ pub fn from_mid_side () -> An<impl AudioNode<Inputs = U2, Outputs = U2>> {
 //
 // The dry branch is pre-input-gain, matching what NamStage did -- blend=0
 // has to be bit-identical to bypass, not "bypass times input_gain".
-//
-// `out_level` gets the post-blend peak so the UI can see the band working;
-// monitor() passes the signal through untouched.
 pub fn nam_band (
-    slot:      &NamModelSlot,
-    blend:     &Shared,
-    out_level: &Shared,
-    window:    usize,
+    slot:  &NamModelSlot,
+    blend: &Shared,
+    window: usize,
 ) -> An<impl AudioNode<Inputs = U1, Outputs = U1>> {
     let blend = blend.clone();
 
@@ -73,7 +65,6 @@ pub fn nam_band (
             let (wet, dry) = (f[0], f[1]);
             dry + blend.value() * (wet - dry)
         })
-        >> monitor(out_level, Meter::Peak(METER_SMOOTH_S))
 }
 
 // Single-model variant: split, model only the high band, sum back. The low
@@ -84,11 +75,10 @@ pub fn nam_high_band (
     slot:      &NamModelSlot,
     blend:     &Shared,
     cutoff_hz: &Shared,
-    out_level: &Shared,
     window:    usize,
 ) -> An<impl AudioNode<Inputs = U1, Outputs = U1>> {
-       crossover(cutoff_hz)                                     // [low, high]
-    >> (pass() | nam_band(slot, blend, out_level, window))       // low stays dry
+       crossover(cutoff_hz)                          // [low, high]
+    >> (pass() | nam_band(slot, blend, window))       // low stays dry
     >> map(|f: &Frame<f32, U2>| f[0] + f[1])
 }
 
@@ -101,12 +91,11 @@ pub fn nam_high_band (
 pub fn nam_mid_side (
     model: &NamModelSlot,
     blend: &Shared,
-    level: &Shared,
     window: usize,
 ) -> An<impl AudioNode<Inputs = U2, Outputs = U2>> {
-       to_mid_side()                                       // [M, S]
-    >> (nam_band(model, blend, level, window) | pass())    // model on the mid
-    >> from_mid_side()                                      // [L, R]
+       to_mid_side()                              // [M, S]
+    >> (nam_band(model, blend, window) | pass())   // model on the mid
+    >> from_mid_side()                              // [L, R]
 }
 
 #[cfg(test)]
@@ -264,7 +253,7 @@ mod voices {
 
     fn signal () -> SharedSignal {
         let sig = SharedSignal::new();
-        sig.fuzz.set_value(0.5);   // drive the dry/wet blend so the model output matters
+        sig.omega.set_value(0.5);   // drive the dry/wet blend so the model output matters
         sig.filter.set_value(0.7);
         sig
     }

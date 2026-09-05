@@ -71,7 +71,6 @@ pub struct SwarmVoice {
 
     #[live(range = 0.0..200.0)]  pub radius_live:       Shared,
     #[live(range = 0.0..8.0)]    pub orbit_speed_live:  Shared,
-    #[live(range = 0.0..1.0)]    pub nam_hi_live:       Shared,
     #[live(range = 0.0..2000.0)] pub origin_live:       Shared,
     #[live(range = -1.0..1.0)]   pub comb_mix_live:         Shared,
 
@@ -101,15 +100,14 @@ impl SwarmVoice {
         let hi_index = model_index_by_name(&nam_names, "sansamp");
         let nam_hi = NamModelCycler::new(shared(hi_index as f32), nam_names);
 
-        let nam_blend   = shared(0.0);
-        let nam_hi_live = shared(0.0);
+        let nam_blend = shared(0.0);
 
         let slot_hi = nam_models.get(hi_index).and_then(Option::as_ref)
             .expect("swarm hi NAM model slot");
 
         let nam = Box::new(nam_mid_side(
             slot_hi,
-            &shared(0.8), &nam_hi_live,
+            &shared(0.8),
             NAM_WINDOW,
         ));
 
@@ -135,7 +133,6 @@ impl SwarmVoice {
 
             radius_live:       shared(0.0),
             orbit_speed_live:  shared(0.0),
-            nam_hi_live,
 
             osc_freq_live: std::array::from_fn(|_| shared(0.0)),
             osc_pan_live:  std::array::from_fn(|_| shared(0.0)),
@@ -156,7 +153,7 @@ impl VoiceDsp for SwarmVoice {
     fn render (&mut self, freq: f32, _thump_mult: f32) -> Frame<f32, U2> {
         let chase_factor = self.chase_factor_input.value().clamp(0.0, 0.999_999) / 1000.0;
         self.origin_freq = lerp(self.origin_freq, freq, chase_factor);
-        let origin_freq = self.origin_freq * self.thump.tick(self.sig.thump.value());
+        let origin_freq = self.origin_freq * self.thump.tick(self.sig.alpha.value());
 
         let width_signal = self.sig.width.value().clamp(0.0, 1.0);
         let radius_cents = self.radius_input.value().max(0.0) * (1.0 + width_signal);

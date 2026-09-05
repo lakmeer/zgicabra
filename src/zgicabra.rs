@@ -167,13 +167,12 @@ pub struct SignalState {
     pub level:        f32,
     pub bend:         f32,
     pub filter:       f32,
-    pub fuzz:         f32,
     pub width:        f32,
-    pub thump:        f32,
     pub depth:        f32,
+    pub alpha:        f32,
+    pub omega:        f32,
     pub vel:          f32,
     pub acc:          f32,
-    pub aux:          f32,
 }
 
 impl SignalState {
@@ -182,13 +181,12 @@ impl SignalState {
             level:        0.0,
             bend:         0.0,
             filter:       0.0,
-            fuzz:         0.0,
             width:        0.0,
-            thump:        0.0,
             depth:        0.0,
+            alpha:        0.0,
+            omega:        0.0,
             vel:          0.0,
             acc:          0.0,
-            aux:          0.0,
         }
     }
 }
@@ -238,6 +236,8 @@ pub struct Zgicabra {
     pub trigger_total: f32,
     pub most_recent_wand: Hand,
     pub note: NoteState,
+    pub alpha_lock: bool,
+    pub omega_lock: bool,
     pub signal: SignalState,
 }
 
@@ -252,6 +252,8 @@ impl Zgicabra {
             trigger_total: 0.0,
             most_recent_wand: Hand::Neither,
             note: NoteState::new(),
+            alpha_lock: false,
+            omega_lock: false,
             signal: SignalState::new(),
         }
     }
@@ -344,19 +346,6 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
         curr_state.most_recent_wand = Hand::Neither;
     }
 
-    curr_state.signal.depth = match curr_state.most_recent_wand {
-        Hand::Left  => curr_state.left.trigger,
-        Hand::Right => curr_state.right.trigger,
-        Hand::Neither => 0.0,
-    };
-
-
-    // Bumpers
-
-    curr_state.signal.aux = 0.0;
-    if curr_state.left.bumper || curr_state.right.bumper {
-        curr_state.signal.aux = 1.0;
-    }
 
 
     // Notes & Repeats
@@ -451,7 +440,7 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     //           ┏━━━┓     ┏━┷━┓                  ┏━┷━┓     ┏━━━┓
     //         ╭─┨ 4 ┃     ┃ 1 ┃        ││        ┃ 1 ┃     ┃ 4 ┠─╮
     //         │ ┗━━━┛     ┗━━━┛        ││        ┗━━━┛     ┗━━━┛ │
-    // THUMP ]─┤                        ││                        ├─[ FUZZ
+    // ALPHA ]─┤                        ││                        ├─[ OMEGA
     //         │   ┏━━━┓ ┏━━━┓          ││          ┏━━━┓ ┏━━━┓   │
     //         ╰───┨ 3 ┃ ┃ 2 ┃          ││          ┃ 2 ┃ ┃ 3 ┠───╯
     //             ┗━━━┛ ┗━┯━┛                      ┗━┯━┛ ┗━━━┛
@@ -492,10 +481,10 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
         if curr.buttons[2] && curr.buttons[3] && (!prev.buttons[2] || !prev.buttons[3]) {
             match hand {
                 Hand::Left  => {
-                    curr_state.signal.thump = 1.0 - curr_state.signal.thump;
+                    curr_state.alpha_lock = !prev_state.alpha_lock;
                 },
                 Hand::Right => {
-                    curr_state.signal.fuzz = 1.0 - curr_state.signal.fuzz;
+                    curr_state.omega_lock = !prev_state.omega_lock;
                 }
                 Hand::Neither => {},
             }
@@ -533,8 +522,18 @@ pub fn update (curr_state: &mut Zgicabra, prev_state: &Zgicabra, hydra_state: &H
     curr_state.signal.vel = curr_state.left.scalar_vel.max(curr_state.right.scalar_vel);
     curr_state.signal.acc = curr_state.left.scalar_acc.max(curr_state.right.scalar_acc);
 
-}
+    // Depth
+    curr_state.signal.depth = match curr_state.most_recent_wand {
+        Hand::Left  => curr_state.left.trigger,
+        Hand::Right => curr_state.right.trigger,
+        Hand::Neither => 0.0,
+    };
 
+    // Alt channels
+    curr_state.signal.alpha = if curr_state.left.bumper  ^ curr_state.alpha_lock { 1.0 } else { 0.0 };
+    curr_state.signal.omega = if curr_state.right.bumper ^ curr_state.omega_lock { 1.0 } else { 0.0 };
+
+}
 
 
 //

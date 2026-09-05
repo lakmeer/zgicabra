@@ -131,9 +131,7 @@ pub struct ReeseVoice {
     #[node] feedback_conv_l: An<Convolver>,
     #[node] feedback_conv_r: An<Convolver>,
 
-    feedback_nam_blend:   Shared, // pinned to 1.0 -- fully wet always, feedback_attn controls loop gain instead
-    feedback_nam_level_l: Shared, // nam_band's post-blend peak monitor -- required by its signature, unused for now
-    feedback_nam_level_r: Shared,
+    feedback_nam_blend: Shared, // pinned to 1.0 -- fully wet always, feedback_attn controls loop gain instead
     feedback_loop_l: f32, // previous sample's gain-staged, clamped loopback -- this sample's resonator excitation
     feedback_loop_r: f32,
 
@@ -191,16 +189,14 @@ impl ReeseVoice {
         let feedback_nam_slot_l = load_named_model(FEEDBACK_NAM_MODEL).unwrap();
         let feedback_nam_slot_r = load_named_model(FEEDBACK_NAM_MODEL).unwrap();
 
-        let feedback_nam_blend   = shared(1.0);
-        let feedback_nam_level_l = shared(0.0);
-        let feedback_nam_level_r = shared(0.0);
+        let feedback_nam_blend = shared(1.0);
 
         let feedback_nam_l: Box<dyn AudioUnit> = Box::new(nam_band(
-            &feedback_nam_slot_l, &feedback_nam_blend, &feedback_nam_level_l, NAM_WINDOW,
+            &feedback_nam_slot_l, &feedback_nam_blend, NAM_WINDOW,
         ));
 
         let feedback_nam_r: Box<dyn AudioUnit> = Box::new(nam_band(
-            &feedback_nam_slot_r, &feedback_nam_blend, &feedback_nam_level_r, NAM_WINDOW,
+            &feedback_nam_slot_r, &feedback_nam_blend, NAM_WINDOW,
         ));
 
         let feedback_ir = load_feedback_ir();
@@ -220,8 +216,6 @@ impl ReeseVoice {
             feedback_conv_l: convolve(&feedback_ir, 0),
             feedback_conv_r: convolve(&feedback_ir, 0),
             feedback_nam_blend,
-            feedback_nam_level_l,
-            feedback_nam_level_r,
             feedback_loop_l: 0.0,
             feedback_loop_r: 0.0,
 
@@ -291,7 +285,7 @@ impl VoiceDsp for ReeseVoice {
         let delay_sec = (DELAY_ENV_BASE_SEC * DELAY_ENV_OCTAVE_FACTOR.powf(octaves)).max(DELAY_ENV_MIN_SEC);
         self.delay_env_live.set_value(self.delay_env.tick(trigger, delay_sec));
 
-        let impact_raw = self.impact_player.get_mono() * self.impact_level_input.value() * self.sig.thump.value();
+        let impact_raw = self.impact_player.get_mono() * self.impact_level_input.value() * self.sig.alpha.value();
         let impact_env = self.impact_env.filter_mono(impact_raw.abs());
 
         let mut mix_l = 0.0f32;
@@ -326,7 +320,7 @@ impl VoiceDsp for ReeseVoice {
         mix_l *= note_env;
         mix_r *= note_env;
 
-        let loop_gain = self.feedback_attn.value() * self.sig.aux.value() * FEEDBACK_LOOP_GAIN_MAX;
+        let loop_gain = self.feedback_attn.value() * self.sig.omega.value() * FEEDBACK_LOOP_GAIN_MAX;
         self.loop_gain_live.set_value(loop_gain);
 
         let exciter_l = mix_l * FEEDBACK_EXCITE_LEVEL;
