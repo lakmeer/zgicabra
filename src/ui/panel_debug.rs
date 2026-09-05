@@ -52,19 +52,19 @@ pub fn draw_debug_panel (y: u16, zgicabra: &Zgicabra, history: &Vec<Zgicabra>, d
     println!("{}Width:   {:>17.4}", goto(RHS, y + 5), zgicabra.signal.width);
     println!("{}Depth:   {:>17.4}", goto(RHS, y + 5), zgicabra.signal.depth);
     println!("{}Alpha:   {:>17.4}", goto(RHS, y + 6), zgicabra.signal.alpha);
-    println!("{}Omega:   {:>17.4}", goto(RHS, y + 6), zgicabra.signal.omega);
-    println!("{}Level:   {:>17.4}", goto(RHS, y + 7), zgicabra.signal.level);
+    println!("{}Omega:   {:>17.4}", goto(RHS, y + 7), zgicabra.signal.omega);
+    println!("{}Level:   {:>17.4}", goto(RHS, y + 8), zgicabra.signal.level);
 
     let default_color = termion::color::Fg(termion::color::White);
 
     print!("{}{}", goto(RHS, y), default_color);
 
-    print!("{}[{:>5.2} {:>5.2} {:>5.2} {:>5.2} ]", goto(RHS, y + 10),
+    print!("{}[{:>5.2} {:>5.2} {:>5.2} {:>5.2} ]", goto(RHS, y + 11),
         zgicabra.left.rot[0],
         zgicabra.left.rot[1],
         zgicabra.left.rot[2],
         zgicabra.left.rot[3]);
-    print!("{}[{:>5.2} {:>5.2} {:>5.2} {:>5.2} ]", goto(RHS, y + 11),
+    print!("{}[{:>5.2} {:>5.2} {:>5.2} {:>5.2} ]", goto(RHS, y + 12),
         zgicabra.right.rot[0],
         zgicabra.right.rot[1],
         zgicabra.right.rot[2],
